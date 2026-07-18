@@ -1,0 +1,13 @@
+# bmad-loop orchestrator — run state, cache, local policy
+.bmad-loop/runs/
+.bmad-loop/cache/
+.bmad-loop/policy.toml
+
+# BMad personal settings (intended to be gitignored; shared config is committed)
+_bmad/config.user.yaml
+_bmad/config.user.toml
+_bmad/custom/*.user.toml
+
+# Installed BMad skill library — regenerable tooling (reinstall via the bmad installer / bmad-loop init).
+# .claude/settings.json (hooks) stays committed.
+.claude/skills/
