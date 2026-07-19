@@ -1,3 +1,10 @@
+---
+title: "Companions — Brief Addendum (technical depth)"
+project: smpp-companions
+status: final
+updated: 2026-07-19
+---
+
 # Companions — Brief Addendum
 
 Technical depth that belongs downstream (PRD / architecture), kept out of the brief.
@@ -9,7 +16,7 @@ Technical depth that belongs downstream (PRD / architecture), kept out of the br
 - **Concurrency:** **Virtual threads + structured concurrency** (Project Loom), where applicable.
 - **Performance escape hatch:** **GraalVM native-image** (AOT) if performance or footprint demands it.
 - **Originality:** **Built entirely from scratch for JDK 25** — Cloudhopper and jSMPP are *inspirations* (conceptual lineage / ecosystem familiarity for contributors), **not** forked or reused code. No derivation, no licensing/attribution entanglement.
-- **Rationale:** modern Java on the JVM (where the SMPP-contributor audience lives) while keeping the library-vs-container story clean (library core, thin Docker wrapper).
+- **Rationale:** modern Java on the JVM (where the SMPP-contributor audience lives) while keeping the form-factor story clean (a standalone application / runnable JAR, with Docker as a packaging of that same JAR).
 
 ## Authority provider & certificates (external — not part of Companions)
 
@@ -20,15 +27,15 @@ Technical depth that belongs downstream (PRD / architecture), kept out of the br
 
 ## Suite context — the family
 
-**Companions** is a family; v1 is the security-transit companion. Named next siblings (all **from scratch**): a **modern JVM SMPP library** (a successor to Cloudhopper/jSMPP for current Java — likely the shared foundation the others build on; v1's SMPP internals should factor toward it) and a **JMeter load-testing plugin for SMPP**. Earlier candidates (logging/audit, rate-limiting, protocol translation, metrics/observability) remain on the table. The v1 architecture should keep companions as **pluggable modules** with a clean SMPP library core, not a hard-coded single-purpose proxy.
+**Companions** is a family; v1 is the security-transit companion. Named next siblings (all **from scratch**): a **modern JVM SMPP library** (a successor to Cloudhopper/jSMPP for current Java — likely the shared foundation the others build on; v1's SMPP internals should factor toward it) and a **JMeter load-testing plugin for SMPP**. Earlier candidates (logging/audit, rate-limiting, protocol translation) remain on the table; baseline `/metrics` + operational logging now ship in v1, leaving a fuller metrics/observability companion as a possible future sibling. The v1 architecture should keep a clean, extractable SMPP library core (modularity as code quality — **structured for future extraction**, not a v1 extension-point surface), not a hard-coded single-purpose proxy.
 
 ## Architecture (pointer, not re-derivation)
 
 The full security architecture lives in:
 `_bmad-output/brainstorming/brainstorm-smpp-security-proxy-2026-07-18/brainstorm-intent.md`
 
-Coverage there: two-proxy topology (`legacy → proxy1 → proxy2 → SMSC` + direct Option B); deployment modes A/B/C (one-way TLS / plaintext / mTLS); password-grant forwarded end-to-end (legacy `system_id` == carrier `system_id`); auth delegated to an **authority provider** that is also the **mTLS CA** (unified trust root); SMSC stateful (multi-bind under one `system_id`, session-affinity DLRs), proxy2 stateless relay; proxy1 mTLS client cert via deploy-time bake.
+Coverage there: two-proxy topology (`legacy → proxy1 → proxy2 → SMSC` + direct Mode B); deployment modes A/B/C (one-way TLS / plaintext / mTLS); password-grant forwarded end-to-end (legacy `system_id` == carrier `system_id`); auth delegated to an **authority provider** that is also the **mTLS CA** (unified trust root); SMSC stateful (multi-bind under one `system_id`, session-affinity DLRs), proxy2 stateless relay; proxy1 mTLS client cert via deploy-time bake.
 
-**Accepted risks** (carried forward): password-only as sole ingress factor; Option B sends the password plaintext over the public internet; trusted-network assumption on the legacy↔proxy1 leg; long-lived baked certs forfeit short-lived-cert revocation.
+**Accepted risks** (carried forward): password-only as sole ingress factor; Mode B sends the password plaintext over the public internet; trusted-network assumption on the legacy↔proxy1 leg; long-lived baked certs forfeit short-lived-cert revocation.
 
-**Open items** (carried forward): revocation (CRL/OCSP) vs scheduled re-bake; proxy2 server-cert provisioning; HA/failover; bind/PDU audit logging; authority-provider↔SMSC relationship (deliberately pluggable).
+**Open items as of brainstorm** (carried forward as a pointer — revocation, proxy2 server-cert provisioning, HA/failover, and bind/PDU audit logging are resolved in the PRD; only the authority-provider↔SMSC relationship remains deliberately pluggable).

@@ -1,0 +1,689 @@
+{
+  "problem_statement": "Legacy SMPP 3.4 systems must exchange traffic with carrier SMSCs over untrusted networks, but they cannot be modified and carry a hard auth weakness: they perform password-grant binds only, cannot present client certificates, and cannot do mTLS. That weakness cannot be safely exposed to the internet. The obvious fix — a security proxy in front of the legacy system — typically backfires: the proxy ends up holding the credentials it was meant to protect (a password vault), so any proxy compromise yields a stash of working carrier passwords with huge blast radius. No single architecture today covers the full range of real legacy reach, including systems that cannot do TLS at all (plaintext direct). The itch this product scratches: confine the legacy auth weakness to a trusted zone, broker a single credential end-to-end (legacy system_id == carrier system_id), keep the proxy tier credential-free so compromise yields network position only, and cover all legacy-reach cases — without bundling the trust infrastructure (IdP, PKI) itself. The deeper itch is the pattern: a non-invasive augmentation layer that bolts modern capabilities onto untouchable legacy, of which security-transit is the first instance.",
+  "product_vision": "Companions v1 is a headless, operator-configured, open-source SMPP 3.4 security-transit proxy — the first module of a planned family of non-invasive augmentation layers for legacy SMPP. One converged codebase plays BOTH sides of the wire: the enterprise/ingress role (fronting a legacy system connecting to a carrier) and the carrier/egress role (fronting an SMSC accepting binds). It confines the legacy password-grant weakness to a trusted zone, forwards a single credential end-to-end (legacy system_id == carrier system_id), delegates grant validation to an operator-run authority provider over OIDC, and ships credential-free — so the SMSC remains the sole credential authority and proxy compromise yields network position, not a stash of working passwords. Three mutually-exclusive deployment modes (A one-way TLS, B plaintext direct, C mTLS) cover real-world legacy reach. It consumes external trust (source-agnostic certs at runtime; auth via the operator's authority provider) rather than providing it. MT-only: submit path plus DLRs on existing binds. Shipped as both an embeddable library and a Docker image, both first-class. Built from scratch on a modern JVM stack (JDK 25, Netty, virtual threads) — not a fork of Cloudhopper/jSMPP. Success is a real, well-built, shippable OSS portfolio piece the author is proud of and actually uses; community adoption is a bonus, not the bar. v1 deliberately establishes a clean, modular SMPP core so planned sibling companions (from-scratch JVM SMPP library, JMeter plugin, logging/audit, rate-limiting, protocol translation) can build on it.",
+  "stakeholders": [
+    {
+      "role": "Author / solo developer (primary)",
+      "need": "A coherent, demonstrably-correct OSS portfolio piece showcasing modern JVM engineering (JDK 25, Netty, virtual threads, optional GraalVM) applied to a non-trivial security-architecture problem — original from-scratch work the author is proud to show and actually uses to scratch the original itch."
+    },
+    {
+      "role": "Operator / deployer",
+      "need": "Headless, operator-configured middleware runnable as an embeddable library or a Docker image, with clear deployment-mode selection and credential-free operation; they run their own authority provider (Keycloak is reference target) and provision certs at runtime."
+    },
+    {
+      "role": "Enterprise / ESME legacy system owner",
+      "need": "Reach carrier SMSCs securely despite their legacy SMPP 3.4 stack being incapable of mTLS / client certs and unmodifiable; gain TLS/mTLS and stronger delegated auth without touching legacy code."
+    },
+    {
+      "role": "Carrier / SMSC operator",
+      "need": "Harden ingress (accept binds securely via TLS/mTLS + delegated auth) without forcing clients off SMPP 3.4 or demanding they modernize; the SMSC remains the credential authority and its session-affinity semantics must be respected."
+    },
+    {
+      "role": "Security architect (trust-model reviewer)",
+      "need": "Validate that the trust crown jewel lives in the operator-run authority provider, not the proxy, and that accepted risks (password-only ingress, Mode B plaintext, long-lived baked certs, provider-outage coupling) are explicit and bounded."
+    },
+    {
+      "role": "Future Companions-family contributors / JVM SMPP ecosystem",
+      "need": "A clean, modular SMPP core and a non-invasive, credential-free, dual-role architecture they can extend with sibling companions (modern JVM SMPP library, JMeter plugin, logging/audit, rate-limiting, protocol translation) without rearchitecting v1."
+    }
+  ],
+  "capability_groups": [
+    {
+      "group": "Protocol Transit (what flows through)",
+      "capabilities": [
+        "MT-only message transit: carry SMPP 3.4 mobile-terminated submit-path traffic end to end between legacy system and SMSC; no MO/inbound user-message routing",
+        "DLR passthrough on existing binds (transceiver/receiver) so delivery status flows back through the proxy without a separate path",
+        "Non-invasive / transparent transit: the proxy augments security without breaking SMPP 3.4 behavior either side expects; zero changes required to legacy gear or SMSC behavior",
+        "SMPP 3.4 protocol scope only (no SMPP 5.x)"
+      ],
+      "candidate_frs": [
+        {
+          "id": "FR-TRANSIT-1",
+          "statement": "The system must transit SMPP 3.4 mobile-terminated (MT) submit-path traffic between a legacy system and a carrier/SMSC end to end. It must not accept or route MO/inbound user messages. (NOTE: whether MT-only is proxy-enforced via PDU inspection or operator convention via pure byte-splice is an open question — see open_questions.)"
+        },
+        {
+          "id": "FR-TRANSIT-2",
+          "statement": "The system must return delivery reports (DLRs) over the existing binds (transceiver/receiver) such that they reach the originating legacy bind, rather than via a separate path. (Splice/session-affinity mechanics are deferred to addendum.)"
+        },
+        {
+          "id": "FR-TRANSIT-3",
+          "statement": "The system must interoperate transparently with unmodified SMPP 3.4 stacks on both the ingress and egress sides; it must not alter protocol behavior the legacy system or SMSC expect."
+        },
+        {
+          "id": "FR-TRANSIT-4",
+          "statement": "The system must implement SMPP 3.4 only and must not implement SMPP 5.x. (The exact PDU support matrix is an open question — see open_questions; PDU-level mechanics are deferred to addendum.)"
+        }
+      ]
+    },
+    {
+      "group": "Security & Trust Model (the core value proposition)",
+      "capabilities": [
+        "Credential-free proxy tier: the proxy holds no SMPP passwords and no password vault; compromise yields network position only, never a stash of working credentials",
+        "Weakness confinement: the legacy password-grant-only weakness is confined to a trusted zone and never exposed unprotected on untrusted networks (modulo the explicitly-accepted Mode B)",
+        "End-to-end single-credential brokering / identity preservation: legacy system_id == carrier system_id end to end; no pooled, mapped, or per-client surrogate identity",
+        "External trust consumption: the system consumes operator-provided trust at runtime (source-agnostic certs; auth via the operator's authority provider) and does not bundle/run an authority provider, act as a CA, or issue certificates"
+      ],
+      "candidate_frs": [
+        {
+          "id": "FR-SEC-1",
+          "statement": "The proxy tier must hold no SMPP passwords and maintain no password vault; the SMSC must remain the sole credential authority. Compromise of a proxy must yield network position only — never working carrier credentials."
+        },
+        {
+          "id": "FR-SEC-2",
+          "statement": "The system must confine the legacy password-grant-only auth weakness to a trusted zone so it is never exposed unprotected on untrusted networks, except in the explicitly-accepted plaintext Mode B (whose ship-vs-refuse posture is an open question)."
+        },
+        {
+          "id": "FR-SEC-3",
+          "statement": "The system must preserve end-to-end identity such that the legacy system_id equals the carrier system_id; it must not pool, map, or substitute identity (no per-client or proxy-as-self surrogate identity)."
+        },
+        {
+          "id": "FR-SEC-4",
+          "statement": "The system must consume operator-provided trust at runtime — certificates source-agnostic, authentication via the operator's authority provider — and must not bundle or run an authority provider, act as a CA, or issue, rotate, or manage certificate lifecycle."
+        }
+      ]
+    },
+    {
+      "group": "Authentication & Authorization",
+      "capabilities": [
+        "Delegated grant validation: the egress proxy delegates the password-grant check to an external operator-run authority provider and trusts its verdict; no local password storage, no local brute-force policy",
+        "OIDC-conformant, pluggable authority-provider integration: any OIDC-compliant provider drops in (no bespoke contract); Keycloak is the reference target, not a bundled dependency",
+        "Accepted auth factors: password-grant binds and mTLS client-cert authentication (the factors the legacy and peer sides can actually present)"
+      ],
+      "candidate_frs": [
+        {
+          "id": "FR-AUTH-1",
+          "statement": "The egress proxy must delegate password-grant validation to an operator-run external authority provider and trust that verdict; it must not store passwords or enforce a local brute-force policy. (The fail-closed default on indeterminate verdict is captured as a security NFR.)"
+        },
+        {
+          "id": "FR-AUTH-2",
+          "statement": "The authority-provider integration must conform to OpenID Connect (no bespoke/proprietary contract) so any OIDC-compliant provider drops in. Keycloak is the reference target, not a bundled dependency. (Token-flow/grant-type specifics are deferred to addendum.)"
+        },
+        {
+          "id": "FR-AUTH-3",
+          "statement": "The system must accept password-grant binds and mTLS client-cert authentication as the factors the legacy and peer sides present. mTLS is supported (Mode C) but not mandated — Modes A and B operate password-grant only. (Per-leg TLS mechanics and chain-validation depth are deferred to addendum.)"
+        }
+      ]
+    },
+    {
+      "group": "Deployment & Operation",
+      "capabilities": [
+        "Headless, operator-configured operation: no UI, no management API; configuration is the operator interface",
+        "Two first-class deployment shapes: embeddable library and Docker image, both feature-equivalent",
+        "Three mutually-exclusive deployment modes (A/B/C): one mode active per instance, deployment-wide (not a per-client tiered menu); product ships all three topologies",
+        "Dual-role operation from one codebase: enterprise/ingress and carrier/egress are roles of the same codebase, selectable at deployment",
+        "Static startup configuration: config supplied at startup (files/env); no runtime management or reconfiguration API"
+      ],
+      "candidate_frs": [
+        {
+          "id": "FR-DEPLOY-1",
+          "statement": "The system must operate as headless middleware with no UI and no management API; all behavior must be operator-configured at startup."
+        },
+        {
+          "id": "FR-DEPLOY-2",
+          "statement": "The system must ship as two first-class, feature-equivalent deployment artifacts — an embeddable library and a Docker image — so an operator picking either shape is not on a second-class path."
+        },
+        {
+          "id": "FR-DEPLOY-3",
+          "statement": "The system must support three mutually-exclusive deployment-wide modes — A (one-way TLS internet leg), B (plaintext direct), C (mTLS internet leg) — with exactly one mode active per instance; the product must ship all three topologies. (Per-leg TLS mechanics are deferred to addendum.)"
+        },
+        {
+          "id": "FR-DEPLOY-4",
+          "statement": "A single codebase must support both the enterprise/ingress role (fronting a legacy system connecting to a carrier) and the carrier/egress role (fronting an SMSC accepting binds); mode and role are deployment-time selections, not forks."
+        },
+        {
+          "id": "FR-DEPLOY-5",
+          "statement": "The system must be configured statically at startup (files/env) with a documented, validated config schema; it must not provide a runtime management or dynamic-reconfiguration API."
+        }
+      ]
+    },
+    {
+      "group": "Architecture & Family-readiness (borderline FR/NFR — treat as code-quality goal, NOT a v1 deliverable)",
+      "capabilities": [
+        "Forward-compatible modular SMPP core: v1's SMPP internals factor toward the planned from-scratch JVM SMPP library so sibling companions slot in without rearchitecting v1. (Guardrail: this is an internal code-quality discipline, NOT a v1 extension-point deliverable — see conflicts_or_gaps.)"
+      ],
+      "candidate_frs": [
+        {
+          "id": "FR-MAINT-1",
+          "statement": "The SMPP internals must remain factored as a clean, reusable core so that the planned Companions family can build on them without rearchitecting v1. This is a code-quality constraint on v1's design, not a commitment to ship extension points or the future SMPP library in v1."
+        }
+      ]
+    }
+  ],
+  "nfrs": [
+    {
+      "category": "security",
+      "statement": "Credential-free invariant: the proxy tier must store no SMPP passwords and maintain no password vault. Compromise of a proxy must yield network position only — never a stash of working carrier credentials.",
+      "rationale": "Central security property of the product (brainstorm §7); the reason credential-broker-as-is was chosen."
+    },
+    {
+      "category": "security",
+      "statement": "Fail-closed default: the egress proxy must DENY a bind when the authority-provider verdict is unavailable or indeterminate (timeout, network error mid-validation). Deny-on-ambiguous is the security invariant. (FLAG: corpus states provider-down blocks new binds but never codifies the ambiguous-state policy — this must be decided, see open_questions.)",
+      "rationale": "NFR hunt: a security proxy's core invariant; docs leave the ambiguous-state behavior unstated."
+    },
+    {
+      "category": "security",
+      "statement": "Security-floor / startup posture: the proxy must refuse to start (or warn-and-continue per a documented policy) on ambiguous or insecure configuration — e.g., mode unset, missing cert path, empty provider URL. Whether Mode B (plaintext password over public internet) is refused-at-startup or a supported documented mode is an open product decision.",
+      "rationale": "NFR hunt + scope hunt: fail-safe defaults are required for a security product; Mode B posture is the sharpest open decision."
+    },
+    {
+      "category": "security",
+      "statement": "TLS strength floor: the system must require a stated minimum TLS version (1.2 minimum, ideally 1.3 for a 2026 product) and publish a cipher allowlist policy. (FLAG: corpus mentions TLS/mTLS throughout but pins NO floor anywhere. The floor is a PRD NFR; the specific cipher list is deferred to addendum.)",
+      "rationale": "NFR hunt SILENT item: without a floor, operators cannot assess strength."
+    },
+    {
+      "category": "security",
+      "statement": "Per-instance baked keys: baked client certificates (Mode C) must use per-instance keys, never one shared golden-image key; the bake pipeline, image distribution, and on-host key storage must be locked down. (Recommended in corpus as a 'Should'; PRD should make it a hard NFR — a shared key is catastrophic blast radius.)",
+      "rationale": "Brainstorm §9 Should; making it hard vs recommendation is an open question."
+    },
+    {
+      "category": "security",
+      "statement": "Malformed-PDU robustness: the SMPP parser (which fronts untrusted/public legs in Modes A and B) must safely handle malformed, oversized, or truncated PDUs — reject, never crash. (FLAG: SILENT in corpus; a from-scratch parser on a security boundary.)",
+      "rationale": "NFR hunt SILENT item."
+    },
+    {
+      "category": "security",
+      "statement": "Proxy2 -> authority-provider link must be authenticated and encrypted (TLS/mTLS or service-account token). (FLAG: corpus parks this; the REQUIREMENT must be stated in the PRD even though the mechanism is deferred to addendum.)",
+      "rationale": "Brainstorm §9 parked; requirement currently SILENT."
+    },
+    {
+      "category": "privacy",
+      "statement": "PII / SMS-content privacy: the proxy must NOT persist message bodies and must constrain PDU logging scope. SMS payloads routinely contain PII; Mode B additionally carries them in cleartext. (FLAG: SILENT in corpus; compounds with the audit-logging open question.)",
+      "rationale": "NFR hunt SILENT item — a transit proxy has data-handling obligations."
+    },
+    {
+      "category": "security",
+      "statement": "Dependency/CVE patching discipline: the project must maintain a vulnerability policy for security-critical dependencies (Netty has a CVE history; JDK).",
+      "rationale": "NFR hunt SILENT item — a security proxy must patch its own stack."
+    },
+    {
+      "category": "reliability",
+      "statement": "Authority-provider HA coupling: the authority provider is a hard dependency for new binds — a provider outage means no new binds succeed (ongoing mTLS survives on cached trust, but grant validation and cert issuance/revocation require the provider live). This coupling is a documented, accepted v1 risk, not silently tolerated.",
+      "rationale": "Brainstorm §8 accepted risk; shapes bind-path availability."
+    },
+    {
+      "category": "reliability",
+      "statement": "Proxy-tier statelessness re: in-flight messages: the proxy must hold no message_id-to-system_id correlation (socket-pairing/connection state only) to keep HA/failover simple. (FLAG: load-bearing on the carrier-allows-multiple-concurrent-binds assumption — see open_questions.)",
+      "rationale": "Brainstorm §4; collapses to stateful if assumption is false."
+    },
+    {
+      "category": "reliability",
+      "statement": "Transit integrity: the proxy must not silently drop, duplicate, or corrupt MT traffic or DLRs.",
+      "rationale": "Brief NFR; a proxy that loses messages breaks the traffic it was deployed to protect."
+    },
+    {
+      "category": "reliability",
+      "statement": "Backpressure / flow control: when the egress leg is slow, the ingress leg must backpressure rather than OOM. (FLAG: SILENT in corpus for a two-socket splice.)",
+      "rationale": "NFR hunt SILENT item."
+    },
+    {
+      "category": "reliability",
+      "statement": "Graceful shutdown / drain contract: behavior on SIGTERM/restart (drain binds? finish in-flight submit_sm_resp? drop?) must be defined. (FLAG: SILENT — stateless splice implies in-flight loss on restart, never stated.)",
+      "rationale": "NFR hunt SILENT item; operators need a defined shutdown contract."
+    },
+    {
+      "category": "performance",
+      "statement": "Bind-latency budget: bind latency will include an authority-provider round-trip; this is accepted (binds assumed infrequent and long-lived) and should be pinned as a budget rather than left implicit.",
+      "rationale": "Brainstorm §8; only latency statement in the corpus."
+    },
+    {
+      "category": "performance",
+      "statement": "Quantitative SLOs: v1 should state at least notional targets for sustained throughput (msg/s), concurrent binds supported, and per-PDU splice latency. (FLAG: corpus commits to NO perf numbers — inconsistent with 'demonstrates modern Java networking' portfolio claim. A modest target makes the portfolio credible.)",
+      "rationale": "NFR hunt SILENT cluster; portfolio-credibility gap."
+    },
+    {
+      "category": "compatibility",
+      "statement": "SMPP 3.4 interop: must interoperate cleanly with unmodified legacy SMPP 3.4 stacks on both ends and require zero changes to legacy gear or carrier SMSC behavior.",
+      "rationale": "Brief NFR; the non-invasive premise."
+    },
+    {
+      "category": "compatibility",
+      "statement": "JDK 25 runtime floor (Loom-era); JVM-only implementation (no off-JVM).",
+      "rationale": "Addendum constraint; virtual-thread concurrency depends on it."
+    },
+    {
+      "category": "compatibility",
+      "statement": "Linux and macOS targets only; no Windows build in v1.",
+      "rationale": "Brief non-goal."
+    },
+    {
+      "category": "compatibility",
+      "statement": "IPv6 stance: the PRD should state yes/no. (FLAG: SILENT — carriers/enterprises may require IPv6.)",
+      "rationale": "NFR hunt SILENT item."
+    },
+    {
+      "category": "maintainability",
+      "statement": "Single codebase serving both roles; mode and role selection are deployment-time configuration, not forks.",
+      "rationale": "Brainstorm §1, §7; operational simplicity."
+    },
+    {
+      "category": "maintainability",
+      "statement": "Forward-compatible modular core: the SMPP internals must remain extractable as the shared library foundation for sibling companions; the security companion is a pluggable module over a clean SMPP core, not entangled with proxy specifics. (Code-quality discipline; explicitly NOT a v1 extension-point deliverable — see conflicts_or_gaps.)",
+      "rationale": "Brief 'family'; addendum warns against 'a hard-coded single-purpose proxy'."
+    },
+    {
+      "category": "maintainability",
+      "statement": "GraalVM native-image AOT-friendliness: keep the codebase compatible with native-image as an opt-in future build path (avoid reflection-heavy/dynamic-class-loading patterns). v1 commitment level is an open question (recommend OUT/stretch).",
+      "rationale": "Addendum escape hatch; constraints would otherwise leak into design."
+    },
+    {
+      "category": "maintainability",
+      "statement": "No-derivation originality: built entirely from scratch for JDK 25; Cloudhopper and jSMPP are conceptual inspirations only, NOT forked or reused code — no licensing/attribution entanglement. (Applies to the SMPP layer only; mature libraries MUST be used for crypto/TLS/OIDC primitives — see open_questions.)",
+      "rationale": "Addendum IP/legal invariant + brief originality success criterion."
+    },
+    {
+      "category": "maintainability",
+      "statement": "Test strategy: a from-scratch SMPP implementation must have an integration-test strategy (simulated/mock SMSC, conformance suite, TLS/OIDC test vectors, codec fuzzing). (FLAG: SILENT in corpus; material to 'well-built' success criterion for solo-authored security code.)",
+      "rationale": "NFR hunt SILENT item + brief solo-review-bandwidth open question."
+    },
+    {
+      "category": "deployability",
+      "statement": "Two-shape feature parity: library and Docker shapes must be feature-equivalent (same config surface, same modes, same auth paths) so neither becomes second-class.",
+      "rationale": "Brief first-class declaration; thin-Docker-over-library-core architecture is deferred to addendum."
+    },
+    {
+      "category": "deployability",
+      "statement": "Deploy-time cert provisioning: certs must be provisionable at deploy time (bake via CI/pipeline); the system must not require runtime ACME/SPIFFE enrollment to function.",
+      "rationale": "Brainstorm §6, §7."
+    },
+    {
+      "category": "deployability",
+      "statement": "Config validation / fail-fast: a security proxy must refuse to start on ambiguous or incomplete configuration. (FLAG: SILENT — ties to security-floor NFR.)",
+      "rationale": "NFR hunt SILENT item."
+    },
+    {
+      "category": "deployability",
+      "statement": "Docker secret-injection contract: the Docker shape must define how secrets (certs, keys, provider creds) are injected (file paths, env, mounted secrets). (FLAG: SILENT; critical for the first-class Docker shape.) Mechanism is deferred to addendum.",
+      "rationale": "NFR hunt SILENT item."
+    },
+    {
+      "category": "operability",
+      "statement": "Operator documentation: because the product is headless with no UI and no management API, documentation IS the operator surface — config reference, deployment-mode guide, troubleshooting/runbooks must exist.",
+      "rationale": "NFR hunt SILENT item; consequence of headless non-goals."
+    },
+    {
+      "category": "operability",
+      "statement": "Cert rotation = re-deploy only (Mode C baked client cert); this operational cost must be documented. Ties to the revocation/re-bake open question.",
+      "rationale": "Brainstorm §6."
+    },
+    {
+      "category": "operability",
+      "statement": "Time-sync prerequisite: mTLS cert windows and OIDC token lifetimes assume accurate clocks; NTP/sane-clock must be listed as an operational precondition. (FLAG: SILENT.)",
+      "rationale": "NFR hunt SILENT item."
+    },
+    {
+      "category": "operability",
+      "statement": "No management API (v1): operators cannot query active binds, drain, reload config, or rotate creds at runtime. This is a deliberate v1 limitation, documented alongside the observability gap.",
+      "rationale": "Brief non-goal; ties to observability gap."
+    },
+    {
+      "category": "observability",
+      "statement": "No metrics/telemetry surface in v1 (deliberate, documented limitation). Operators cannot tell from the proxy whether binds are succeeding, latency is degrading, or the provider is throttling. A future metrics/observability companion is named.",
+      "rationale": "Brief non-goal; consequence must be owned, not buried."
+    },
+    {
+      "category": "observability",
+      "statement": "Baseline operational logging: at minimum the proxy must emit startup, error, and bind accept/reject events so 'no metrics/observability' does not read as 'the proxy is silent'. (Tension with the non-goal — see open_questions.)",
+      "rationale": "NFR hunt + scope hunt reconciliation; security-audit logging is arguably distinct from metrics."
+    }
+  ],
+  "scope_in": [
+    "SMPP 3.4 protocol (no 5.x); MT-only transit: submit path + DLRs on existing binds (no MO/inbound user-message routing)",
+    "Three mutually-exclusive deployment modes A/B/C — product ships all three topologies, exactly one active per instance (per-leg TLS mechanics deferred to addendum)",
+    "Password-grant + mTLS as the auth factors (mTLS supported in Mode C; not mandated in A/B)",
+    "OIDC-conformant authority-provider integration for password-grant validation, BYO provider (Keycloak = reference target, pluggable, not bundled)",
+    "Runtime-provided, source-agnostic certificate consumption (no issuance; PKI is the operator's)",
+    "End-to-end identity forwarding: legacy system_id == carrier system_id; no pooled/mapped/surrogate identity",
+    "Credential-free proxy tier (no password vault; SMSC is the sole credential authority)",
+    "Two first-class deployment shapes: embeddable library + Docker image (both feature-equivalent)",
+    "Both wire roles from one codebase: enterprise/ingress and carrier/egress (deployment-time selection)",
+    "Headless, operator-configured operation; static startup configuration",
+    "Non-invasive / transparent transit to both legacy system and SMSC",
+    "Modular SMPP core kept factorable toward the planned Companions family (code-quality discipline, not an extension-point deliverable)",
+    "Baseline operational logging sufficient to not be silent (minimal: startup, errors, bind accept/reject) — pending reconciliation in open_questions"
+  ],
+  "scope_out": [
+    "UI of any kind",
+    "SMPP 5.x support",
+    "MO / inbound user-message routing (MT-only)",
+    "Management API (no runtime control: query binds, drain, reload, rotate creds)",
+    "Bundled authority provider / identity provider (Keycloak is reference target, not part of this project)",
+    "Certificate issuance / acting as a CA / cert lifecycle management",
+    "Per-client carrier identity (pooled or proxy-as-self surrogate identity)",
+    "Proxy1-side credential validation (proxy1 routes on system_id within the trusted zone; does not validate the legacy password)",
+    "Local password storage and local brute-force policy on the proxy (rate-limiting/anomaly detection is a future companion, not v1 — pending confirmation in open_questions)",
+    "PDU-level audit/inspection as a v1 capability (future audit companion) — pending reconciliation in open_questions",
+    "Metrics / telemetry surface (deliberate v1 limitation; future companion)",
+    "ACME/SPIFFE runtime enrollment",
+    "Short-lived-cert auto-rotation",
+    "Windows build target (Linux/macOS only)",
+    "HA / multi-instance failover design (recommend OUT for v1 — stateless proxy2 is an enabler, not a v1 commitment; pending confirmation in open_questions)",
+    "GraalVM native-image as a v1 ship commitment (allowed future/opt-in path; recommend stretch/OUT — pending confirmation in open_questions)",
+    "Future Companions siblings: from-scratch JVM SMPP library, JMeter load-test plugin, logging/audit, rate-limiting, protocol-translation, metrics companions"
+  ],
+  "success_criteria": [
+    "The proxy tier ships credential-free: no SMPP password storage anywhere in the proxy; verifiable by inspection (no password vault).",
+    "Legacy auth weakness is confined to a trusted zone and never exposed unprotected on untrusted networks (modulo the explicitly-decided Mode B posture).",
+    "Single credential brokered end-to-end: legacy system_id == carrier system_id, with no pooled/mapped identity.",
+    "One codebase plays both roles (ingress and egress); mode and role are deployment-time selections, not forks.",
+    "All three deployment topologies (A/B/C) ship and each instance runs exactly one (subject to the Mode B posture decision).",
+    "Compromise of a proxy yields network position only — not a stash of working carrier passwords (low blast radius).",
+    "The system is transparent/non-invasive to both the legacy system and the SMSC (zero changes either side).",
+    "Trust crown jewel resides in the operator-run authority provider, not the proxy; accepted risks are documented and bounded.",
+    "A real, well-built, shippable OSS project — original, from-scratch work (no Cloudhopper/jSMPP derivation) demonstrating modern Java (concurrency, networking, security) on a genuine security problem.",
+    "The author is proud to show it and actually uses it to scratch the original itch (secure transit for an unmodifiable legacy SMPP system).",
+    "Establishes the Companions pattern AND a clean modular SMPP core that the next sibling can build on without rearchitecting v1.",
+    "Community adoption is an explicit bonus, NOT the success bar."
+  ],
+  "concerns_and_sections": [
+    {
+      "concern": "Mode B ship-vs-refuse (plaintext password over public internet) is unresolved and shapes the security posture of a product branded 'security'.",
+      "drives_section": "Scope + Accepted Risks & Limitations + NFRs (security floor)",
+      "coverage": "partial"
+    },
+    {
+      "concern": "Carrier-allows-multiple-concurrent-binds assumption is load-bearing for the stateless-proxy2 architecture; unverified.",
+      "drives_section": "Assumptions & Dependencies (to-verify) + Architecture constraint",
+      "coverage": "partial"
+    },
+    {
+      "concern": "Fail-closed semantics on indeterminate auth verdict (provider timeout/error) never codified.",
+      "drives_section": "NFRs: Security (fail-safe default)",
+      "coverage": "missing"
+    },
+    {
+      "concern": "Audit/logging vs no-observability non-goal contradiction blocks any observability FR.",
+      "drives_section": "Scope reconciliation + NFRs: Observability",
+      "coverage": "partial"
+    },
+    {
+      "concern": "Quantitative performance NFRs absent (throughput, concurrent binds, latency) undercut portfolio credibility.",
+      "drives_section": "NFRs: Performance",
+      "coverage": "missing"
+    },
+    {
+      "concern": "TLS/mTLS strength floor (minimum version, cipher allowlist) never stated.",
+      "drives_section": "NFRs: Security",
+      "coverage": "missing"
+    },
+    {
+      "concern": "PII / SMS-content privacy and PDU-logging scope unaddressed; Mode B carries bodies in cleartext.",
+      "drives_section": "NFRs: Privacy + Accepted Risks",
+      "coverage": "missing"
+    },
+    {
+      "concern": "Malformed-PDU robustness for a from-scratch parser on a public security boundary unaddressed.",
+      "drives_section": "NFRs: Security / Reliability",
+      "coverage": "missing"
+    },
+    {
+      "concern": "Backpressure, graceful shutdown/drain, idle/enquire_link policy, IPv6 — operational contracts unspecified.",
+      "drives_section": "NFRs: Reliability / Operability / Compatibility",
+      "coverage": "missing"
+    },
+    {
+      "concern": "Config validation/fail-fast and Docker secret-injection contract silent; headless + Docker-first-class makes both load-bearing.",
+      "drives_section": "NFRs: Deployability / Operability",
+      "coverage": "missing"
+    },
+    {
+      "concern": "OSS license not declared; material to adoption and the operator-audience for a security product.",
+      "drives_section": "Goals & Success Criteria / Project governance",
+      "coverage": "missing"
+    },
+    {
+      "concern": "Family-modularity trap: 'factor toward future SMPP library' risks turning v1 into a platform deliverable (scope creep).",
+      "drives_section": "Scope + Non-Goals + Family-boundary subsection",
+      "coverage": "partial"
+    },
+    {
+      "concern": "SMPP 3.4 PDU subset undefined; blocks FR completeness and the test plan.",
+      "drives_section": "Functional Requirements (PDU matrix)",
+      "coverage": "missing"
+    },
+    {
+      "concern": "MT-only enforcement vs pure byte-splice ambiguity: is MT-only a proxy capability or operator convention?",
+      "drives_section": "Functional Requirements + Scope",
+      "coverage": "missing"
+    },
+    {
+      "concern": "Form-factor (library/Docker) vs topology (A/B/C) axes conflated; library-vs-two-proxy-topology mapping undefined.",
+      "drives_section": "Deployment Model + Functional Requirements",
+      "coverage": "partial"
+    },
+    {
+      "concern": "HA/failover design open; stateless-proxy2 simplifies but does not constitute a design.",
+      "drives_section": "NFRs: Reliability + Scope",
+      "coverage": "partial"
+    },
+    {
+      "concern": "Cert revocation strategy (CRL/OCSP vs scheduled re-bake) uncommitted.",
+      "drives_section": "NFRs: Security + Open Questions",
+      "coverage": "partial"
+    },
+    {
+      "concern": "Solo review bandwidth for security-critical code; no stated hardening plan (audit, fuzzing, test vectors).",
+      "drives_section": "NFRs: Maintainability / Quality + Risks",
+      "coverage": "missing"
+    },
+    {
+      "concern": "Authority-provider HA is operator's responsibility but is a hard dependency for bind-path availability.",
+      "drives_section": "Assumptions & Dependencies + Accepted Risks",
+      "coverage": "partial"
+    },
+    {
+      "concern": "Proxy2 server-cert provisioning lifecycle (hot-reload vs restart) unspecified.",
+      "drives_section": "NFRs: Operability (mostly deferred to addendum)",
+      "coverage": "partial"
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "Does the target carrier actually allow MULTIPLE concurrent binds under one system_id? This is the single most load-bearing assumption: it determines whether proxy2 is stateless (the core architecture claim) or must fall back to message_id correlation and become stateful.",
+      "why_it_matters": "If false, the entire stateless-splice architecture collapses and the design must change. Must be verified before locking the architecture.",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "Fail-closed semantics: what does the proxy do on an INDETERMINATE auth verdict (provider timeout, network error mid-validation)? The corpus says provider-down blocks new binds but never codifies the deny-on-ambiguous default.",
+      "why_it_matters": "This is the core security invariant of a delegated-auth proxy. Without it codified, implementation could fail-open under transient errors.",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "Is v1 a pure byte-splice (MT-only becomes operator convention, MO PDUs also pass) or does it inspect PDUs and reject non-submit-path traffic?",
+      "why_it_matters": "Determines whether 'MT-only' is a real proxy capability, what the parser must understand, and the exact meaning of the 'no MO routing' non-goal (DLR relay on existing binds is IN; MO submit-to-app is OUT).",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "Does the library form-factor support all three topology modes AND both roles? What does 'library' concretely mean against a two-proxy topology (one process playing proxy1, proxy2, or both)?",
+      "why_it_matters": "Without this, 'both shapes first-class' is unimplementable and the library API cannot be designed.",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "What is the mTLS scope and chain-validation depth? Brief's 'password-grant + mTLS' implies both always-on; reality is mTLS is Mode-C only. Does v1 validate client-cert chains / check revocation, or merely terminate the handshake?",
+      "why_it_matters": "Pairs with the revocation open question; determines cert-validation epic scope and whether revocation checking is in v1.",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "What is the minimum TLS version and cipher allowlist policy? (Corpus pins NO floor anywhere.)",
+      "why_it_matters": "A 2026 security proxy must publish a strength floor or operators cannot assess it. The floor is PRD; the cipher list is addendum.",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "What is the cert revocation strategy for baked certs — CRL/OCSP infra, or scheduled re-bake (7-30d lifetime, automated re-deploy pipeline)? Both are listed as open 'Should'.",
+      "why_it_matters": "Long-lived baked certs forfeit short-lived dissolves-revocation. The PRD should commit to ONE as an NFR, not leave both open.",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "What is the graceful-shutdown / drain contract on SIGTERM or proxy2 restart (drain binds? finish in-flight submit_sm_resp? drop)?",
+      "why_it_matters": "Stateless splice implies in-flight loss on restart; operators need a defined contract. Currently SILENT.",
+      "blocks_phase": "architecture"
+    },
+    {
+      "question": "Ship Mode B (plaintext password over public internet) as a supported, documented mode, refuse to start in B, or ship it as an undocumented escape hatch?",
+      "why_it_matters": "Reputational product call for an OSS security project; shapes the security NFRs and the default-startup contract. The sharpest portfolio-craft vs security-correctness tension.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "What is the v1 SMPP 3.4 PDU support matrix (exact IN/OUT list across bind family, submit_sm, submit_multi, data_sm, query_sm, replace_sm, cancel_sm, deliver_sm/DLR, enquire_link, unbind, generic_nack, alert_notification, broadcast_sm, outbind)?",
+      "why_it_matters": "Blocks FR completeness and the test plan. Default rec: bind family + submit_sm + deliver_sm(DLR) + enquire_link/unbind/generic_nack IN; the rest OUT.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "Is audit/PDU logging IN v1 (operational necessity) or OUT (future companion)? Brainstorm lists it as a v1 SHOULD; brief lists logging/audit as a future sibling; non-goal says no metrics/observability. These contradict.",
+      "why_it_matters": "Blocks any observability FR. Rec: split baseline operational logging (startup/errors/bind accept-reject = IN) from PDU-level audit (= OUT, future companion); 'no metrics' means no telemetry surface, not 'the proxy is silent'.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "Is rate-limiting / anomaly detection at proxy2 IN or OUT? Same source contradiction (brainstorm COULD vs brief future sibling).",
+      "why_it_matters": "Combined with password-only ingress and no local brute-force policy, v1 has NO local throttle. Recommend OUT (planned sibling) but PRD must acknowledge the gap.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "What are the v1 quantitative NFR targets — sustained throughput (msg/s), concurrent binds, bind latency, per-PDU latency?",
+      "why_it_matters": "A portfolio piece demonstrating 'modern Java networking' needs at least notional numbers to be credible and to drive the test plan. Corpus commits to none.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "Family boundary: is v1 'a security proxy with clean internals' (modularity = code-quality goal) or 'a modular SMPP platform with security as module 1' (modularity = v1 deliverable)?",
+      "why_it_matters": "The second is scope creep for a solo project. Reject any FR written as 'pluggable extension points'; modularity is a maintainability NFR, not a v1 deliverable.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "Is HA/multi-instance a v1 deliverable or OUT? (Stateless proxy2 makes it tempting but the design is unspecified.)",
+      "why_it_matters": "Classic scope-creep vector on a solo project. Recommend OUT with single-instance stated as the v1 shape; document statelessness as a future-HA enabler.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "Is GraalVM native-image a v1 commitment, a labeled stretch goal, or OUT?",
+      "why_it_matters": "Tempting scope-creep for a 'modern Java' portfolio piece; AOT constraints would leak into design decisions. Recommend OUT/stretch to avoid build-matrix bloat.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "PII / SMS-body privacy stance: does the proxy persist or log SMS bodies? Mode B carries them in cleartext; the data-handling obligation is unaddressed.",
+      "why_it_matters": "A transit proxy reading/splicing bodies has privacy obligations; compounds with the audit-logging question. Recommend: never persist bodies; constrain PDU logging.",
+      "blocks_phase": "epics"
+    },
+    {
+      "question": "Where is the from-scratch line drawn for security-critical code? 'Built from scratch, not a fork' applies to the SMPP layer; it must NOT extend to rolling one's own crypto/TLS/OIDC validation.",
+      "why_it_matters": "Mature libraries must be used for security primitives. The product-level principle ('from-scratch for SMPP, mature libs for security primitives') should be explicit in the PRD even though specific library choices are addendum-level.",
+      "blocks_phase": "none"
+    },
+    {
+      "question": "Which OSS license? (Brief says 'open-source' but names none.)",
+      "why_it_matters": "Materially affects adoption and the operator-audience for a security project. A one-line decision but currently SILENT everywhere.",
+      "blocks_phase": "none"
+    },
+    {
+      "question": "Are per-instance baked keys a hard NFR or a recommendation? Is two-shape feature parity (library + Docker) required in v1?",
+      "why_it_matters": "Recommend: per-instance keys = hard NFR (shared golden-image key is catastrophic); two-shape parity = required (both first-class). Low ambiguity, confirm and lock.",
+      "blocks_phase": "none"
+    },
+    {
+      "question": "Is single-side adoption (only enterprise OR only carrier runs Companions) a supported v1 shape, or does the topology require both ends to adopt?",
+      "why_it_matters": "'Both roles first-class' is a codebase capability; the supported deployment combinations should be explicit. Recommend: single-side supported.",
+      "blocks_phase": "none"
+    }
+  ],
+  "conflicts_or_gaps": [
+    {
+      "description": "AUDIT/LOGGING CONTRADICTION: brainstorm-intent.md §9 lists 'audit/logging of binds + PDUs (granularity open)' as a v1 SHOULD; brief.md lists logging/audit as a FUTURE Companions sibling; the v1 non-goal says 'no metrics/observability'. These three cannot all be true and the contradiction blocks any observability FR.",
+      "sources": "brainstorm-intent.md §9 Should; brief.md 'The family' + Non-goals; project non-goal 'no metrics/observability'",
+      "resolution_options": "Split the concept: (a) baseline operational logging — startup, errors, bind accept/reject — is IN as a minimum-viable ops necessity (the proxy must not be silent); (b) PDU-level audit/inspection is OUT, deferred to a future audit companion. Reframe the non-goal: 'no metrics/observability' means no metrics/telemetry SURFACE, not 'the proxy emits nothing'. Decide in PRD explicitly."
+    },
+    {
+      "description": "RATE-LIMITING / ANOMALY DETECTION CONTRADICTION: brainstorm-intent.md §9 lists 'rate-limit / anomaly detection at proxy2' as a v1 COULD; brief.md lists rate-limiting as a FUTURE companion. Combined with password-only ingress and 'no local brute-force policy on proxy2', v1 ships with NO local brute-force throttle — a real security gap that must be acknowledged.",
+      "sources": "brainstorm-intent.md §9 Could; brief.md 'The family'; brainstorm-intent.md §3",
+      "resolution_options": "Confirm OUT for v1 (it is explicitly a planned sibling) and document the gap as an accepted v1 risk in the PRD. Flag any FR that smuggles in throttling/counting logic as scope creep."
+    },
+    {
+      "description": "MODE B POSTURE UNRESOLVED: brief.md Scope lists 'three deployment modes (A/B/C)' as IN without qualification, but brainstorm-intent.md §5 leaves open whether to ship plaintext Mode B (password over public internet) at all, or enforce a security floor (refuse to start in B). For a product branded 'security', shipping a cleartext-credential mode is a reputation/liability question.",
+      "sources": "brainstorm-intent.md §5 open product question; brief.md Scope (unqualified)",
+      "resolution_options": "Pick one and state it explicitly in the PRD: (a) B is a supported, documented mode with the operator owning the risk; (b) B is refused at startup (security floor); (c) B is an unsupported/undocumented escape hatch. The call shapes the security NFRs and the default-startup contract."
+    },
+    {
+      "description": "FAMILY-MODULARITY TRAP: brief.md 'The family' + addendum say v1 internals should 'factor toward' a future from-scratch SMPP library and stay 'pluggable modules with a clean SMPP library core, not a hard-coded single-purpose proxy.' This silently turns v1 from 'a security companion' into 'a modular SMPP platform + security module' — the top scope-creep risk for a solo project.",
+      "sources": "brief.md 'The family' / 'Inspiration & positioning'; addendum.md 'Suite context — the family'",
+      "resolution_options": "Draw a hard line in the PRD: v1 delivers a working security proxy; internal modularity is a code-quality GOAL (maintainability NFR), NOT a v1 deliverable. The future SMPP library, JMeter plugin, logging/audit, rate-limiting, protocol-translation, and metrics siblings are all OUT of v1 even though v1's internals remain 'factorable'. Reject any FR written as 'pluggable module extension points'."
+    },
+    {
+      "description": "SMPP 3.4 PDU SUBSET UNDEFINED: brief.md says 'submit path + DLRs on existing binds' but never enumerates which PDUs v1 supports. This blocks FR completeness and the test plan.",
+      "sources": "brief.md Scope; brainstorm-intent.md §4",
+      "resolution_options": "Produce an explicit IN/OUT PDU matrix in the PRD. Default recommendation: bind family (bind_transceiver/transmitter/receiver + resp) + submit_sm + submit_sm_resp + deliver_sm (DLR) + enquire_link + unbind + generic_nack = IN; submit_multi, data_sm, query_sm, replace_sm, cancel_sm, broadcast_sm, outbind, alert_notification = OUT (relay if byte-splice, else reject)."
+    },
+    {
+      "description": "MT-ONLY ENFORCEMENT VS PURE BYTE-SPLICE: brainstorm-intent.md §4/§7 says proxy2 is 'stateless relay/splice (socket pairing only; no business/message state).' If it is a pure socket splice, 'MT-only' is NOT a proxy-enforced capability — MO PDUs would also pass, making MT-only an operator convention.",
+      "sources": "brainstorm-intent.md §4, §7; brief.md Scope",
+      "resolution_options": "Decide the proxy's inspection depth: (a) pure byte-splice — 'MT-only' becomes operator convention, simpler parser, MO passes through; or (b) PDU-aware — inspect command_id and reject non-submit-path traffic. Clarifies the 'no MO/inbound routing' non-goal: DLR relay on existing binds is IN regardless; MO submit-to-app logic is OUT regardless."
+    },
+    {
+      "description": "QUANTITATIVE NFRs ABSENT: the corpus commits to NO throughput, latency, or connection-scale targets. This is inconsistent with the brief's success criterion of 'demonstrates modern Java (concurrency, networking)' — a portfolio piece needs at least notional numbers to be credible, and the test plan needs acceptance thresholds.",
+      "sources": "addendum.md (no perf targets); brief.md success criteria; NFR hunt SILENT cluster",
+      "resolution_options": "Set modest v1 targets in the PRD: e.g., a sustained msg/s figure, a concurrent-binds figure (Loom is the enabler), a bind-latency budget (incl. provider round-trip), and a per-PDU splice latency budget. Numbers can be notional; they must exist."
+    },
+    {
+      "description": "mTLS ALWAYS-ON FRAMING AMBIGUITY: brief.md Scope phrases auth as 'password-grant + mTLS', implying both are always-on. Reality: mTLS is only on the Mode-C internet leg; Modes A and B are password-grant only. The PRD FR must read 'supports mTLS client-cert authn (Mode C); does not mandate it.'",
+      "sources": "brief.md Scope; brainstorm-intent.md §5",
+      "resolution_options": "Rewrite FR-AUTH-3 to make mTLS supported-but-not-mandated; clarify in the Deployment Model section that the auth factors vary per mode."
+    },
+    {
+      "description": "FORM-FACTOR VS TOPOLOGY AXIS CONFLATION: 'two deployment shapes (library/Docker)' is a FORM-FACTOR axis; 'three modes (A/B/C)' is a TOPOLOGY/SECURITY axis. They are orthogonal but get conflated (the orchestrator prompt itself does so). 'Both first-class' is unimplementable until the library-vs-two-proxy-topology mapping is defined.",
+      "sources": "brief.md 'What it is' + Scope; brainstorm-intent.md §5; addendum.md",
+      "resolution_options": "Name the two axes explicitly in the PRD Deployment Model section and answer: does the library form-factor support all three modes and both roles? Does 'library' mean a single process that can play proxy1, proxy2, or both? How does the two-proxy topology map onto a library embedding?"
+    },
+    {
+      "description": "SILENT-CONCERN CLUSTER: the corpus is silent on multiple concerns a security proxy inherently carries — TLS version/cipher floor; PII/privacy of SMS bodies (compounds with Mode B cleartext and audit-logging); malformed-PDU/parser robustness on public legs; backpressure/flow control between splice legs; graceful shutdown/drain; IPv6; config validation/fail-fast; Docker secret-injection contract; time-sync/NTP prerequisite; OSS license choice; integration-test/fuzzing strategy; dependency/CVE patching discipline; operator documentation/runbooks.",
+      "sources": "NFR hunt SILENT items across all three corpus files",
+      "resolution_options": "Surface each as either an NFR (the WHAT/guarantee stays in the PRD; mechanism deferred to addendum) or an explicit non-goal. None can be left implicit in a security product the author expects operators to run."
+    },
+    {
+      "description": "OIDC DELEGATION SCOPE AMBIGUITY: brief/addendum narrow the contract to OIDC for the password-grant check, but brainstorm-intent.md §3 says the authority provider 'is also the CA for the mTLS client certs (unified trust root),' implying cert-trust decisions also delegate. OIDC does not natively cover cert-CA/mTLS issuance, so the 'provider is also the CA' is the operator's environment, not a v1 integration.",
+      "sources": "brief.md; addendum.md 'Authority provider & certificates'; brainstorm-intent.md §3",
+      "resolution_options": "State in the PRD: v1 delegates password-grant validation to an OIDC provider (IN); v1 consumes certs from a runtime trust store (IN); v1 does NOT issue certs or call the provider for cert-trust decisions (OUT). The unified-trust-root structure is the operator's environment (deferred to addendum)."
+    },
+    {
+      "description": "HA / FAILOVER DESIGN OPEN: brainstorm-intent.md §9 leaves HA/failover unspecified ('simplified by stateless proxy2 but not specified'); brief non-goals are silent either way. For a solo project this is a classic scope-creep vector ('stateless makes it easy' invites over-building).",
+      "sources": "brainstorm-intent.md §9; brief.md Scope/Non-goals (silent)",
+      "resolution_options": "Recommend OUT of v1: single-instance stated as the v1 operational shape; document statelessness as an enabler for FUTURE HA, not a v1 commitment. Confirm in the PRD to close the ambiguity."
+    }
+  ],
+  "deferred_to_addendum": [
+    "Two-proxy topology diagram and per-leg TLS/authn configuration for each mode (legacy<->proxy1 no TLS; proxy1<->proxy2 mode-dependent; proxy2 terminates TLS; proxy2<->SMSC no TLS; legacy<->proxy2 plaintext in Mode B)",
+    "Per-leg authentication mechanics: proxy1 reading system_id from the bind PDU and routing on it without validating the legacy password; proxy2 terminating TLS; the trusted network as the sole ingress gate on the legacy leg",
+    "DLR splicing mechanics: SMSC session-affinity, per-bind spliced upstream sessions under the shared system_id, the 'no message_id -> system_id correlation' design, and its dependence on the carrier-multi-bind assumption",
+    "Concurrency / state model: stateless routing tier (proxy1) and stateless relay/splice (proxy2) doing socket pairing only, and how this maps to virtual threads / structured concurrency (incl. Loom+Netty pinning/blocking pitfalls)",
+    "Unified-trust-root mechanics: the authority provider serving as BOTH password-grant validator AND mTLS client-cert CA, and how the two ingress factors chain to one provider in Mode C",
+    "Certificate provisioning mechanics: deploy-time bake via CI/pipeline, rotation = re-deploy, bootstrap out-of-band, per-instance vs shared keys, CRL/OCSP vs scheduled re-bake trade-off (the STRATEGY chosen is a PRD NFR; the mechanics are addendum)",
+    "Proxy2 -> authority-provider link security specifics (TLS/mTLS/token/service account) — the REQUIREMENT is PRD; the mechanism is addendum",
+    "OIDC / authority-provider token-flow specifics (password-grant flow details, token validation, introspection vs userinfo, call credentials held by proxy2)",
+    "Transport and library choices: JDK 25, Netty, virtual threads / structured concurrency, optional GraalVM native-image; relationship to Cloudhopper / jSMPP (inspired-by, built from scratch, not a fork) and the IP/licensing-hygiene boundary",
+    "TLS version/cipher selection specifics — the FLOOR is a PRD NFR; the concrete allowlist and ciphersuite mechanics are addendum",
+    "HA / failover design specifics (simplified by stateless proxy2 but not specified)",
+    "Proxy2 server-cert provisioning lifecycle mechanics (hot-reload vs restart)",
+    "Carrier-credential store choice (local vs Vault/KMS) — open cell",
+    "SMPP codec design and PDU-level mechanics (PDU handling, bind sequences, submit_sm / deliver_sm flow, segmentation/reassembly, data_coding/encoding interop)",
+    "Thin-Docker-over-library-core architecture and Docker secret-injection mechanism (the CONTRACT existence is PRD; the mechanism is addendum)",
+    "Specific accepted-risk mechanics detail: long-lived baked-cert exposure window; trusted-network sole-ingress-gate behavior; provider-outage fail-closed mechanics"
+  ],
+  "constraints_assumptions": [
+    "Legacy SMPP 3.4 systems can only do password-grant binds — they cannot present client certificates and cannot do mTLS. This is the hard legacy constraint the entire design bends around; the legacy system is unmodifiable.",
+    "SMPP 3.4 only (no 5.x); MT-only (submit path + DLRs on existing binds); no MO/inbound user-message routing.",
+    "JVM-based implementation on JDK 25 (Loom-era); JVM-only, not off-JVM. Linux/macOS targets only (no Windows build in v1).",
+    "The operator must run their own OIDC-compliant authority provider (Keycloak reference) and provide valid certificates at runtime — the project consumes trust, it does not bundle it.",
+    "A trusted network is assumed for the legacy<->proxy1 leg and is the SOLE ingress gate there; proxy1 does not validate the legacy password and routes on an unauthenticated system_id, so any host on that net can claim any system_id. The deployer owns network isolation.",
+    "Carriers do NOT mandate TLS/mTLS upstream (disproved constraint) — upstream TLS is the project's choice, not a carrier requirement.",
+    "SMSC is stateful and routes DLRs by session-affinity; the design must respect carrier session semantics.",
+    "Exactly one deployment mode (A/B/C) per instance — modes are mutually exclusive deployment-wide, not a per-client tiered menu.",
+    "Original work only — built entirely from scratch for JDK 25. Cloudhopper and jSMPP are conceptual inspirations only, NOT forked or derived code; no licensing/attribution entanglement. (From-scratch applies to the SMPP layer; mature libraries must be used for crypto/TLS/OIDC primitives.)",
+    "ASSUMPTION TO VERIFY (load-bearing): the carrier allows MULTIPLE concurrent binds under one system_id. This drives the stateless splice model; if a carrier allows only one bind per system_id, proxy2 is forced back to message_id correlation and becomes stateful.",
+    "ASSUMPTION: binds are infrequent and long-lived, so the per-bind authority-provider round-trip latency is acceptable.",
+    "ASSUMPTION: the authority-provider <-> SMSC relationship is deliberately unspecified/pluggable; any sync between them (shared AAA vs independent validator) is the deployer's concern, not the proxy's. proxy2's contract is: delegate the grant, trust the verdict.",
+    "ASSUMPTION: the operator's authority provider is also the mTLS CA (unified trust root) — i.e., the operator's environment provides both; the proxy does not coordinate them.",
+    "ACCEPTED RISK: password-only is the sole authn factor reaching proxy2 in both internet-ingress modes (A and B); a second factor (mTLS-in-A, VPN/IPSec for direct legacy) was declined for simplicity.",
+    "ACCEPTED RISK: Mode B sends the legacy password plaintext over the public internet (posture TBD — see open_questions).",
+    "ACCEPTED RISK: long-lived deploy-time-baked certs forfeit the short-lived-cert dissolves-revocation property; a stolen baked cert is valid until expiry unless revocation infra exists.",
+    "ACCEPTED RISK: provider outage = no new binds succeed (HA coupling); ongoing mTLS survives on cached trust store but grant validation and cert issuance/revocation need the provider live.",
+    "ACCEPTED RISK: no local brute-force throttle / rate-limit at proxy2 in v1 (future companion).",
+    "DEPENDENCY: authority-provider HA is the operator's responsibility but is a hard dependency for bind-path availability.",
+    "DEPENDENCY: accurate system time (NTP) is assumed for cert validity windows and OIDC token lifetimes."
+  ],
+  "prd_shape_recommendation": "Tailored for headless security middleware at hobby/portfolio stakes. Rationale: this is a security product whose crown-jewel value is its trust model, with no UI and a solo author — so the PRD must OVER-invest in the trust/security model and the accepted-risks ownership, and UNDER-invest in user-facing sections that a UI/product would need. Recommended sections, each tied to the concern it serves:\n\n1. Problem Statement — serves: why this exists (legacy constraint + the password-vault blast-radius itch the design bends around). Keep tight.\n2. Vision & Product Positioning — serves: Companions-family seed framing and what 'win' means for a portfolio piece. Include the family-boundary guardrail here or in Non-Goals.\n3. Stakeholders & Personas — serves: author-as-stakeholder (sets the success bar = portfolio, not commercial). INCLUDE the Security-architect reviewer persona (unusual for hobby projects but load-bearing here).\n4. Goals & Success Criteria — serves: originality + 'well-built' + author-proud + actually-uses + adoption-is-bonus. Encode so scope-creep toward adoption-chasing is resistible.\n5. Scope (In / Out) + a dedicated 'Family boundary' subsection — serves: the locked items AND the modularity-trap guardrail (modularity = code quality, NOT v1 deliverable).\n6. Functional Requirements (grouped, with FR IDs) — serves: the WHAT. Include a PDU support matrix sub-table (resolve the open question first).\n7. Trust & Security Model (DEDICATED section — non-obvious INCLUDE) — serves: credential-free invariant, weakness confinement, identity preservation, delegated auth, accepted risks. Rationale: this IS the product; burying it inside NFRs under-buys the crown jewel. A security product earns its own trust-model narrative.\n8. Non-Functional Requirements (Security / Reliability / Performance / Compatibility / Maintainability / Deployability / Operability / Observability) — serves: the guarantees, INCLUDING the SILENT cluster (TLS floor, malformed-PDU robustness, PII privacy, backpressure, graceful shutdown, config validation, secrets injection, time-sync, patching). What stays a guarantee vs mechanism = addendum.\n9. Deployment Model (DEDICATED — non-obvious INCLUDE) — serves: two orthogonal axes (form-factor library/Docker x topology A/B/C) and both roles; the trusted-network precondition; the Mode B posture. These are conflated everywhere and must be disambiguated.\n10. Assumptions, Constraints & Dependencies — serves: carrier-multi-bind (load-bearing, flagged to-verify), provider HA, NTP/time-sync, trusted-network gate. Surface as operator preconditions, not buried risks.\n11. Accepted Risks & Limitations (DEDICATED — non-obvious INCLUDE) — serves: a security product must OWN its accepted risks explicitly (password-only ingress, Mode B plaintext, long-lived baked certs, no metrics, provider-outage coupling, no rate-limit, no management API). Rationale: turns buried risks into deliberate, reviewable decisions.\n12. Open Questions & Decisions Needed (tagged by blocking phase) — serves: the user must resolve these; the tags tell the PM what to escalate vs defer.\n13. Out of Scope / Non-Goals — serves: the locked-out list + reconciliation notes for the two contradictions (audit/logging, rate-limiting) and the family siblings.\n14. Glossary (lightweight, optional) — serves: SMPP/ESME/SMSC/DLR/system_id/mTLS/OIDC for the operator audience.\n\nNon-obvious EXCLUDES (with rationale):\n- No 'User Stories / Persona Journeys' — headless, no UI; persona journeys do not apply.\n- No 'UX / Interaction Design' — non-goal (no UI).\n- No 'Metrics & Analytics' section — deliberate non-goal; a one-line entry in Accepted Limitations instead.\n- No 'Go-to-Market / Pricing / Distribution Strategy' — OSS portfolio; adoption is a bonus. (A one-line license decision lives in Goals/governance.)\n- No 'Roadmap' beyond the family one-liner — would invite scope creep; the family-boundary subsection covers it.\n- No 'Threat Model' as a separate PRD section — fold into Trust & Security Model (§7); full adversarial threat modeling is addendum/architecture."
+}

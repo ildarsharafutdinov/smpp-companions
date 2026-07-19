@@ -3,7 +3,7 @@ title: "Companions (v1: SMPP Security-Transit Companion)"
 project: smpp-companions
 status: final
 created: 2026-07-18
-updated: 2026-07-18
+updated: 2026-07-19
 inputs:
   - _bmad-output/brainstorming/brainstorm-smpp-security-proxy-2026-07-18/brainstorm-intent.md
 ---
@@ -23,7 +23,7 @@ The real itch is the **pattern**: *bolt modern features onto untouchable legacy.
 The first **Companion** is an open-source **SMPP security proxy** that sits in front of legacy SMPP 3.4 systems *and* in front of carrier SMSCs, letting the two exchange SMPP **securely over the internet, with zero changes to the legacy gear.**
 
 - **Headless middleware** — no UI; operator-configured.
-- **Two deployment shapes, both first-class:** embed as a **library**, or run as a **Docker image**.
+- **Two deployment shapes, both first-class:** a standalone **application (runnable JAR)**, or a **Docker image** (which packages that JAR).
 - **Both sides of the wire:** one tool plays the **enterprise/ingress** role (fronting a legacy system connecting to a carrier) *and* the **carrier/egress** role (fronting an SMSC accepting connections). One codebase, two roles.
 - **Modern JVM stack** (JDK 25, Netty, virtual threads / structured concurrency; GraalVM native-image if perf demands it) — **inspired by** Cloudhopper and jSMPP, **built entirely from scratch for JDK 25** (not a fork, no reuse of their code). *(Stack specifics → addendum.)*
 - **Consumes external trust, doesn't provide it** — auth delegates to an authority provider the operator runs **over OIDC** (the standard Keycloak implements, so any OIDC provider drops in — no bespoke contract); **Keycloak is the reference target, not part of this project.** Certificates are expected **present at runtime, source-agnostic**. Companions is the proxy; the IdP and the PKI live in your environment.
@@ -42,9 +42,9 @@ A legacy SMPP system and a carrier SMSC that could never safely talk over the pu
 
 ## Scope (v1)
 
-**In:** SMPP **3.4**, **MT-only** (submit path + DLRs on existing binds); the three deployment modes (A/B/C); password-grant + mTLS; **authority-provider integration over OIDC (BYO; Keycloak reference)**; **runtime-provided certificates (source-agnostic)**; Docker + library shapes.
+**In:** SMPP **3.4**, **payload-transparent transit** — carries traffic end-to-end without inspecting or filtering message content (the motivating use case is MT submit + DLRs on existing binds, but no message-type filter is enforced); the three deployment modes (A/B/C); password-grant + mTLS; **authority-provider integration over OIDC (BYO; Keycloak reference)**; **runtime-provided certificates (source-agnostic)**; application (runnable JAR) + Docker shapes.
 
-**Out / non-goals (v1):** no UI; **no SMPP 5.x**; **no MO / inbound** user-message routing; **no management API, no metrics/observability, no Windows build**; **no bundled authority provider / no cert issuance** (the IdP and PKI are the operator's). (Future companions may pick some of these up.)
+**Out / non-goals (v1):** no UI; **no SMPP 5.x**; **no inspection, filtering, or routing based on message content or type** (the proxy is payload-transparent — MT-only is the expected deployment, not a proxy-enforced filter); **no management API, no metrics *dashboard* / telemetry backend** (a read-only `/metrics` scrape + baseline logging *are* provided); **Linux only (no macOS/Windows build)**; **no bundled authority provider / no cert issuance** (the IdP and PKI are the operator's). (Future companions may pick some of these up.)
 
 ## What "win" looks like
 
