@@ -3,7 +3,7 @@ title: SMPP 3.4 Security Proxy (Companions v1)
 project: smpp-companions
 status: final
 created: 2026-07-18
-updated: 2026-07-19
+updated: 2026-07-20
 inputs:
   - _bmad-output/brainstorming/brainstorm-smpp-security-proxy-2026-07-18/brainstorm-intent.md
   - _bmad-output/planning-artifacts/briefs/brief-smpp-companions-2026-07-18/brief.md
@@ -12,7 +12,7 @@ inputs:
 
 # SMPP 3.4 Security Proxy — Companions v1
 
-> A headless, operator-configured, open-source SMPP 3.4 security-transit proxy. The first module of a planned family of non-invasive augmentation layers for legacy SMPP. Built from scratch on JDK 25 + Netty + virtual threads.
+> A headless, operator-configured, open-source SMPP 3.4 security-transit proxy. The first module of a planned family of non-invasive augmentation layers for legacy SMPP. Built from scratch on JDK 25 + Netty (event-loop relay) + Spring Boot; virtual threads own the control plane.
 >
 > `→ addendum` flags technical detail deferred to `addendum.md`. Decision audit: `.memlog.md` (full trail) and §12 (resolved/open questions).
 
@@ -28,7 +28,7 @@ The deeper itch is the **pattern**: a non-invasive augmentation layer that bolts
 
 ## 2. Vision & Positioning
 
-**Companions v1** is a headless, operator-configured, open-source SMPP 3.4 security-transit proxy. One converged codebase plays **both sides of the wire**: the *enterprise/ingress* role (fronting a legacy system connecting to a carrier) and the *carrier/egress* role (fronting an SMSC accepting binds). It:
+**Companions v1** is a headless, operator-configured, open-source SMPP 3.4 security-transit proxy. One converged codebase plays **both sides of the wire**: the *enterprise/forward* role (fronting a legacy system connecting to a carrier) and the *carrier/reverse* role (fronting an SMSC accepting binds). It:
 
 - confines the legacy password-grant weakness to a trusted zone;
 - forwards a **single credential end-to-end** (legacy `system_id` == carrier `system_id`);
@@ -82,7 +82,7 @@ The deeper itch is the **pattern**: a non-invasive augmentation layer that bolts
 - OIDC-delegated password-grant validation (BYO authority provider; Keycloak = reference).
 - Runtime-provided, source-agnostic certificates; per-instance baked keys (Mode C).
 - Two first-class deployment shapes: **application (runnable JAR) + Docker image**.
-- One codebase, both roles (enterprise/ingress + carrier/egress).
+- One codebase, both roles (enterprise/forward + carrier/reverse).
 - Credential-free proxy tier; single-credential brokering (identity preserved end-to-end).
 - Baseline operational logging + a read-only `/metrics` endpoint (§7.8).
 
@@ -123,13 +123,13 @@ The deeper itch is the **pattern**: a non-invasive augmentation layer that bolts
 
 ### 6.4 Deployment & Form
 - **FR-DEPLOY-1** — Ship two first-class, **feature-equivalent** shapes — a standalone **application (runnable JAR)** and a **Docker image** (packaging the same JAR): same config surface, modes, auth paths.
-- **FR-DEPLOY-2** — One codebase plays both roles (enterprise/ingress + carrier/egress); role and mode are deployment-time configuration of the application, not forks.
+- **FR-DEPLOY-2** — One codebase plays both roles (enterprise/forward + carrier/reverse); role and mode are deployment-time configuration of the application, not forks.
 - **FR-DEPLOY-3** — Validate configuration at startup and **fail-fast** (refuse to start) on ambiguous, insecure, or missing configuration.
 - **FR-DEPLOY-4** — Provision certificates at deploy time (bake via CI/pipeline); do not require runtime ACME/SPIFFE enrollment to function.
 
 ### 6.5 Operability & Observability
 - **FR-OBS-1** — Emit baseline operational logging (startup, errors, bind accept/reject, with `system_id` where relevant) to stdout/file as structured JSON-lines. Full message/PDU-body logging is available only at **TRACE** level (off by default).
-- **FR-OBS-2** — Expose a read-only HTTP **`/metrics`** endpoint (Prometheus exposition): throughput counters, bind counters, and resource gauges, **configurably dimensioned per `system_id`** (operator-controllable cardinality). Loopback-only (IPv4) by default; never on the SMPP transit legs; **message content is never emitted** (`system_id` labels are permitted).
+- **FR-OBS-2** — Expose a read-only HTTP **`/metrics`** endpoint (Prometheus exposition): throughput counters, bind counters, and resource gauges, **configurably dimensioned per `system_id`** (operator-controllable cardinality). **Loopback-only (IPv4) in v1** (the loopback binding is the endpoint's sole authentication — non-loopback is forbidden, architecture AD-19); never on the SMPP transit legs; **message content is never emitted** (`system_id` labels are permitted).
 
 ## 7. Non-Functional Requirements
 
@@ -137,7 +137,7 @@ The deeper itch is the **pattern**: a non-invasive augmentation layer that bolts
 
 ### 7.1 Performance *(locked targets — anchor-derived)*
 Reference hardware: single instance, 4–8 vCPU modern x86/ARM, Linux, JDK 25 GA, ZGC, 2–4 GiB heap.
-- **PERF-1 (throughput)** — Sustain **≥ 10,000 submit_sm/sec**, stretch **~25,000/sec**, with mTLS on both legs, OIDC validation cached, virtual-thread relay. *(Honest published ceiling without a percentile-table harness: ~25–36K.)*
+- **PERF-1 (throughput)** — Sustain **≥ 10,000 submit_sm/sec**, stretch **~25,000/sec**, with mTLS on both legs, OIDC validation cached, **Netty event-loop relay** (virtual threads own only the control plane — bind adjudication, OIDC, shutdown). *(Honest published ceiling without a percentile-table harness: ~25–36K.)*
 - **PERF-2 (concurrency)** — Hold **10,000 concurrent idle ESME↔proxy↔SMSC socket pairs** (~20K sockets) in **< 1 GB heap** and **< 1 vCPU** idle.
 - **PERF-3 (bind latency)** — **p99 ~250 ms** on the warm path (co-located IdP, TLS 1.3, pooled egress); **≤ 2 s** cold-path limit; **fail-closed DENY** beyond a configured **2–5 s** timeout.
 - **PERF-4 (relay latency)** — Per-PDU added latency is **sub-ms** (the SMSC round-trip dominates; the codec is ~60× faster than the network path).
@@ -161,7 +161,7 @@ Reference hardware: single instance, 4–8 vCPU modern x86/ARM, Linux, JDK 25 GA
 
 ### 7.5 Compatibility
 - **COMP-1** — Interoperate cleanly with unmodified SMPP 3.4 stacks on both ends; zero changes to legacy gear or SMSC behavior.
-- **COMP-2** — **JDK 25** runtime floor (Loom-era); JVM-only.
+- **COMP-2** — **JDK 25** runtime floor (Loom-era; `--enable-preview` for `StructuredTaskScope`); JVM-only.
 - **COMP-3** — **Linux only** (x86/ARM). No macOS or Windows build in v1.
 - **COMP-4** — **IPv4 only.**
 
@@ -170,7 +170,7 @@ Reference hardware: single instance, 4–8 vCPU modern x86/ARM, Linux, JDK 25 GA
 - **MAINT-2 (structured for extraction)** — The SMPP codec + PDU layer is a clean, separable, independently tested module with documented boundaries — **structured for future extraction** (Decision A). *Modularity is a code-quality goal, not a v1 product surface; v1 ships an application, not a published library artifact.*
 - **MAINT-3 (originality)** — Built from scratch for JDK 25; no Cloudhopper/jSMPP derivation (SMPP layer only — see SEC-4).
 - **MAINT-4 (test strategy)** — An integration-test strategy is required: mock/conformance SMSC, TLS/OIDC test vectors, codec fuzzing. *(A solo-authored security boundary must be testable.)*
-- **MAINT-5 (native-image compatibility)** — Keep the codebase compatible with GraalVM native-image as an **opt-in future** path (avoid reflection-heavy patterns); this compatibility-stretch posture is fixed. **Whether to ship a native-image build target in v1 is decided at architecture (OQ-11).**
+- **MAINT-5 (native-image compatibility)** — Keep the codebase compatible with GraalVM native-image as an **opt-in future** path (avoid reflection-heavy patterns); this compatibility-stretch posture is fixed. **Architecture decision (AD-23 / OQ-11): NO v1 native-image build** (always-on single-instance → startup/footprint gains are noise; ZGC unavailable in native-image); revisit only if a cold-start-sensitive deployment emerges.
 
 ### 7.7 Deployability
 - **DEP-1 (Docker secrets contract)** — The Docker shape defines how secrets (certs, keys, provider creds) are injected (file paths / env / mounted secrets). *(Mechanism → addendum.)*
@@ -196,7 +196,7 @@ Two-shape parity, deploy-time cert provisioning, and config fail-fast are deploy
 
 **Mode B posture:** Mode B is **shipped and documented** (some operators have legitimate plaintext-internal use cases), but it is **not the default**, emits a **loud startup warning**, and requires an **explicit opt-in acknowledgment**. Not refused at startup, but never silent.
 
-**Both roles.** The same application plays enterprise/ingress and carrier/egress; role + mode are deployment-time config of one runnable JAR (the Docker image packages the same JAR). The ingress role selects the egress target by `system_id` (a routing table); whether a single v1 instance fronts multiple carriers is an architecture/scope detail.
+**Both roles.** The same application plays enterprise/forward and carrier/reverse; role + mode are deployment-time config of one runnable JAR (the Docker image packages the same JAR). The forward role selects the egress target by `system_id` (a routing table); whether a single v1 instance fronts multiple carriers is an architecture/scope detail.
 
 **Single-side adoption:** supported — one party adopting Companions (enterprise-only or carrier-only) is a valid v1 deployment, not only the two-proxy topology.
 
@@ -222,7 +222,8 @@ The trust model **is** the product — it earns a narrative, not just scattered 
 
 - **Password-only ingress on the legacy leg** — by design (the legacy system cannot do better); mitigated by trusted-zone confinement.
 - **`system_id` spoofing on the trusted network** — any host on the trusted net can claim any `system_id` (and, if multi-carrier routing is enabled, be steered toward any carrier's egress) before any check; trusted-network isolation (A-3) is the sole control.
-- **Authority-provider compromise = full impersonation** — if the operator's OIDC provider is compromised, an attacker can mint verdicts that pass any bind; the provider is the trust root, not the proxy (A-2). Owned, not hidden.
+- **Authority-provider compromise = full impersonation** — if the operator's OIDC provider is compromised, an attacker can mint verdicts that pass any bind; it can mint client **certs only if the operator runs the same entity as its Mode C PKI CA** (trust is consumed from **three roots** — OIDC provider, operator PKI, SMSC — not one; architecture AD-10). The provider is a trust root, not the proxy (A-2). Owned, not hidden.
+- **ROPC hard-dependency** — password-grant validation uses **ROPC (Direct Access Grants)**, the only standard grant that validates a raw password with no browser — and a **deprecated** one (RFC 9700 "MUST NOT"; OAuth 2.1 removes it). v1 **hard-depends** on it: the `BindCredentialVerifier` port (architecture AD-12) localizes a future rework to one adapter but **does not eliminate the dependency** (no standard replacement grant exists). The first-party/headless/in-memory framing places this outside the deprecation's primary rationale (3rd-party end-user apps); Keycloak 26.7 still ships it. The single most fragile external dependency in the trust model.
 - **Mode B plaintext password over the public internet** — accepted-risk mode, opt-in + warning (§8).
 - **The proxy is payload-transparent** — it does not inspect, filter, or enforce message type (MT/MO) or PDU content. Whatever the endpoints send post-bind is relayed; operators own what transits the proxy.
 - **Long-lived baked client certs (Mode C)** — rotation is re-deploy (OPS-2); per-instance keys (FR-AUTH-3) bound the blast radius.
@@ -233,9 +234,9 @@ The trust model **is** the product — it earns a narrative, not just scattered 
 
 ## 12. Open Questions & Decisions Needed
 
-**Open — decided at the architecture/solution phase:**
-- **OQ-4** — mTLS (Mode C) chain-validation depth and trust-anchor handling (FR-AUTH-4). *Revocation is already settled OUT (OQ-5); only chain-depth remains.*
-- **OQ-11** — Native-image: whether to ship a native-image build target in v1 (compatibility is preserved regardless — MAINT-5); decided at architecture.
+**Decided at the architecture/solution phase (architecture status: final — AD-1..31):**
+- **OQ-4** — mTLS (Mode C) chain-validation depth and trust-anchor handling → **decided: PKIX defaults (no custom chain-validation code); the trust store never falls back to JDK `cacerts`** (architecture AD-13). Revocation remains OUT (OQ-5).
+- **OQ-11** — Native-image build target in v1 → **decided: NO v1 native build** (compatibility-stretch only; ZGC unavailable in native-image) (architecture AD-23).
 
 **Resolved during PRD authoring** *(kept for audit):*
 - ~~OQ-1~~ — Carrier multi-bind + DLR affinity → **confirmed (author)**: yes. The stateless-splice premise (A-1) holds.

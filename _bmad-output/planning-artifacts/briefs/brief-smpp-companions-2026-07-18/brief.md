@@ -3,7 +3,7 @@ title: "Companions (v1: SMPP Security-Transit Companion)"
 project: smpp-companions
 status: final
 created: 2026-07-18
-updated: 2026-07-19
+updated: 2026-07-20
 inputs:
   - _bmad-output/brainstorming/brainstorm-smpp-security-proxy-2026-07-18/brainstorm-intent.md
 ---
@@ -24,8 +24,8 @@ The first **Companion** is an open-source **SMPP security proxy** that sits in f
 
 - **Headless middleware** — no UI; operator-configured.
 - **Two deployment shapes, both first-class:** a standalone **application (runnable JAR)**, or a **Docker image** (which packages that JAR).
-- **Both sides of the wire:** one tool plays the **enterprise/ingress** role (fronting a legacy system connecting to a carrier) *and* the **carrier/egress** role (fronting an SMSC accepting connections). One codebase, two roles.
-- **Modern JVM stack** (JDK 25, Netty, virtual threads / structured concurrency; GraalVM native-image if perf demands it) — **inspired by** Cloudhopper and jSMPP, **built entirely from scratch for JDK 25** (not a fork, no reuse of their code). *(Stack specifics → addendum.)*
+- **Both sides of the wire:** one tool plays the **enterprise/forward** role (fronting a legacy system connecting to a carrier) *and* the **carrier/reverse** role (fronting an SMSC accepting connections). One codebase, two roles.
+- **Modern JVM stack** (JDK 25, Netty, virtual threads + structured concurrency, **Spring Boot** as the config/DI/lifecycle/Micrometer substrate; GraalVM native-image kept as a compatibility-stretch, **not a v1 build**) — **inspired by** Cloudhopper and jSMPP, **built entirely from scratch for JDK 25** (not a fork, no reuse of their code). *(Stack specifics — incl. JDK 25 `--enable-preview` for `StructuredTaskScope` — → addendum; from-scratch covers the SMPP layer only.)*
 - **Consumes external trust, doesn't provide it** — auth delegates to an authority provider the operator runs **over OIDC** (the standard Keycloak implements, so any OIDC provider drops in — no bespoke contract); **Keycloak is the reference target, not part of this project.** Certificates are expected **present at runtime, source-agnostic**. Companions is the proxy; the IdP and the PKI live in your environment.
 
 ## The core idea

@@ -2,7 +2,7 @@
 title: SMPP 3.4 Security Proxy — PRD Addendum (technical-how)
 project: smpp-companions
 status: final
-updated: 2026-07-19
+updated: 2026-07-20
 ---
 
 # Addendum — Technical How (Companions v1 PRD)
@@ -20,7 +20,7 @@ updated: 2026-07-19
 
 **Benchmark harness (the A in A+B — also the portfolio artifact).**
 - **Codec microbench (JMH, single core, no I/O):** encode/decode ops/s + ns latency. Target band 3×10⁵–1.5×10⁶ encode, 5×10⁵–1.8×10⁶ decode per core.
-- **End-to-end relay:** real loopback/local-sink TCP, **mTLS on both legs**, OIDC auth cached, virtual-thread relay; publish a **percentile table** (p50/p90/p99/p99.9) at sustained submit_sm/sec. Single instance on the reference hardware.
+- **End-to-end relay:** real loopback/local-sink TCP, **mTLS on both legs**, OIDC auth cached, **Netty event-loop relay** (virtual threads own only the control plane); publish a **percentile table** (p50/p90/p99/p99.9) at sustained submit_sm/sec. Single instance on the reference hardware.
 - **Concurrency/resource demo:** hold 10K idle ESME↔proxy↔SMSC pairs; publish heap (MB), RSS, and idle CPU%. Idle-CPU-at-N-connections is not published anywhere — this is a contribution.
 - **Self-measured gaps (no source exists — the harness fills them):** TLS-handshake µs on JVM/Netty/JDK 25; RSS at N connections; mTLS-on-the-wire throughput penalty for a JVM SMPP stack.
 
@@ -28,7 +28,7 @@ updated: 2026-07-19
 
 - **Baseline logging:** structured JSON-lines to stdout/file. Events: startup/config-resolved, errors, bind accept/reject (with outcome + `system_id` where relevant). Full message/PDU-body logging is available only at **TRACE** level (off by default). Level configurable.
 - **`/metrics` endpoint:** Prometheus text exposition. Counters: submit_sm relayed, DLRs relayed, binds accepted, binds rejected (by reason) — **optionally dimensioned per `system_id`**. Gauges: active connections, active virtual threads, JVM heap used/committed. Optional histograms: per-PDU relay latency, bind latency. **Message content is never emitted.** *Bucket choices and scrape-impl → here, not the PRD.*
-- **`/metrics` security posture (proposed default):** bind loopback only by default (`127.0.0.1`, IPv4); explicit opt-in to bind elsewhere; optional bearer-token or mTLS on the endpoint; **never** bound on the SMPP transit legs; `system_id` labels permitted, but **message content / PII never** emitted.
+- **`/metrics` security posture (v1):** **loopback IPv4 only (`127.0.0.1`)** — the loopback binding is the endpoint's sole authentication (the operator's host process model is the trust boundary); **non-loopback binding is forbidden in v1** (architecture AD-19 — supersedes the earlier "opt-in to bind elsewhere" proposal). **Never** bound on the SMPP transit legs; `system_id` labels permitted (cardinality bounded to the routing table), but **message content / PII never** emitted.
 - **What is NOT built:** no dashboard, no Prometheus remote-write, no OTel traces/exemplars, no query/drain/reload control surface. Read-only scrape only.
 
 ## A3. The from-scratch line — library choices (Decision B)
@@ -36,6 +36,7 @@ updated: 2026-07-19
 "Built from scratch" = the **SMPP layer only**. Mature libraries are mandatory for security primitives:
 - **TLS:** JDK 25 `SSLEngine`, or netty-tcnative/BoringSSL/OpenSSL (Netty cites ~3× faster than JDK SSLEngine — unmeasured publicly; self-measure if it matters).
 - **OIDC/JWT:** a mature JOSE+JWT library (e.g., Nimbus JOSE+JWT) for signature verification; prefer **local JWT verification via cached JWKS** on the steady-state bind path over remote introspection (latency + provider-load). Remote introspection only when the provider issues opaque tokens.
+- **Application substrate: Spring Boot 4.1.x** for externalized config (`@ConfigurationProperties`), DI, lifecycle/graceful shutdown, and the Micrometer metric model — **not** part of the from-scratch SMPP layer (Decision B scopes "from scratch" to the SMPP layer only; architecture AD-16). Netty is driven directly (own bootstrap; no WebFlux/Reactor).
 - **Never** hand-roll crypto, TLS record handling, or JWT signature verification.
 
 *Specific versions/pinning → dependency policy (SEC-5).*
@@ -49,15 +50,15 @@ updated: 2026-07-19
 
 ## A5. Deployment modes (topology detail)
 
-The two-proxy topology: enterprise runs **proxy1** (ingress, fronts legacy; trusted-network leg + internet leg), carrier runs **proxy2** (egress, fronts SMSC; internet leg + SMSC leg). `system_id` is brokered end-to-end (legacy == carrier); the proxy tier holds no password.
+The two-proxy topology: enterprise runs the **forward proxy** (fronts legacy; trusted-network leg + internet leg), carrier runs the **reverse proxy** (fronts SMSC; internet leg + SMSC leg). `system_id` is brokered end-to-end (legacy == carrier); the proxy tier holds no password.
 
 - **Mode A — one-way TLS:** TLS on the internet leg only; legacy↔proxy leg is password-grant over a trusted network. (Optional convergence of the A-leg toward mTLS is a possibility, not v1.)
 - **Mode B — plaintext direct:** no TLS on the internet leg; password-grant in cleartext over the public internet. Opt-in + warning (the accepted-risk mode).
 - **Mode C — mTLS:** mutual TLS with per-instance baked client certs on the internet leg (strongest).
 
-**proxy2 is stateless** (socket-pairing/connection state only; no `message_id` correlation) — load-bearing on assumption A-1 (carrier allows multiple concurrent binds under one `system_id`). If A-1 is false, the design must become stateful.
+**The reverse proxy is stateless** (socket-pairing/connection state only; no `message_id` correlation) — load-bearing on assumption A-1 (carrier allows multiple concurrent binds under one `system_id`). If A-1 is false, the design must become stateful.
 
-**Authority provider & certs:** OIDC for password-grant validation; certs consumed from a runtime trust store (source-agnostic); the provider may be the operator's CA in their environment, but Companions does **not** call the provider for cert-trust decisions and does **not** issue certs. Unified-trust-root structure is the operator's environment, not a v1 integration.
+**Authority provider & certs:** OIDC for password-grant validation (**ROPC** — architecture AD-12); certs consumed from a runtime trust store (source-agnostic). Trust is consumed from **three roots** — the OIDC provider, the operator PKI / trust store, and the SMSC — not a unified root; the brainstorm's "provider == mTLS CA" is relaxed (architecture AD-10). Companions does **not** call the provider for cert-trust decisions and does **not** issue certs.
 
 ## A6. Deferred items (carried from sources, not promoted into PRD FRs)
 
