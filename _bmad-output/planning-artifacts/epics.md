@@ -1,6 +1,7 @@
 ---
 stepsCompleted:
   - step-01-validate-prerequisites
+  - step-02-design-epics
 inputDocuments:
   - _bmad-output/planning-artifacts/prds/prd-smpp-companions-2026-07-18/prd.md
   - _bmad-output/planning-artifacts/prds/prd-smpp-companions-2026-07-18/addendum.md
@@ -311,11 +312,94 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 ### FR Coverage Map
 
-{{requirements_coverage_map}}
+- **FR-TRANSIT-1** → Epic 2 — relay splices framed PDUs bidirectionally (bind family handled, all else opaque).
+- **FR-TRANSIT-2** → Epic 2 — DLRs ride the coupled pair (= session affinity); proven by the A-1 smoke test (AD-9).
+- **FR-TRANSIT-3** → Epic 2 — interop + relay-level conformance on both legs (jSMPP interop counterpart).
+- **FR-TRANSIT-4** → Epic 1 — SMPP 3.4 only (5.x rejected); owned by the pure codec.
+- **FR-SEC-1** → Epic 3 — no SMPP passwords / no vault at rest; credential-free proxy tier (AD-10).
+- **FR-SEC-2** → Epic 3 — legacy password-grant confined to trusted zone / explicit Mode B plaintext exception.
+- **FR-SEC-3** → Epic 3 — identity forwarded not mapped (AD-14); legacy `system_id` == carrier `system_id`.
+- **FR-SEC-4** → Epic 3 — operator-provided trust consumed at runtime; no bundled authority/CA/cert-issuance.
+- **FR-SEC-5** → Epic 3 — fail-closed universal DENY on indeterminate verdicts (AD-11).
+- **FR-AUTH-1** → Epic 3 — ROPC delegation to operator-run OIDC (Keycloak); `BindCredentialVerifier` port (AD-12).
+- **FR-AUTH-2** → Epic 3 — mTLS Mode C supported; Modes A/B password-grant only.
+- **FR-AUTH-3** → Epic 3 — per-instance Mode C client certs; never a shared golden-image key (AD-13).
+- **FR-AUTH-4** → Epic 3 — mTLS handshake terminates client-cert; PKIX defaults (AD-13); CRL/OCSP out of v1.
+- **FR-DEPLOY-1** → Epic 5 — two feature-equivalent shapes (runnable JAR + distroless Docker).
+- **FR-DEPLOY-2** → Epic 1 — one codebase both roles; role+mode = deployment-time config (config fail-fast matrix).
+- **FR-DEPLOY-3** → Epic 1 — startup fail-fast on ambiguous/insecure/missing config (AD-17 matrix).
+- **FR-DEPLOY-4** → Epic 5 — certs provisioned at deploy time (CI/pipeline bake); no runtime ACME/SPIFFE.
+- **FR-OBS-1** → Epic 4 — read-only `/metrics` (loopback IPv4); `observability/` Micrometer impl.
+- **FR-OBS-2** → Epic 4 — structured JSON-lines logging; PDU-body TRACE-only, off by default.
+
+**All 19 FRs mapped exactly once.** Epic 6 is NFR-driven (performance validation + docs) and carries no FR.
 
 ## Epic List
 
-{{epics_list}}
+**Dependency chain:** Epic 1 → Epic 2 → Epic 3 → Epic 4 → Epic 5 → Epic 6 (linear DAG; no forward references; every epic standalone). Risk boundaries drive the split: Epic 2 retires the A-1 statelessness assumption; Epic 3 isolates the fragile ROPC + preview-STS dependencies; Epic 6 retires the performance bets.
+
+### Epic 1: Foundation — build substrate, pure SMPP 3.4 codec, and fail-fast configuration
+
+**Goal:** The operator clones the repo, builds with a two-module Gradle seam (JDK 25 + `--enable-preview` process-wide), and exercises a PURE, extractable, conformance-proven + fuzz-hardened SMPP 3.4 codec (length-framing, bind-family parser, command_id source-of-truth; SMPP 5.x rejected). In the same codebase the operator authors and validates a `companion.*` configuration (role × mode matrix, 1:1 routing table, secret FILE PATHS) that fails fast (non-zero exit, clear message) on any ambiguous/insecure/missing cell — including Mode B reverse-only loud-warning+ack — and runs a Spring Boot process whose phase-ordered graceful-shutdown orchestrator drains cleanly on SIGTERM. The codec is usable as a standalone library today; the substrate mounts every later epic.
+
+- **FRs covered:** FR-TRANSIT-4, FR-DEPLOY-2, FR-DEPLOY-3
+- **NFRs:** MAINT-1, MAINT-2, MAINT-3, MAINT-4 (codec), SEC-4, SEC-5 (seeded), COMP-2, COMP-3, COMP-4, REL-3 (framework), PERF-4 (codec JMH anchors)
+- **Key ADs:** AD-7, AD-16, AD-17, AD-18, AD-22 (framework), AD-23, AD-24 (codec), AD-27 (codec), AD-29, AD-30 (codec)
+- **Depends on:** —
+- **Packages owned:** `codec/` (full); `proxy/config/` (full); `proxy/bootstrap/` (full); Gradle build substrate; `docs/` skeleton
+
+### Epic 2: Transit SMPP end-to-end — stateless relay with the A-1 session-affinity smoke test
+
+**Goal:** The operator runs a stateless relay that accepts legacy SMPP 3.4 binds, splices framed PDUs bidirectionally to the SMSC, returns DLRs (`deliver_sm`) via the same coupled channel pair (session affinity), and passes the conformance suite on BOTH legs. Assumption A-1 (carrier allows multiple concurrent binds per `system_id` + DLR affinity) is smoke-tested against the in-JVM mock SMSC — the earliest genuine risk checkpoint; if A-1 is false the design escalates to stateful per AD-9 BEFORE any security investment.
+
+- **FRs covered:** FR-TRANSIT-1, FR-TRANSIT-2, FR-TRANSIT-3
+- **NFRs:** REL-1, REL-2, REL-4, SEC-2, MAINT-4, COMP-1 *(PERF-4 sub-ms relay latency is a design invariant of the event-loop splice; formal measurement in Epic 6)*
+- **Key ADs:** AD-1, AD-2, AD-3, AD-8, AD-9, AD-14, AD-15, AD-21, AD-24 (relay), AD-25, AD-27 (contracts + triggers), AD-30 (budget)
+- **Depends on:** Epic 1
+- **Packages owned:** `proxy/relay/` (full); `proxy/security/` (**contract seed only** — `BindCredentialVerifier` port + `Verdict` sealed interface + `BindCredential` record + always-allow stub; shape fixed by AD-12); `proxy/observability/` (**contract seed only** — `SpliceObserver` interface + noop impl; shape fixed by AD-27); `proxy/src/test` (in-JVM mock SMSC, relay conformance suite, jSMPP interop, A-1 fixture)
+- **Opener (from the elicitation ROPC refinement):** before `relay/` finalizes against the seeded `BindCredentialVerifier` port, a thin **contract-shape validation slice** makes a real ROPC call against a Keycloak 26.x and ratifies the `Verdict` permit set + `BindCredential` + `verify(ScopedValue<RequestContext>)` signature. The contract is validated *before* it is consumed — which is what earns the "immutable henceforth" claim. (Full ROPC adapter stays in Epic 3.)
+
+### Epic 3: Secure the transit — TLS modes A/B/C and OIDC ROPC password-grant adjudication
+
+**Goal:** The operator configures per-leg TLS by mode (A one-way, B plaintext-with-loud-warning, C mTLS with per-instance client certs) and delegates legacy password-grant validation to an operator-run OIDC provider (Keycloak ROPC / Direct Access Grants). The proxy fail-closed-denies every bind on indeterminate/missing/unverifiable verdicts, holds ZERO persisted credentials, and preserves `system_id` end-to-end. The two riskiest external dependencies — the deprecated ROPC grant and the preview StructuredTaskScope API — are validated here against a real Keycloak.
+
+- **FRs covered:** FR-SEC-1, FR-SEC-2, FR-SEC-3, FR-SEC-4, FR-SEC-5, FR-AUTH-1, FR-AUTH-2, FR-AUTH-3, FR-AUTH-4
+- **NFRs:** SEC-1, SEC-3, SEC-4, SEC-5, PERF-3 (bind latency), PRIV-1 (zeroization), COMP-2 (STS preview / JFR pin check)
+- **Key ADs:** AD-4, AD-5, AD-10, AD-11, AD-12, AD-13, AD-15, AD-20, AD-26, AD-28
+- **Depends on:** Epic 2
+- **Packages owned:** `proxy/security/` (full impl — replaces Epic 2's always-allow stub behind the **unchanged** AD-12 port via Spring DI; `relay/` is NOT modified)
+- **Risk gate (Story 3.1 — refined via party-mode + elicitation):** the original single spike is **split**. (a) The **contract-shape validation** half moved to **Epic 2's opener** (validates the `Verdict`/`BindCredential`/`verify()` signature against a real Keycloak before `relay/` commits). (b) Story 3.1 is now the **ROPC deprecation/viability probe** — does Keycloak 26.x still ship Direct Access Grants, and is any removal announced? It **can run in parallel with Epic 1** (needs only Keycloak + Nimbus) and MUST land before any other Epic 3 story. **Scope covers all four AD-12 paths**, not just the JWT happy path: (1) JWT-verdict happy path, (2) opaque-token RFC 7662 introspection fallback, (3) mTLS RFC 8705 provider authentication (not just `client_secret`), (4) ≥1 DENY branch end-to-end (timeout / network-error / kid-miss). **On failure — or a Keycloak removal notice — produce a fallback DECISION from a pre-enumerated tree** (non-OIDC password-check service behind the port · Mode-C-only · Mode B plaintext-only for trusted nets · cancel the auth scope), written into the AD-12 accepted-risk register — *not* merely a sunset paragraph. v1 ships **explicitly ROPC-conditional** (RFC 9700 "MUST NOT"; OAuth 2.1 removes ROPC).
+
+### Epic 4: Operate the proxy in production — structured logs and read-only loopback `/metrics`
+
+**Goal:** The operator scrapes a read-only Prometheus `/metrics` endpoint (loopback IPv4 only, cardinality bounded by the routing table), reads structured JSON-lines logs (startup/config-resolved, bind accept/reject with `system_id`, errors; full PDU/body TRACE-only and off by default), and triggers a clean graceful shutdown validated end-to-end. There is NO management API (no query/drain/reload/rotate at runtime).
+
+- **FRs covered:** FR-OBS-1, FR-OBS-2
+- **NFRs:** OBS-1, OBS-2, OBS-3, PRIV-1 (metrics cardinality) *(+ end-to-end AD-22 graceful-shutdown check; PERF-1's "don't stall the relay" is satisfied by AD-19's dedicated-loop design — formal throughput-while-scraped proof is in Epic 6)*
+- **Key ADs:** AD-8 (metrics), AD-19, AD-21 (metric), AD-22 (end-to-end), AD-27 (impl), AD-28 (metrics loop)
+- **Depends on:** Epic 2, Epic 3
+- **Packages owned:** `proxy/observability/` (full impl — replaces Epic 2's noop `SpliceObserver` behind the **unchanged** AD-27 interface via Spring DI; `relay/` is NOT modified)
+
+### Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker
+
+**Goal:** The operator deploys EITHER the standalone runnable JAR OR the distroless Docker image (feature-equivalent — same config surface, modes, auth paths; the Docker image packages the same JAR via jlink, ~45–66 MB), provisions certificates at deploy time via the Docker-secrets / bind-mount contract (no runtime ACME/SPIFFE), and the Docker secrets contract (DEP-1) is validated end-to-end in the Docker shape.
+
+- **FRs covered:** FR-DEPLOY-1, FR-DEPLOY-4
+- **NFRs:** DEP-1 (Docker secrets validated end-to-end), two-shape parity, deploy-time cert provisioning
+- **Key ADs:** AD-18 (secrets), AD-23 (no native-image target in v1), AD-29 (packaged routing 1:1)
+- **Depends on:** Epic 4
+- **Packages owned:** no main source package — Docker packaging (Dockerfile, distroless + jlink runtime image), Gradle jlink/shadow config, release/ship tooling, boot + smoke validation
+
+### Epic 6: Validate all performance and deliver the operator docs surface
+
+**Goal:** The operator validates every locked performance bet via a reproducible load-test harness — a no-crypto baseline (to attribute relay cost vs. crypto cost) and the final mTLS-both-legs numbers: ≥10,000 `submit_sm`/sec (stretch ~25K) with a published p50/p90/p99/p99.9 percentile table, 10,000 idle socket pairs in <1 GB heap / <1 vCPU, sub-ms per-PDU relay latency, and codec JMH microbench bands — and reads the complete docs surface (config reference, per-mode A/B/C deployment guide, runbooks, A-1 real-carrier test plan, cipher-allowlist policy, Mode B warning text). The portfolio "craft is the headline" claim is proven with published evidence.
+
+- **FRs covered:** *(none — NFR-driven epic)*
+- **NFRs:** PERF-1, PERF-2, PERF-3, PERF-4 (all final, incl. no-crypto baseline), COMP-1 (final conformance on packaged shapes), REL-3 (packaged-shape shutdown), OPS-1, OPS-2, MAINT-5
+- **Key ADs:** AD-21 (load-test allocator choice), AD-23, AD-24 (perf harness + first-of-kind scope), AD-29 (packaged), AD-30 (memory formula), AD-31 (docs as operator surface)
+- **Depends on:** Epic 5
+- **Packages owned:** no main source package — perf harness in `proxy/src/test/` (JMH codec bench, end-to-end relay percentile harness, idle-CPU-at-N demo), the published perf report, `docs/` (full — config reference, per-mode deployment guide, runbooks, A-1 test plan, cipher policy, Mode B warning). *Honest exception: if final PERF-1 validation exposes a genuine hot-path defect, the fix returns to the owning epic (relay/ Epic 2 or codec/ Epic 1), not patched here.*
+- **Carry-forward (from the party-mode ROPC review):** the deployment guide (OPS-1) must state plainly that v1 authenticates via ROPC (Direct Access Grants) — a grant on a removal track (RFC 9700 / OAuth 2.1) — and that operators must pin their Keycloak build.
 
 <!-- Repeat for each epic in epics_list (N = 1, 2, 3...) -->
 
