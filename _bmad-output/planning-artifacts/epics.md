@@ -239,7 +239,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 - **[AD-31]** Documentation is a v1 DELIVERABLE governed by the architecture (OPS-1): config reference, per-mode (A/B/C) deployment guide, troubleshooting/runbooks ship with the release under `docs/`. SEC-1 cipher-allowlist policy, Mode B warning text, and the A-1 real-carrier operational test plan dock here.
 
-#### Architectural Decisions Summary (AD-1..AD-31)
+#### Architectural Decisions Summary (AD-1..AD-34)
 
 | AD | Title | One-liner |
 |----|-------|-----------|
@@ -274,6 +274,9 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 | AD-29 | Routing cardinality (v1 = 1:1) + value schema | One carrier egress per forward instance; system_id allow-list → single egress; {host, port, tlsContextId?}; multi-carrier deferred. |
 | AD-30 | Max frame + per-channel inbound budget + direct-memory | Pin max command_length 65536 (exceed → drop+close), reject <16, overflow guard pre-allocation; bounded inbound queue + low-water re-arm; MaxDirectMemorySize = max_frame × depth × pairs × safety. |
 | AD-31 | Documentation is the operator surface (OPS-1) | Docs = v1 deliverable: config reference, per-mode guide, runbooks under docs/; cipher policy, Mode B warning, A-1 test plan dock here. |
+| AD-32 | Pre-couple non-bind PDU policy (resolves Q1) | Pre-splice-flip either leg: ONLY bind-family handled cooperatively; **everything else (incl. `unbind`, `enquire_link`, `submit_sm`, unknown `command_id`) → close, no response** (above-spec fail-closed; tear down in-flight bind); egress `generic_nack`/non-ROK `bind_resp` from the SMSC → **forwarded verbatim** (SMSC is the credential authority). Zero knobs, fail-closed. |
+| AD-33 | Bind-denial wire collapse (resolves Q7) | ALLOW→`ESME_ROK`; all denials→one generic bind-failure code (exact code per owning story); rich OIDC outcome→JSON-lines logs + bounded Verdict counters only, never on wire. |
+| AD-34 | TLS cipher/protocol allowlist default (resolves Q3) | Protocols `[TLSv1.3, TLSv1.2]`; TLS-1.2=ECDHE-ECDSA/RSA-AES-GCM set (no CBC/static-RSA/legacy) + optional ChaCha20; `companion.tls.*` tunable; empty provider-intersect→fail-fast. |
 
 #### Accepted Risks (constrain story scope)
 
@@ -287,7 +290,8 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **Payload transparency = no content-level protection** — no inspection/filtering/type-enforcement (AD-3).
 - **Long-lived baked Mode C client certs** — rotation = re-deploy; per-instance keys bound the blast radius (OPS-2).
 - **Authority-provider outage blocks new binds** — ongoing splices survive on cached JWKS/trust (A-2).
-- **No local brute-force / rate-limit protection** — planned future companion; acknowledged gap.
+- **No local brute-force / rate-limit protection** — planned future companion; acknowledged gap. **Sharpened (AD-32):** the bind-in-flight branch abandons an in-flight ROPC the IdP still completes (IdP amplification); AD-28(4)/AD-4 protect the proxy, not the IdP — operator-side IdP rate-limiting is REQUIRED (operator-scope).
+- **Pipelining ESMEs / short-bind-timeout clients are closed (AD-32, no buffer mode)** — *new constraint.* An ESME pipelining `submit_sm` before `bind_resp`, or whose bind-timeout < PERF-3 cold/DENY, is closed. Docks under OPS-1 + the A-1 non-CI carrier check.
 - **No metrics dashboard / telemetry backend / management API** — read-only `/metrics` + baseline logging only.
 - **Single-instance, no HA/failover** — statelessness is a future-HA enabler, not a v1 commitment.
 
@@ -378,7 +382,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **NFRs:** OBS-1, OBS-2, OBS-3, PRIV-1 (metrics cardinality) *(+ end-to-end AD-22 graceful-shutdown check; PERF-1's "don't stall the relay" is satisfied by AD-19's dedicated-loop design — formal throughput-while-scraped proof is in Epic 6)*
 - **Key ADs:** AD-8 (metrics), AD-19, AD-21 (metric), AD-22 (end-to-end), AD-27 (impl), AD-28 (metrics loop)
 - **Depends on:** Epic 2, Epic 3
-- **Packages owned:** `proxy/observability/` (full impl — replaces Epic 2's noop `SpliceObserver` behind the **unchanged** AD-27 interface via Spring DI; `relay/` is NOT modified)
+- **Packages owned:** `proxy/observability/` (full impl — replaces Epic 2's noop `SpliceObserver` behind the AD-27 interface — one method added per AD-32 — via Spring DI; `relay/` is NOT modified)
 
 ### Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker
 
