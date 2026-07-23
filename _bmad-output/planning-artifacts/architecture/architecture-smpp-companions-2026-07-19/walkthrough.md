@@ -8,7 +8,7 @@ updated: 2026-07-20
 
 # Companions v1 — Architecture Walkthrough
 
-> A walkthrough of the architecture spine for **author + tech-fluent reviewers** — deep on the trust model and the relay internals. JVM / Netty / SMPP fluency assumed. The binding contract is [`ARCHITECTURE-SPINE.md`](ARCHITECTURE-SPINE.md) (31 ADs); the decision trail is [`.memlog.md`](.memlog.md); the 8-lens reviewer-gate output is in [`reviews/`](reviews/).
+> A walkthrough of the architecture spine for **author + tech-fluent reviewers** — deep on the trust model and the relay internals. JVM / Netty / SMPP fluency assumed. The binding contract is [`ARCHITECTURE-SPINE.md`](ARCHITECTURE-SPINE.md) (34 ADs); the decision trail is [`.memlog.md`](.memlog.md); the 8-lens reviewer-gate output is in [`reviews/`](reviews/).
 
 **Companions v1** is a headless, operator-configured, open-source SMPP 3.4 security-transit proxy. It lets unmodifiable legacy SMPP 3.4 systems and carrier SMSCs exchange traffic **securely over the internet** — confining the legacy password-grant weakness to a trusted zone, brokering one credential end-to-end, and keeping the proxy tier **credential-free at rest**.
 
@@ -151,7 +151,7 @@ The proxy intercepts the legacy password, asks the operator's OIDC provider for 
 | Fail-closed | any indeterminate response → DENY; non-`https` provider URL → fail-fast |
 | Secret hygiene | password + token in `char[]`/`byte[]`, zeroized on completion / teardown / exception |
 
-All of it flows through a single pluggable **`BindCredentialVerifier`** port (`CompletableFuture<Verdict> verify(BindCredential, ScopedValue<RequestContext>)`), so the ROPC adapter is swappable without touching the relay core.
+All of it flows through a single pluggable **`BindCredentialVerifier`** port (`VerdictRequest verify(BindCredential, ScopedValue<RequestContext>)`, exposing `future()` + `cancelHttp()` per AD-32), so the ROPC adapter is swappable without touching the relay core.
 
 ---
 
@@ -224,4 +224,4 @@ The spine fixes invariants; it leaves detail to the level below — each item ca
 - Multi-carrier routing (v1 forward role = 1:1); the A-1 real-carrier operational test plan.
 - Full STRIDE/DFD threat model; perf-harness exacts; native-image build (out of v1).
 
-> **Read the contract.** The full invariant set — 31 ADs with Binds / Prevents / Rule, the complete register, conventions, and the capability map — lives in [`ARCHITECTURE-SPINE.md`](ARCHITECTURE-SPINE.md).
+> **Read the contract.** The full invariant set — 34 ADs with Binds / Prevents / Rule, the complete register, conventions, and the capability map — lives in [`ARCHITECTURE-SPINE.md`](ARCHITECTURE-SPINE.md).

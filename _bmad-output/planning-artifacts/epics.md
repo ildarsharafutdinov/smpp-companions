@@ -11,7 +11,7 @@ extraction:
   frCount: 19
   nfrCount: 29
   archRequirementCount: 57
-  adCount: 31
+  adCount: 34
   frNfrCompleteness: complete
   archAdCoverage: complete
   phantomIdsExcluded:
@@ -130,7 +130,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 ### Additional Requirements
 
-*Derived from the architecture (31 ADs → 57 implementation requirements), the starter scaffold, the accepted-risk register, and deferred items. These constrain and shape every epic/story.*
+*Derived from the architecture (34 ADs; 57 AD-tagged implementation-requirement bullets — AD-32/33/34, added 2026-07-23, are recorded in the summary table and Accepted-Risk Register, not as additional bullets), the starter scaffold, the accepted-risk register, and deferred items. These constrain and shape every epic/story.*
 
 #### Starter Template (drives Epic 1, Story 1)
 
@@ -209,7 +209,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 - **[AD-12]** OIDC via ROPC (Keycloak Direct Access Grants): token-endpoint status (200/401) IS the verdict; verify returned JWT locally via cached JWKS as defense-in-depth (precedence per AD-11); DISCARD the token and relay the ORIGINAL bind to the SMSC (sole credential authority). Re-validate EVERY bind (NO verdict cache; cache JWKS only). Opaque tokens fall back to RFC 7662 introspection — results NEVER cached.
 - **[AD-12]** Provider link (SEC-3): token + JWKS endpoints reached OVER HTTPS, never HTTP; proxy authenticates as confidential client via mTLS (RFC 8705) OR client_secret, credential file-path-injected (AD-18). Fail-fast if provider URL not https. If discovery advertises `grant_types_supported`, probe for Direct Access Grants (non-default since Keycloak 26.2) and WARN; grant-type error at runtime → DENY (AD-11).
-- **[AD-12]** `BindCredentialVerifier` port contract (single interface owning the seam): `smpp.companion.proxy.security.BindCredentialVerifier` — `CompletableFuture<Verdict> verify(BindCredential cred, ScopedValue<RequestContext> ctx)`; `BindCredential(SystemId, char[] password)` in `security`; `sealed interface Verdict permits Allow, DenyInvalid, DenyIndeterminate` (NO Throwable, NO free-form reason, NO Nimbus type crosses the port — ROPC adapter absorbs Nimbus). Runs on the hand-managed VT pool (AD-6/AD-28); NEVER `@Async`.
+- **[AD-12]** `BindCredentialVerifier` port contract (single interface owning the seam): `smpp.companion.proxy.security.BindCredentialVerifier` — `VerdictRequest verify(BindCredential cred, ScopedValue<RequestContext> ctx)` returning `CompletableFuture<Verdict> future()` + `void cancelHttp()` (AD-32: the ROPC adapter binds `cancelHttp()` to the HTTP-client abort so AD-32 case-3 teardown can spare the IdP the abandoned ROPC); `BindCredential(SystemId, char[] password)` in `security`; `sealed interface Verdict permits Allow, DenyInvalid, DenyIndeterminate` (NO Throwable, NO free-form reason, NO Nimbus type crosses the port — ROPC adapter absorbs Nimbus). Runs on the hand-managed VT pool (AD-6/AD-28); NEVER `@Async`.
 
 **Infrastructure / deployment**
 
@@ -222,7 +222,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 - **[AD-19]** Read-only Prometheus `/metrics` via a TINY loopback HTTP handler on a DEDICATED, hand-managed Netty event loop group (started/stopped via SmartLifecycle; NEVER shares the SMPP relay event loop group) calling `PrometheusMeterRegistry.scrape()`. NO Actuator, NO Tomcat, NO WebFlux.
 - **[AD-19]** Metrics cardinality: `system_id` labels ONLY for routing-table values (cardinality = routing-table size, bounded at startup); unknown/rejected `system_id` increment an unlabeled counter (`binds.rejected.unknown_system_id`) — NO free-form `system_id` ever a label. Message content never emitted. Track active-VT via a CUSTOM gauge (Micrometer `jvm_threads_*` does NOT count VTs). NO dashboard/backend/management API.
-- **[AD-27]** `SpliceObserver` interface owned by `observability/`: methods `onFramedPdu(Direction)`, `onBindAccept(SystemId)`, `onBindReject(SystemId, Verdict)`, `onByteTransfer(Direction, long)` — NO PDU type, NO content. Trigger events PINNED: `onBindAccept` fires EXACTLY at the AD-25 flip (decoded `bind_*_resp` ROK), NOT at the verdict; `onBindReject` called ONLY for `Verdict` values from `BindCredentialVerifier` (routing-miss/kid-miss/config denies go to AD-19's unlabeled counter).
+- **[AD-27]** `SpliceObserver` interface owned by `observability/`: methods `onFramedPdu(Direction)`, `onBindAccept(SystemId)`, `onBindReject(SystemId, Verdict)`, `onByteTransfer(Direction, long)`, `onConnectionClosed(Direction, CloseReason)` (the full 5-method shape — seeded by Epic 2's noop impl; `onConnectionClosed` is exactly-once per channel at the `channelInactive` teardown site, backing `relay_connections_closed_total{direction, reason}` per AD-32) — NO PDU type, NO content. Trigger events PINNED: `onBindAccept` fires EXACTLY at the AD-25 flip (decoded `bind_*_resp` ROK), NOT at the verdict; `onBindReject` called ONLY for `Verdict` values from `BindCredentialVerifier` (routing-miss/kid-miss/config denies go to AD-19's unlabeled counter).
 - **[AD-27]** `SpliceObserver` impl MUST apply AD-19 cardinality rule. `RelayHandler` holds an injected reference and calls it; codec NEVER emits metrics. ONE counter source; Micrometer impl is the only thing behind the seam.
 
 **Monitoring / logging**
@@ -241,6 +241,8 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 #### Architectural Decisions Summary (AD-1..AD-34)
 
+*Per-epic "Key ADs" lists are a curated highlight, not an exhaustive ownership registry: cross-cutting / governance ADs (e.g. AD-6 three-threading-model coherence) are intentionally not pinned to a single epic. Every AD is owned via the FR/NFR lists + package ownership + the TEA handoff's scenario→AC mapping.*
+
 | AD | Title | One-liner |
 |----|-------|-----------|
 | AD-1 | Event-loop relay paradigm | Netty event loops own the steady-state byte splice; VTs own the control plane; VTs never carry steady-state bytes. |
@@ -254,7 +256,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 | AD-9 | Stateless relay on assumption A-1 | Socket-pairing state only; DLRs ride the splice via the coupled pair (= session affinity); smoke-test A-1 early. |
 | AD-10 | Credential-free proxy tier (at rest) | No persisted passwords/vault/CA/issuing keys; runtime holds OIDC cred, JWKS public keys, transient password (zeroized), own TLS end-entity keys; three trust roots. |
 | AD-11 | Fail-closed universal default | Every auth-adjacent decision denies on indeterminate; DENY wins on verdict/defense-in-depth disagreement; kid-miss → DENY (no foreground refresh). |
-| AD-12 | OIDC via ROPC, disposable JWT verdict, BindCredentialVerifier port | Token 200/401 = verdict; local JWKS defense-in-depth; discard token, relay original bind; re-validate every bind; port with CompletableFuture<Verdict>; Mode A two-proxy needs ACL isolation or Mode C. |
+| AD-12 | OIDC via ROPC, disposable JWT verdict, BindCredentialVerifier port | Token 200/401 = verdict; local JWKS defense-in-depth; discard token, relay original bind; re-validate every bind; port returns VerdictRequest (future() + cancelHttp() per AD-32); Mode A two-proxy needs ACL isolation or Mode C. |
 | AD-13 | mTLS = PKIX defaults; trust store never cacerts (OQ-4) | trustManager(store).clientAuth(REQUIRE), PKIX maxPathLen 5; never cacerts for ANY peer path; per-instance Mode C certs; revocation OUT. |
 | AD-14 | Identity forwarded, not mapped | legacy system_id == carrier system_id; no pooling/mapping/surrogate. |
 | AD-15 | Legacy ingress leg: no local password check | Trusted network is sole ingress gate; no local check/store; route on system_id; isolation (A-3) is deployer's job. |
@@ -358,10 +360,10 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 - **FRs covered:** FR-TRANSIT-1, FR-TRANSIT-2, FR-TRANSIT-3
 - **NFRs:** REL-1, REL-2, REL-4, SEC-2, MAINT-4, COMP-1 *(PERF-4 sub-ms relay latency is a design invariant of the event-loop splice; formal measurement in Epic 6)*
-- **Key ADs:** AD-1, AD-2, AD-3, AD-8, AD-9, AD-14, AD-15, AD-21, AD-24 (relay), AD-25, AD-27 (contracts + triggers), AD-30 (budget)
+- **Key ADs:** AD-1, AD-2, AD-3, AD-8, AD-9, AD-14, AD-15, AD-21, AD-24 (relay), AD-25, AD-27 (contracts + triggers), AD-30 (budget), AD-32 (pre-couple non-bind PDU close policy + AD-25 transition carve-out)
 - **Depends on:** Epic 1
 - **Packages owned:** `proxy/relay/` (full); `proxy/security/` (**contract seed only** — `BindCredentialVerifier` port + `Verdict` sealed interface + `BindCredential` record + always-allow stub; shape fixed by AD-12); `proxy/observability/` (**contract seed only** — `SpliceObserver` interface + noop impl; shape fixed by AD-27); `proxy/src/test` (in-JVM mock SMSC, relay conformance suite, jSMPP interop, A-1 fixture)
-- **Opener (from the elicitation ROPC refinement):** before `relay/` finalizes against the seeded `BindCredentialVerifier` port, a thin **contract-shape validation slice** makes a real ROPC call against a Keycloak 26.x and ratifies the `Verdict` permit set + `BindCredential` + `verify(ScopedValue<RequestContext>)` signature. The contract is validated *before* it is consumed — which is what earns the "immutable henceforth" claim. (Full ROPC adapter stays in Epic 3.)
+- **Opener (from the elicitation ROPC refinement):** before `relay/` finalizes against the seeded `BindCredentialVerifier` port, a thin **contract-shape validation slice** makes a real ROPC call against a Keycloak 26.x and ratifies the `Verdict` permit set + `BindCredential` + the `VerdictRequest`-returning `verify(ScopedValue<RequestContext>)` shape (incl. `cancelHttp()` per AD-32). The contract is validated *before* it is consumed — which is what earns the "immutable henceforth" claim. (Full ROPC adapter stays in Epic 3.)
 
 ### Epic 3: Secure the transit — TLS modes A/B/C and OIDC ROPC password-grant adjudication
 
@@ -369,10 +371,10 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 - **FRs covered:** FR-SEC-1, FR-SEC-2, FR-SEC-3, FR-SEC-4, FR-SEC-5, FR-AUTH-1, FR-AUTH-2, FR-AUTH-3, FR-AUTH-4
 - **NFRs:** SEC-1, SEC-3, SEC-4, SEC-5, PERF-3 (bind latency), PRIV-1 (zeroization), COMP-2 (STS preview / JFR pin check)
-- **Key ADs:** AD-4, AD-5, AD-10, AD-11, AD-12, AD-13, AD-15, AD-20, AD-26, AD-28
+- **Key ADs:** AD-4, AD-5, AD-10, AD-11, AD-12, AD-13, AD-15, AD-20, AD-26, AD-28, AD-33 (bind-denial wire collapse), AD-34 (TLS cipher/protocol allowlist default)
 - **Depends on:** Epic 2
 - **Packages owned:** `proxy/security/` (full impl — replaces Epic 2's always-allow stub behind the **unchanged** AD-12 port via Spring DI; `relay/` is NOT modified)
-- **Risk gate (Story 3.1 — refined via party-mode + elicitation):** the original single spike is **split**. (a) The **contract-shape validation** half moved to **Epic 2's opener** (validates the `Verdict`/`BindCredential`/`verify()` signature against a real Keycloak before `relay/` commits). (b) Story 3.1 is now the **ROPC deprecation/viability probe** — does Keycloak 26.x still ship Direct Access Grants, and is any removal announced? It **can run in parallel with Epic 1** (needs only Keycloak + Nimbus) and MUST land before any other Epic 3 story. **Scope covers all four AD-12 paths**, not just the JWT happy path: (1) JWT-verdict happy path, (2) opaque-token RFC 7662 introspection fallback, (3) mTLS RFC 8705 provider authentication (not just `client_secret`), (4) ≥1 DENY branch end-to-end (timeout / network-error / kid-miss). **On failure — or a Keycloak removal notice — produce a fallback DECISION from a pre-enumerated tree** (non-OIDC password-check service behind the port · Mode-C-only · Mode B plaintext-only for trusted nets · cancel the auth scope), written into the AD-12 accepted-risk register — *not* merely a sunset paragraph. v1 ships **explicitly ROPC-conditional** (RFC 9700 "MUST NOT"; OAuth 2.1 removes ROPC).
+- **Risk gate (Story 3.1 — refined via party-mode + elicitation):** the original single spike is **split**. (a) The **contract-shape validation** half moved to **Epic 2's opener** (validates the `Verdict`/`BindCredential`/`VerdictRequest verify()` shape — incl. `cancelHttp()` per AD-32 — against a real Keycloak before `relay/` commits). (b) Story 3.1 is now the **ROPC deprecation/viability probe** — does Keycloak 26.x still ship Direct Access Grants, and is any removal announced? It **can run in parallel with Epic 1** (needs only Keycloak + Nimbus) and MUST land before any other Epic 3 story. Story 3.1's ROPC-viability verdict is a gate feeding Epic 2's opener (and the broader ROPC-conditional scope): if 3.1 finds ROPC removed or announced-for-removal, the opener consumes the fallback decision from the pre-enumerated tree rather than independently rediscovering it (3.1 finishes during Epic 1, before the opener runs). **Scope covers all four AD-12 paths**, not just the JWT happy path: (1) JWT-verdict happy path, (2) opaque-token RFC 7662 introspection fallback, (3) mTLS RFC 8705 provider authentication (not just `client_secret`), (4) ≥1 DENY branch end-to-end (timeout / network-error / kid-miss). **On failure — or a Keycloak removal notice — produce a fallback DECISION from a pre-enumerated tree** (non-OIDC password-check service behind the port · Mode-C-only · Mode B plaintext-only for trusted nets · cancel the auth scope), written into the AD-12 accepted-risk register — *not* merely a sunset paragraph. v1 ships **explicitly ROPC-conditional** (RFC 9700 "MUST NOT"; OAuth 2.1 removes ROPC).
 
 ### Epic 4: Operate the proxy in production — structured logs and read-only loopback `/metrics`
 
@@ -382,7 +384,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **NFRs:** OBS-1, OBS-2, OBS-3, PRIV-1 (metrics cardinality) *(+ end-to-end AD-22 graceful-shutdown check; PERF-1's "don't stall the relay" is satisfied by AD-19's dedicated-loop design — formal throughput-while-scraped proof is in Epic 6)*
 - **Key ADs:** AD-8 (metrics), AD-19, AD-21 (metric), AD-22 (end-to-end), AD-27 (impl), AD-28 (metrics loop)
 - **Depends on:** Epic 2, Epic 3
-- **Packages owned:** `proxy/observability/` (full impl — replaces Epic 2's noop `SpliceObserver` behind the AD-27 interface — one method added per AD-32 — via Spring DI; `relay/` is NOT modified)
+- **Packages owned:** `proxy/observability/` (full impl — swaps Epic 2's noop `SpliceObserver` impl behind the **unchanged** AD-27 interface via Spring DI; `relay/` is NOT modified. Epic 2's noop seed already carries the full 5-method shape incl. `onConnectionClosed`, so the interface is genuinely unchanged here.)
 
 ### Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker
 
