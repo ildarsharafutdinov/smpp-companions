@@ -1,0 +1,29 @@
+# companion.* configuration skeleton (AC9). AD-34 TLS defaults are declared here; the role x mode
+# fail-fast matrix + per-context TLS intersection land in Story 1.3.
+spring:
+  main:
+    # Fail-safe: stay NON-web even if a webflux/web starter ever leaks onto the classpath (AD-16).
+    web-application-type: none
+  lifecycle:
+    # Per-phase ceiling for SmartLifecycle.stop() — bounds the future AD-22 shutdown window (AC8).
+    timeout-per-shutdown-phase: 30s
+
+companion:
+  # Direction of the SMPP mapping. Absent / non-matching => the app refuses to start (AC9, AD-17).
+  role: forward
+  tls:
+    # AD-34: protocols (1.3 preferred, 1.2 allowed).
+    protocols:
+      - TLSv1.3
+      - TLSv1.2
+    # AD-34: TLS 1.2 — the four ECDHE / AES-GCM suites (no CBC / static-RSA / RC4 / 3DES).
+    tls12-cipher-suites:
+      - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    # AD-34: TLS 1.3 set.
+    tls13-cipher-suites:
+      - TLS_AES_256_GCM_SHA384
+      - TLS_AES_128_GCM_SHA256
+      - TLS_CHACHA20_POLY1305_SHA256

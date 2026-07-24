@@ -11,3 +11,23 @@ _bmad/custom/*.user.toml
 # Installed BMad skill library — regenerable tooling (reinstall via the bmad installer / bmad-loop init).
 # .claude/settings.json (hooks) stays committed.
 .claude/skills/
+
+# Gradle / Java build outputs
+.gradle/
+build/
+**/build/
+out/
+*.class
+
+# Keep the Gradle wrapper committed (regenerable but intentionally tracked)
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE / OS
+.idea/
+*.iml
+*.iws
+.vscode/
+.project
+.classpath
+.settings/
+.DS_Store
