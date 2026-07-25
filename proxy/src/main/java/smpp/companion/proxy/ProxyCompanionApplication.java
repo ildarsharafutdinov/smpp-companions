@@ -13,9 +13,9 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan
-public class CompanionApplication {
+public class ProxyCompanionApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(CompanionApplication.class, args);
+        SpringApplication.run(ProxyCompanionApplication.class, args);
     }
 }

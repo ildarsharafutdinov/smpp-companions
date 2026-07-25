@@ -55,6 +55,24 @@ class RuntimePurityGateTest {
         assertEquals(TaskOutcome.SUCCESS, result.task(":enforceRuntimeAllowlist")?.outcome)
     }
 
+    @Test
+    fun `check fails when a web-stack dep is on the proxy runtime classpath`() {
+        // P1: the gate must be wired into `check`, not merely invocable directly.
+        fixture(
+            """
+            plugins { java; id("smpp.runtime-purity") }
+            repositories { mavenCentral() }
+            dependencies {
+                implementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
+                implementation("org.springframework:spring-web")
+            }
+            """
+        )
+        val result = runner("check").buildAndFail()
+        assertEquals(TaskOutcome.FAILED, result.task(":enforceRuntimeAllowlist")?.outcome)
+        assertTrue(result.output.contains("OBS-013"))
+    }
+
     private fun fixture(script: String) {
         Files.writeString(projectDir.resolve("settings.gradle.kts"), """rootProject.name = "gate-fixture"""")
         Files.writeString(projectDir.resolve("build.gradle.kts"), script.trimIndent())

@@ -39,12 +39,21 @@ class GoldenVectorCorpusTest {
         }
     }
 
-    /** Story 1.1 ships an EMPTY corpus; the non-empty assertion (CODEC-030) lands in Story 1.2. */
+    /**
+     * Story 1.1 ships an EMPTY corpus; the non-empty assertion (CODEC-030) lands in Story 1.2.
+     */
     @Test
     void corpusScaffoldIsInPlace_nonEmptyAssertionDeferredToStory1_2() {
+        // AC10 scaffold evidence: the golden-vectors directory + its provenance-header convention
+        // (README.md) are packaged as a test resource. The non-empty + per-vector provenance content
+        // assertion is CODEC-030 in Story 1.2 (cannot fire on an empty corpus today) — this is a real
+        // assertion that the scaffold is present, not a no-op counted as green.
         long count = listVectors().size();
-        // Intentionally NOT asserted here. Documented so Story 1.2 knows where to tighten.
         System.out.println("[golden] corpus vector count (Story 1.1 scaffold, may be 0): " + count);
+        URL convention = getClass().getClassLoader().getResource("golden-vectors/README.md");
+        assertThat(convention)
+                .as("AC10: golden-vectors provenance-convention README must be packaged as a resource")
+                .isNotNull();
     }
 
     private List<Path> listVectors() {

@@ -17,6 +17,7 @@ extra["netty.version"] = "4.2.16.Final"
 dependencies {
     // NON-web starter -> plain AnnotationConfigApplicationContext, no embedded server.
     implementation("org.springframework.boot:spring-boot-starter")
+    implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation(platform("io.netty:netty-bom:4.2.16.Final"))
     implementation("io.netty:netty-transport")              // NIO/Epoll transport (relay-ready, Epic 2)
     implementation("io.netty:netty-handler")                // SSLHandler / SSLEngine wiring (Epic 3)

@@ -6,7 +6,7 @@ import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 
-import smpp.companion.proxy.CompanionApplication;
+import smpp.companion.proxy.ProxyCompanionApplication;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -28,14 +28,14 @@ class BootstrapLifecycleTest {
             // No embedded web server (AD-16): the context is a plain AnnotationConfigApplicationContext.
             assertThat(ctx.getClass().getSimpleName()).doesNotContain("WebServer");
             // The SmartLifecycle stub was started.
-            assertThat(ctx.getBean(CompanionLifecycle.class).isRunning()).isTrue();
+            assertThat(ctx.getBean(ProxyCompanionLifecycle.class).isRunning()).isTrue();
         }
     }
 
     @Test
     void contextCloseStopsLifecycleWithinGracefulTimeout() {
         ConfigurableApplicationContext ctx = builder().run();
-        CompanionLifecycle lifecycle = ctx.getBean(CompanionLifecycle.class);
+        ProxyCompanionLifecycle lifecycle = ctx.getBean(ProxyCompanionLifecycle.class);
         assertThat(lifecycle.isRunning()).isTrue();
 
         long start = System.nanoTime();
@@ -48,7 +48,7 @@ class BootstrapLifecycleTest {
     }
 
     private static SpringApplicationBuilder builder() {
-        return new SpringApplicationBuilder(CompanionApplication.class)
+        return new SpringApplicationBuilder(ProxyCompanionApplication.class)
             .web(WebApplicationType.NONE)
             .properties("companion.role=forward");
     }

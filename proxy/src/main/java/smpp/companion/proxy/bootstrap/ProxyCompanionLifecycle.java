@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
  * starts on context refresh and stops (invoking the callback) on {@link org.springframework.context.event.ContextClosedEvent}.
  */
 @Component
-public class CompanionLifecycle implements SmartLifecycle {
+public class ProxyCompanionLifecycle implements SmartLifecycle {
 
     private volatile boolean running = false;
 
