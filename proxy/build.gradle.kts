@@ -3,6 +3,7 @@
 
 plugins {
     id("smpp.java-conventions")
+    id("smpp.null-safety")
     id("smpp.dependency-floors")
     id("smpp.runtime-purity")
     id("org.springframework.boot") version "4.1.0"
@@ -18,6 +19,7 @@ dependencies {
     // NON-web starter -> plain AnnotationConfigApplicationContext, no embedded server.
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    implementation("org.jspecify:jspecify:1.0.0") // AD-35 nullness annotations (on the classpath Spring 7 already uses)
     implementation(platform("io.netty:netty-bom:4.2.16.Final"))
     implementation("io.netty:netty-transport")              // NIO/Epoll transport (relay-ready, Epic 2)
     implementation("io.netty:netty-handler")                // SSLHandler / SSLEngine wiring (Epic 3)
