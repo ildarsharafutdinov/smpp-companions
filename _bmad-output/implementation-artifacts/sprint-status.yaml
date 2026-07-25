@@ -71,6 +71,7 @@ development_status:
   # --- Epic 1: Foundation — build substrate, pure SMPP 3.4 codec, and fail-fast configuration ---
   epic-1: in-progress
   1-1-gradle-two-module-substrate-and-ci-scaffold: done
+  1-4-compile-time-null-safety-enforcement: ready-for-dev
   epic-1-retrospective: optional
 
   # --- Epic 2: Transit SMPP end-to-end — stateless relay with the A-1 session-affinity smoke test ---
