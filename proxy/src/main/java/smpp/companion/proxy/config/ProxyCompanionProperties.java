@@ -1,31 +1,28 @@
 package smpp.companion.proxy.config;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Bound from {@code companion.*}. Carries the documented key shapes (AD-17 seed) and the AD-34 TLS
  * protocol/cipher defaults. The exhaustive role&times;mode fail-fast matrix is Story 1.3; this story
- * ships the single {@code companion.role} refuse-to-start smoke (AC9): an absent role fails relaxed
- * binding via the compact-constructor guard below (invalid values fail enum conversion even earlier).
+ * ships the single {@code companion.role} refuse-to-start smoke (AC9): an absent role is rejected by
+ * Spring bean validation ({@code @NotNull} on {@code role}, fired because the record is
+ * {@code @Validated}); an out-of-set value fails enum conversion at bind time. Both surface as a
+ * non-zero startup exit.
  */
 @ConfigurationProperties("companion")
-public record CompanionProperties(Role role, Tls tls) {
+@Validated
+public record ProxyCompanionProperties(
+        @NotNull(message = "companion.role is required and must be one of [forward, reverse] — refusing to start (AD-17).")
+        Role role,
+        @Valid Tls tls) {
 
     /** Direction of the SMPP mapping. Absent or non-matching => the app refuses to start. */
     public enum Role { FORWARD, REVERSE }
-
-    /**
-     * Fail-fast guard (AC9 / AD-17): a missing {@code companion.role} leaves {@code role == null},
-     * which fails the build of the context here. (An out-of-set string like {@code sideways} fails
-     * enum conversion before this constructor ever runs — also non-zero exit.)
-     */
-    public CompanionProperties {
-        if (role == null) {
-            throw new IllegalArgumentException(
-                "companion.role is required and must be one of [forward, reverse] — refusing to start (AD-17).");
-        }
-    }
 
     /** AD-34 pinned TLS defaults. Per-context intersection fail-fast is Story 1.3. */
     public record Tls(

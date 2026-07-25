@@ -51,6 +51,23 @@ class CodecPurityGateTest {
         assertEquals(TaskOutcome.SUCCESS, result.task(":enforceDependencyAllowlist")?.outcome)
     }
 
+    @Test
+    fun `check fails when a non-netty module is on the codec classpath`() {
+        // P1: the gate must be wired into the `check` lifecycle task — invoking it directly is not
+        // enough. If the `tasks.named("check"){dependsOn(...)}` wiring is ever deleted, this catches
+        // the silent-bypass the spec's RELAY-018 note warns about.
+        fixture(
+            """
+            plugins { java; id("smpp.codec-purity") }
+            repositories { mavenCentral() }
+            dependencies { implementation("com.nimbusds:nimbus-jose-jwt:10.9.1") }
+            """
+        )
+        val result = runner("check").buildAndFail()
+        assertEquals(TaskOutcome.FAILED, result.task(":enforceDependencyAllowlist")?.outcome)
+        assertTrue(result.output.contains("CODEC-040"))
+    }
+
     private fun fixture(script: String) {
         Files.writeString(projectDir.resolve("settings.gradle.kts"), """rootProject.name = "gate-fixture"""")
         Files.writeString(projectDir.resolve("build.gradle.kts"), script.trimIndent())

@@ -12,7 +12,7 @@ val dependencyFloors: Map<String, String> = mapOf(
 tasks.register("enforceDependencyFloors") {
     group = "verification"
     description = "SEC-099: fail if a dependency resolves below a known-CVE fix line " +
-        "(CVE-2025-53864 floor: Nimbus >= 10.0.2)."
+            "(CVE-2025-53864 floor: Nimbus >= 10.0.2)."
 
     doLast {
         val resolved = project.configurations.named("runtimeClasspath").get()
@@ -29,7 +29,7 @@ tasks.register("enforceDependencyFloors") {
         }
         check(violations.isEmpty()) {
             "SEC-099: dependency security floor violated (known CVE):\n  " +
-                violations.joinToString("\n  ")
+                    violations.joinToString("\n  ")
         }
         logger.lifecycle("SEC-099 OK — all dependencies meet their CVE floors.")
     }
@@ -38,16 +38,22 @@ tasks.register("enforceDependencyFloors") {
 tasks.named("check") { dependsOn("enforceDependencyFloors") }
 
 // Numeric dotted Maven comparator. Sufficient for this project's clean numeric coordinates
-// (Nimbus ships 10.x.y). Swap in org.apache.maven:maven-artifact ComparableVersion if a coordinate
-// with RC/GA/SNAPSHOT qualifiers is ever gated.
+// (Nimbus ships 10.x.y). FAIL-LOUD on any non-numeric segment — a qualifier (RC/GA/SNAPSHOT/-Final)
+// cannot be ordered by a numeric comparator, and silently coercing it to 0 (the old behavior) would
+// let a malformed/qualified version pass the floor undetected. To gate a qualified coordinate, swap
+// in org.apache.maven:maven-artifact ComparableVersion here.
 fun mavenCompare(a: String, b: String): Int {
     fun pad(xs: List<String>, n: Int) = xs + List(n - xs.size) { "0" }
     val ax = a.split(".")
     val bx = b.split(".")
     val n = maxOf(ax.size, bx.size)
     for (i in 0 until n) {
-        val ai = pad(ax, n)[i].toIntOrNull() ?: 0
-        val bi = pad(bx, n)[i].toIntOrNull() ?: 0
+        val at = pad(ax, n)[i]
+        val bt = pad(bx, n)[i]
+        val ai = at.toIntOrNull()
+            ?: error("SEC-099: non-numeric version segment '$at' in '$a' — cannot order against floor '$b' (qualifier?); use ComparableVersion.")
+        val bi = bt.toIntOrNull()
+            ?: error("SEC-099: non-numeric version segment '$bt' in '$b' — cannot order against '$a' (qualifier?); use ComparableVersion.")
         if (ai != bi) return ai - bi
     }
     return 0

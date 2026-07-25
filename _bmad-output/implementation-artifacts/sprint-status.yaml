@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-07-24
+last_updated: 2026-07-25
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -70,7 +70,7 @@ story_location: _bmad-output/implementation-artifacts
 development_status:
   # --- Epic 1: Foundation — build substrate, pure SMPP 3.4 codec, and fail-fast configuration ---
   epic-1: in-progress
-  1-1-gradle-two-module-substrate-and-ci-scaffold: review
+  1-1-gradle-two-module-substrate-and-ci-scaffold: done
   epic-1-retrospective: optional
 
   # --- Epic 2: Transit SMPP end-to-end — stateless relay with the A-1 session-affinity smoke test ---

@@ -47,6 +47,21 @@ class DependencyFloorsGateTest {
         assertEquals(TaskOutcome.SUCCESS, result.task(":enforceDependencyFloors")?.outcome)
     }
 
+    @Test
+    fun `check fails when nimbus resolves below the floor`() {
+        // P1: the gate must be wired into `check`, not merely invocable directly.
+        fixture(
+            """
+            plugins { java; id("smpp.dependency-floors") }
+            repositories { mavenCentral() }
+            dependencies { implementation("com.nimbusds:nimbus-jose-jwt:10.0.1") }
+            """
+        )
+        val result = runner("check").buildAndFail()
+        assertEquals(TaskOutcome.FAILED, result.task(":enforceDependencyFloors")?.outcome)
+        assertTrue(result.output.contains("SEC-099"))
+    }
+
     private fun fixture(script: String) {
         Files.writeString(projectDir.resolve("settings.gradle.kts"), """rootProject.name = "gate-fixture"""")
         Files.writeString(projectDir.resolve("build.gradle.kts"), script.trimIndent())
