@@ -7,4 +7,7 @@
  * code exists — by CODEC-039 (ArchUnit inward-only rule) and CODEC-040/041 (dep-allowlist +
  * positive control), so the inward-only seam can never silently drift.
  */
+@NullMarked // AD-35: every type in this package is non-null unless explicitly @Nullable.
 package smpp.companion.codec;
+
+import org.jspecify.annotations.NullMarked;

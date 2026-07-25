@@ -3,6 +3,7 @@
 
 plugins {
     id("smpp.java-conventions")
+    id("smpp.null-safety")
     id("smpp.codec-purity")
 }
 
@@ -12,6 +13,8 @@ dependencies {
     implementation(platform("io.netty:netty-bom:4.2.16.Final"))
     implementation("io.netty:netty-buffer")
     implementation("io.netty:netty-codec")
+    // AD-35 nullness annotations — compileOnly so codec RUNTIME stays {io.netty}+JDK (AD-7/AD-27).
+    compileOnly("org.jspecify:jspecify:1.0.0")
 
     testImplementation(platform("org.junit:junit-bom:6.0.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")

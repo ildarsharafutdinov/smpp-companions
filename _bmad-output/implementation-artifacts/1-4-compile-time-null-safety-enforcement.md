@@ -4,7 +4,7 @@ baseline_commit: 26b1d5e
 
 # Story 1.4: Compile-Time Null-Safety Enforcement (JSpecify + NullAway Gate)
 
-Status: ready-for-dev
+Status: done
 
 > Sequel to the 2026-07-25 null-safety feasibility analysis and the adversarial `create-story:validate` pass. Decision locked as **AD-35**. Extends Epic 1 (Foundation) — a mechanical-enforcement gate peer to CODEC-040 / OBS-013 / SEC-099. Depends only on 1.1 (done); enforces on current + all future source.
 >
@@ -35,26 +35,26 @@ Status: ready-for-dev
 ## Tasks / Subtasks
 
 **0. Own the CODEC-040 whitelist (AC5) — implementation deliverable, NOT the kickoff commit.**
-- [ ] The `org.jspecify` addition to `smpp.codec-purity.gradle.kts` (`setOf("io.netty", "org.jspecify")`) is currently an UNCOMMITTED working-tree edit at baseline `26b1d5e`. It is an IMPLEMENTATION change, so it is committed ALONGSIDE the gate-wiring work (Task 1) — NOT in the docs-only kickoff commit (AD-35 ADR + story file + sprint-status entry). It MUST be on the branch before AC5 is verified, so AC5 holds on a clean checkout of the branch.
+- [x]The `org.jspecify` addition to `smpp.codec-purity.gradle.kts` (`setOf("io.netty", "org.jspecify")`) is currently an UNCOMMITTED working-tree edit at baseline `26b1d5e`. It is an IMPLEMENTATION change, so it is committed ALONGSIDE the gate-wiring work (Task 1) — NOT in the docs-only kickoff commit (AD-35 ADR + story file + sprint-status entry). It MUST be on the branch before AC5 is verified, so AC5 holds on a clean checkout of the branch.
 
 **1. NullAway convention plugin (AC1, AC3) — plugin mode, explicit.**
-- [ ] In `buildSrc/build.gradle.kts` `dependencies { }` add the Gradle **plugin-marker** deps so the precompiled script plugin resolves them: `implementation("net.ltgt.errorprone:net.ltgt.errorprone.gradle.plugin:<selected>")` and `implementation("com.uber.nullaway:nullaway-gradle-plugin:<selected>")`. (These are the GRADLE-PLUGIN coordinates — distinct from the Error Prone / NullAway analyzer coordinates; do not conflate the two version numbers.)
-- [ ] `buildSrc/src/main/kotlin/smpp.null-safety.gradle.kts`: `plugins { id("net.ltgt.errorprone"); id("com.uber.nullaway") }`; configure `dependencies { errorprone("com.google.errorprone:error_prone_core:<selected>"); errorprone("com.uber.nullaway:NullAway:<selected>") }` (the `errorprone` configuration carries the analyzer jars); then `tasks.withType<JavaCompile>().configureEach { options.errorprone { check("NullAway", CheckSeverity.ERROR); option("NullAway:AnnotatedPackages", "smpp.companion"); option("NullAway:JSpecifyMode", "true") } }`. Do NOT manually pass `-XDaddTypeAnnotationsToSymbol` — recent `net.ltgt.errorprone` enables it automatically on JDK 21+ (and the `=true` suffix is non-syntax).
-- [ ] Apply `id("smpp.null-safety")` directly in `codec/build.gradle.kts` and `proxy/build.gradle.kts`, after `id("smpp.java-conventions")`.
+- [x]In `buildSrc/build.gradle.kts` `dependencies { }` add the Gradle **plugin-marker** deps so the precompiled script plugin resolves them: `implementation("net.ltgt.errorprone:net.ltgt.errorprone.gradle.plugin:<selected>")` and `implementation("com.uber.nullaway:nullaway-gradle-plugin:<selected>")`. (These are the GRADLE-PLUGIN coordinates — distinct from the Error Prone / NullAway analyzer coordinates; do not conflate the two version numbers.)
+- [x]`buildSrc/src/main/kotlin/smpp.null-safety.gradle.kts`: `plugins { id("net.ltgt.errorprone"); id("com.uber.nullaway") }`; configure `dependencies { errorprone("com.google.errorprone:error_prone_core:<selected>"); errorprone("com.uber.nullaway:NullAway:<selected>") }` (the `errorprone` configuration carries the analyzer jars); then `tasks.withType<JavaCompile>().configureEach { options.errorprone { check("NullAway", CheckSeverity.ERROR); option("NullAway:AnnotatedPackages", "smpp.companion"); option("NullAway:JSpecifyMode", "true") } }`. Do NOT manually pass `-XDaddTypeAnnotationsToSymbol` — recent `net.ltgt.errorprone` enables it automatically on JDK 21+ (and the `=true` suffix is non-syntax).
+- [x]Apply `id("smpp.null-safety")` directly in `codec/build.gradle.kts` and `proxy/build.gradle.kts`, after `id("smpp.java-conventions")`.
 
 **2. JSpecify annotations (AC2).**
-- [ ] `org.jspecify:jspecify` → `proxy` `implementation`, `codec` `compileOnly`.
-- [ ] Add `@NullMarked` to all six main `package-info.java` files listed in AC2.
+- [x]`org.jspecify:jspecify` → `proxy` `implementation`, `codec` `compileOnly`.
+- [x]Add `@NullMarked` to all six main `package-info.java` files listed in AC2.
 
 **3. Positive control (AC4).**
-- [ ] `buildSrc/src/test/kotlin/smpp/companions/buildsrc/gates/NullSafetyGateTest.kt` (peer to the three existing gate tests, same package `smpp.companions.buildsrc.gates`): GradleTestKit + `withPluginClasspath()` (the `kotlin-dsl`-generated plugin-under-test-metadata injects the REAL `smpp.null-safety`). Implement the full AC4 contract: positive-fail (JSpecifyMode-exercising violation), silent-bypass mutation counterparts, clean negative control; assert `:compileJava` FAILED + `NullAway` + offender in output. The fixture `settings.gradle.kts` must include `pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }` (the fixture resolves the external plugins, unlike the existing gate fixtures).
+- [x]`buildSrc/src/test/kotlin/smpp/companions/buildsrc/gates/NullSafetyGateTest.kt` (peer to the three existing gate tests, same package `smpp.companions.buildsrc.gates`): GradleTestKit + `withPluginClasspath()` (the `kotlin-dsl`-generated plugin-under-test-metadata injects the REAL `smpp.null-safety`). Implement the full AC4 contract: positive-fail (JSpecifyMode-exercising violation), silent-bypass mutation counterparts, clean negative control; assert `:compileJava` FAILED + `NullAway` + offender in output. The fixture `settings.gradle.kts` must include `pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }` (the fixture resolves the external plugins, unlike the existing gate fixtures).
 
 **4. CODEC-040 whitelist verification (AC5).**
-- [ ] Extend `CodecPurityGateTest.kt` with the symmetric "jspecify allowed" case + the errorprone-config-blindness case.
+- [x]Extend `CodecPurityGateTest.kt` with the symmetric "jspecify allowed" case + the errorprone-config-blindness case.
 
 **5. Annotate existing source + verify (AC6).**
-- [ ] Minimal annotations on existing proxy/codec classes so NullAway is green on MAIN sources (`@Nullable` where genuinely nullable; rely on `@NullMarked` for the rest).
-- [ ] `./gradlew clean build :buildSrc:test` → green.
+- [x]Minimal annotations on existing proxy/codec classes so NullAway is green on MAIN sources (`@Nullable` where genuinely nullable; rely on `@NullMarked` for the rest).
+- [x]`./gradlew clean build :buildSrc:test` → green.
 
 ## Dev Notes
 
@@ -96,6 +96,123 @@ Error Prone runs dataflow analysis on every `javac` invocation, adding measurabl
 - https://spring.io/blog/2025/03/10/null-safety-in-spring-apps-with-jspecify-and-null-away
 - https://github.com/uber/NullAway (JSpecify wiki); https://errorprone.info
 
+## Dev Agent Record
+
+### Implementation Plan / Decisions (dev-time)
+
+- **Versions selected (mutually compatible; AC6 green build is the proof):** `net.ltgt.errorprone`
+  Gradle plugin **5.1.0**; Error Prone analyzer `com.google.errorprone:error_prone_core` **2.50.0**;
+  NullAway analyzer `com.uber.nullaway:nullaway` **0.13.8**; `org.jspecify:jspecify` **1.0.0**.
+- **Wiring deviation from AC1/Task-1 prose — flagged for review.** The spec said to *apply a
+  `com.uber.nullaway` Gradle plugin*. Authoritative research (Maven Central + the uber/NullAway +
+  tbroyer/gradle-nullaway-plugin docs) shows **there is no `com.uber.nullaway` Gradle plugin id**:
+  NullAway is an Error Prone *check* (`com.uber.nullaway:nullaway` on the `errorprone` configuration),
+  and the `options.errorprone { }` DSL the spec already specified is provided by **`net.ltgt.errorprone`
+  alone**. So the convention plugin applies ONLY `net.ltgt.errorprone` (one plugin, not two) — the
+  simplest faithful, fail-closed wiring (matches the "prefer simple + fail-closed" guidance). The AC1
+  enforcement *intent* (NullAway at ERROR, applied DIRECTLY per-module, no opt-out) is fully met; the
+  literal "applies `com.uber.nullaway` plugin" wording is factually wrong and is the documented correction.
+- **Precompiled-script-plugin gotcha (fixed).** `net.ltgt.errorprone` creates its `errorprone`
+  configuration and `options.errorprone` extension at apply time, so a precompiled script plugin does
+  NOT generate accessors for them (`errorprone { }` / `options.errorprone { }` fail to resolve). The
+  plugin therefore uses the accessor-free forms: `add("errorprone", …)` for the config and
+  `(options as ExtensionAware).extensions.getByType(ErrorProneOptions::class.java)` for the extension.
+- **AC4 violation pattern (corrected).** The `List<@Nullable String>.get(0)` type-argument propagation
+  does **not** fire on NullAway 0.13.8 (JSpecify support is still work-in-progress for library-method
+  return propagation). The direct **`List<@Nullable String>` → `List<String>` assignment** (the spec's
+  own suggested example) DOES fire — `[NullAway] incompatible types: List<@Nullable String> cannot be
+  converted to List<String` — and fires ONLY under `JSpecifyMode=true`, so it is the load-bearing proof.
+- **Test-source enforcement = MAIN only (per Dev Notes).** NullAway is disabled on every non-`compileJava`
+  JavaCompile task (i.e. `compileTestJava`); configured via one `tasks.withType<JavaCompile>().configureEach`
+  that branches on the task name.
+
+### Debug Log
+
+- Initial `:buildSrc:compileKotlin` failed: `errorprone(…)` / `options.errorprone { }` unresolved
+  (precompiled-accessor gap above). Fixed with `add(…)` + `ExtensionAware` lookup.
+- First AC4 run: positive control got `UnexpectedBuildSuccess` — the violation didn't fire. Diagnosed
+  via a temp core-`@Nullable`-deref probe (which DID fail compileJava → proved EP+NullAway are wired
+  and configured), then switched the violation to the generic-assignment pattern, which fires. All
+  probe/diag code removed; the committed test is the clean contract.
+
+### Completion Notes
+
+- **AC1** — `smpp.null-safety` applies `net.ltgt.errorprone`; NullAway at `CheckSeverity.ERROR`;
+  applied DIRECTLY from `codec/build.gradle.kts` + `proxy/build.gradle.kts` after `smpp.java-conventions`.
+  (See the wiring-deviation note above re: the `com.uber.nullaway` plugin wording.)
+- **AC2** — `org.jspecify:jspecify:1.0.0` is `implementation` on proxy, `compileOnly` on codec;
+  `@NullMarked` added to all 6 main `package-info.java` files (codec + proxy bootstrap/config/
+  observability/relay/security).
+- **AC3** — `option("NullAway:JSpecifyMode","true")` + `option("NullAway:AnnotatedPackages","smpp.companion")`;
+  a `@Nullable`-related violation fails the build (AC4 positive control).
+- **AC4** — `NullSafetyGateTest` (5 `@Test`): positive-fail (generic-assignment violation → `:compileJava`
+  FAILED + output contains `NullAway` + `NullnessViolation`); clean negative control (compiles); 3
+  silent-bypass mutation controls (without `JSpecifyMode` / at `WARN` / with no analyzer) each SUCCEED
+  where the full gate would fail — proving each load-bearing line matters.
+- **AC5** — the CODEC-040 `org.jspecify` whitelist (Task 0) is in the tree; `CodecPurityGateTest`
+  gains the symmetric "jspecify allowed" case (`compileOnly` jspecify + netty → `:enforceDependencyAllowlist`
+  SUCCESS) and the errorprone-config-blindness case (`smpp.null-safety` + `smpp.codec-purity` + netty →
+  SUCCESS, proving the `errorprone` config is invisible to the gate). Existing forbidden-group rejection
+  still fails.
+- **AC6** — `./gradlew clean build :buildSrc:test` is GREEN on JDK 25 + `--enable-preview`. **25 `@Test`
+  methods** total (18 at baseline + 7 added here: 5 `NullSafetyGateTest` + 2 `CodecPurityGateTest`);
+  **none removed or `@Disabled`**. Zero source annotations were needed — the 3 proxy main classes +
+  codec package are already null-clean under `@NullMarked` (rely on `@NullMarked` for the rest, per Task 5).
+  No preview-USING source in scope, so EP does not analyze preview code today (Epic 2 re-verify noted).
+- **Deferred (non-blocking):** enabling EP surfaces one pre-existing `[StringCaseLocaleUsage]` WARNING
+  in `GoldenVectorCorpusTest.java:67` (test code, outside null-safety scope); build stays green. Logged
+  in `_bmad-output/implementation-artifacts/deferred-work.md`.
+- **Commits:** all Task 0–5 changes are UNCOMMITTED in the working tree, awaiting commit direction
+  (standing rule: commit only when asked). `party-mode/` remains untracked/excluded.
+
+## File List
+
+- `buildSrc/build.gradle.kts` — M: `net.ltgt.errorprone` plugin-marker dep (5.1.0).
+- `buildSrc/src/main/kotlin/smpp.null-safety.gradle.kts` — NEW: the AD-35 convention plugin.
+- `buildSrc/src/main/kotlin/smpp.codec-purity.gradle.kts` — M: CODEC-040 `org.jspecify` whitelist (Task 0).
+- `buildSrc/src/test/kotlin/smpp/companions/buildsrc/gates/NullSafetyGateTest.kt` — NEW: AC4 positive control.
+- `buildSrc/src/test/kotlin/smpp/companions/buildsrc/gates/CodecPurityGateTest.kt` — M: AC5 controls.
+- `codec/build.gradle.kts` — M: `id("smpp.null-safety")` + `compileOnly("org.jspecify:jspecify:1.0.0")`.
+- `codec/src/main/java/smpp/companion/codec/package-info.java` — M: `@NullMarked`.
+- `proxy/build.gradle.kts` — M: `id("smpp.null-safety")` + `implementation("org.jspecify:jspecify:1.0.0")`.
+- `proxy/src/main/java/smpp/companion/proxy/bootstrap/package-info.java` — M: `@NullMarked`.
+- `proxy/src/main/java/smpp/companion/proxy/config/package-info.java` — M: `@NullMarked`.
+- `proxy/src/main/java/smpp/companion/proxy/observability/package-info.java` — M: `@NullMarked`.
+- `proxy/src/main/java/smpp/companion/proxy/relay/package-info.java` — M: `@NullMarked`.
+- `proxy/src/main/java/smpp/companion/proxy/security/package-info.java` — M: `@NullMarked`.
+- `_bmad-output/implementation-artifacts/deferred-work.md` — M: Story 1.4 deferred item.
+
 ## Change Log
 - 2026-07-25 — Story 1.4 created (null-safety feasibility analysis → AD-35 → this story). CODEC-040 `org.jspecify` whitelist applied as setup (uncommitted; an IMPLEMENTATION change committed with the gate wiring — Task 0 — not the docs-only kickoff).
 - 2026-07-25 — Revised per `create-story:validate` findings + version-unpinning directive: (1) Error Prone / NullAway / `net.ltgt.errorprone` / JSpecify versions DEPINNED — selected during implementation, green build is the proof (retires the unverified version claims + the analyzer-vs-plugin-version conflation); (2) AC1 — buildSrc must declare the two Gradle plugins as `implementation` deps or `smpp.null-safety` won't compile; (3) AC2 — `@NullMarked` enumerated across all 6 main package-infos (no sub-package propagation); (4) AC4 — concrete fixture contract, JSpecifyMode-guarding generic-type-arg violation, silent-bypass mutation counterparts, dual diagnostic assertion, named `compileJava` task, clean negative control; (5) AC5 — whitelist owned as an implementation deliverable (committed with the gate wiring, Task 0) + symmetric "jspecify allowed" control + errorprone-config-blindness control; (6) test-source enforcement decided (main-only, v1); (7) dropped redundant `-XDaddTypeAnnotationsToSymbol`; (8) "20 tests" corrected to the verified 18 `@Test` methods. Status: ready-for-dev.
+- 2026-07-25 — Implemented (dev-story). Versions selected at impl time (green build = proof):
+  `net.ltgt.errorprone` 5.1.0, `error_prone_core` 2.50.0, NullAway 0.13.8, jspecify 1.0.0. Wiring
+  corrected: there is no `com.uber.nullaway` Gradle plugin — applied `net.ltgt.errorprone` only (see
+  Dev Agent Record). AC4 violation uses the generic-assignment pattern (the `List.get` propagation does
+  not fire on NullAway 0.13.8). All 6 ACs verified; 25 `@Test` (18 + 7), none removed/disabled. One
+  non-blocking EP `StringCaseLocaleUsage` warning deferred (see deferred-work.md). Status: review.
+- 2026-07-25 — Code review pass (bmad-code-review; **all three layers** — Edge Case Hunter + Acceptance Auditor + Blind Hunter; Blind Hunter run in a second user-requested pass, empirically probed the real proxy/codec `compileJava`, found no new defects). AC6 independently re-verified green three times. 2 decision-needed findings resolved: ① added the root proxy `@NullMarked package-info.java`; ② kept the disable exclusion + added a caveat comment (structural allow-list restructure deferred). 2 low-severity items deferred; 3 dismissed. Status: done.
+
+## Review Findings
+
+> Code review run 2026-07-25 via `bmad-code-review`. **All three adversarial layers completed: Edge Case Hunter, Acceptance Auditor, and Blind Hunter** (Blind Hunter run in a second pass after the user opted in; it empirically injected violation probes into the REAL `:proxy:compileJava` and `:codec:compileJava` and confirmed the gate fires end-to-end under `--enable-preview`, codec runtime purity, the `errorprone`-config blindness, and that the AC4 dual-assertion cannot pass for the wrong reason — **no new critical/high/medium defects**; its only 2 lows were the same ones already resolved below). AC6 green build independently re-verified `BUILD SUCCESSFUL` three times; all gates fired (SEC-099 / OBS-013 / CODEC-040 / dependency floors) and the AC4/AC5 GradleTestKit positive controls passed. All 6 ACs confirmed satisfied (AC1 deviates-but-sound per the Dev Agent Record).
+
+### Decision-needed (resolved at review)
+
+- [x] [Review][Decision→Patch] **Proxy root package `smpp.companion.proxy` had no `@NullMarked package-info.java`** — `ProxyCompanionApplication.java` (the Spring Boot entrypoint) lived in an unannotated package; only its 5 sub-packages + `codec` carried `@NullMarked`. **Resolved (① = add):** created `proxy/src/main/java/smpp/companion/proxy/package-info.java` with `@NullMarked`. NullAway coverage was already intact via `AnnotatedPackages`; this completes the JSpecify contract for non-NullAway consumers (Spring 7 / IDE / Kotlin). Build re-verified green.
+- [x] [Review][Decision→Patch+Defer] **NullAway disable uses a `name == "compileJava"` exclusion, diverging from the Dev Notes' "disable `compileTestJava`" inclusion** (`buildSrc/src/main/kotlin/smpp.null-safety.gradle.kts:32`) — any future non-`compileJava` MAIN-ish sourceSet (test-fixtures, jmh, generated) would silently fall into the `else` branch and bypass null-safety. **Resolved (② = keep + document):** kept the exclusion (simplest fail-closed form) and added a caveat comment at the branch naming the future-sourceSet opt-in. Structural allow-list restructure **deferred** — revisit when a 2nd main sourceSet lands (likely Epic 2+); see `deferred-work.md`.
+
+### Patch
+
+_(none — the load-bearing AC4 positive control and the wiring are sound.)_
+
+### Deferred (low-severity; also recorded in `deferred-work.md`)
+
+- [x] [Review][Defer] **No dedicated mutation control for the `AnnotatedPackages` line** (`NullSafetyGateTest.kt`) — implicitly guarded by the positive control (a broken `AnnotatedPackages` would stop the violation firing → `UnexpectedBuildSuccess`); AC4's three enumerated mutation controls (JSpecifyMode / severity / plugin-applied) are all present and correct. Optional 4th mutation for completeness.
+- [x] [Review][Defer] **CODEC-040-blindness fixture asserts declaration-blindness only** (`CodecPurityGateTest.kt:90-104`) — the gate structurally scans only `compileClasspath`/`runtimeClasspath`, so the `errorprone` configuration is invisible by construction; the test reflects the gate's actual behavior. Optional: a scope note in the test comment.
+
+### Dismissed (with rationale)
+
+- **`contains("NullnessViolation")` offender-id assertion matches class/file name** (EC4/AA3) — satisfies AC4's "identifier from the violation source" and is robustly backed by the `contains("NullAway")` literal. Not a gap.
+- **Mutation (c) `noAnalyzerFixture` applies plain `java`** (AA2) — functionally equivalent to "convention plugin not applied to `compileJava`"; the SUCCESS assertion is correct. Acceptable.
+- **EP's full check suite still runs on test sources** (EC6) — already tracked in `deferred-work.md` (`StringCaseLocaleUsage`, 2026-07-25); an accepted side-effect of the "MAIN-only, v1" decision.

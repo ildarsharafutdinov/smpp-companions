@@ -15,6 +15,12 @@ repositories {
 }
 
 dependencies {
+    // AD-35: the smpp.null-safety convention plugin applies `net.ltgt.errorprone`, so its
+    // plugin-marker must be on buildSrc's compile classpath (the precompiled script plugin then
+    // generates the `errorprone` config + `options.errorprone { }` accessors). The analyzers
+    // (error_prone_core / NullAway) are declared per-consumer on the `errorprone` config, NOT here.
+    implementation("net.ltgt.errorprone:net.ltgt.errorprone.gradle.plugin:5.1.0")
+
     testImplementation(platform("org.junit:junit-bom:6.0.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation(gradleTestKit()) // GradleRunner / BuildResult / TaskOutcome — from the 9.6.1 distribution

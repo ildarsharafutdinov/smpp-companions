@@ -68,8 +68,56 @@ class CodecPurityGateTest {
         assertTrue(result.output.contains("CODEC-040"))
     }
 
+    @Test
+    fun `passes when org_jspecify is on the codec classpath (AC5 jspecify-allowed half)`() {
+        // Symmetric control: the existing tests prove a non-allowed group is REJECTED; this proves the
+        // ONE whitelisted non-netty group (org.jspecify, AD-35) is ACCEPTED — compileOnly so it never
+        // reaches the runtime classpath (AD-7/AD-27 codec purity), but it IS on compileClasspath.
+        fixture(
+            """
+            plugins { java; id("smpp.codec-purity") }
+            repositories { mavenCentral() }
+            dependencies {
+                implementation("io.netty:netty-buffer:4.2.16.Final")   // allowed
+                compileOnly("org.jspecify:jspecify:1.0.0")             // AD-35: the whitelisted non-netty group
+            }
+            """
+        )
+        val result = runner("enforceDependencyAllowlist").build()
+        assertEquals(TaskOutcome.SUCCESS, result.task(":enforceDependencyAllowlist")?.outcome)
+    }
+
+    @Test
+    fun `CODEC-040 is blind to the errorprone config when smpp_null-safety is applied (AC5)`() {
+        // smpp.null-safety places error_prone_core + nullaway on the `errorprone` configuration, which
+        // is neither compileClasspath nor runtimeClasspath — so the allowlist gate must never see them,
+        // even though both modules now apply smpp.null-safety alongside smpp.codec-purity.
+        fixtureWithPluginPortal(
+            """
+            plugins { java; id("smpp.null-safety"); id("smpp.codec-purity") }
+            repositories { mavenCentral() }
+            dependencies { implementation("io.netty:netty-buffer:4.2.16.Final") }
+            """
+        )
+        val result = runner("enforceDependencyAllowlist").build()
+        assertEquals(TaskOutcome.SUCCESS, result.task(":enforceDependencyAllowlist")?.outcome)
+    }
+
     private fun fixture(script: String) {
         Files.writeString(projectDir.resolve("settings.gradle.kts"), """rootProject.name = "gate-fixture"""")
+        Files.writeString(projectDir.resolve("build.gradle.kts"), script.trimIndent())
+    }
+
+    // smpp.null-safety applies net.ltgt.errorprone internally, so a fixture that uses it must let the
+    // runner resolve that external plugin from the portal (withPluginClasspath only injects smpp.* ids).
+    private fun fixtureWithPluginPortal(script: String) {
+        Files.writeString(
+            projectDir.resolve("settings.gradle.kts"),
+            """
+            pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }
+            rootProject.name = "gate-fixture"
+            """.trimIndent()
+        )
         Files.writeString(projectDir.resolve("build.gradle.kts"), script.trimIndent())
     }
 
