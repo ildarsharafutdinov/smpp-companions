@@ -1,5 +1,5 @@
 # generated: 2026-07-24
-# last_updated: 2026-07-24
+# last_updated: 2026-07-26
 # project: smpp-companions
 # project_key: NOKEY
 # tracking_system: file-system
@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-07-25
+last_updated: 2026-07-26
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -71,6 +71,7 @@ development_status:
   # --- Epic 1: Foundation — build substrate, pure SMPP 3.4 codec, and fail-fast configuration ---
   epic-1: in-progress
   1-1-gradle-two-module-substrate-and-ci-scaffold: done
+  1-2-smpp-3-4-codec: ready-for-dev
   1-4-compile-time-null-safety-enforcement: done
   epic-1-retrospective: optional
 
