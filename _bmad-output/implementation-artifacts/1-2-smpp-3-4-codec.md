@@ -1,6 +1,10 @@
+---
+baseline_commit: 0515c48529a19a3de92ba7db18ab18ef3654df2c
+---
+
 # Story 1.2: SMPP 3.4 Codec
 
-Status: ready-for-dev
+Status: in-progress
 
 > Story 1.2 fills the `codec/` module (seeded empty by Story 1.1) with the PURE SMPP 3.4 protocol
 > layer: length-framing, bind-family parsing, the `command_id` source-of-truth, a spec-derived
@@ -215,8 +219,11 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
 
 ### AC9 — Purity + null-safety gates stay green (CODEC-039, CODEC-040, CODEC-041, AD-35)
 - CODEC-039 ArchUnit inward-only rule stays green (now load-bearing — real codec classes exist).
-- CODEC-040 allowlist `{io.netty, org.jspecify}` stays green on both compile AND runtime classpath;
-  jspecify stays `compileOnly`. CODEC-041 positive control unchanged.
+- CODEC-040 allowlist `{io.netty, org.jspecify, org.projectlombok}` stays green on both compile AND
+  runtime classpath; jspecify + lombok are `compileOnly` (lombok also `annotationProcessor`) so codec
+  RUNTIME stays {io.netty}+JDK. CODEC-041 positive control extended with a symmetric lombok-accepted
+  test. _(2026-07-27 amendment, user-directed: `org.projectlombok` admitted to follow the resolved
+  `// FIXME: replace with lombok`; compile-time-only → AD-7/AD-27 runtime purity unchanged. See Dev Agent Record.)_
 - **Every new codec sub-package gets its own `@NullMarked package-info.java`** (JSpec does not
   propagate to sub-packages — Story 1.4 caught a miss of this kind).
 - All codec `compileJava` is NullAway-clean at ERROR severity. Annotate genuinely-nullable types with
@@ -232,12 +239,12 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
 
 ## Tasks / Subtasks
 
-- [ ] **T1 — Command-id source-of-truth** (AC3, AC4)
-  - [ ] `smpp.companion.codec.command.SmppCommandIds` with `BIND_FAMILY` = the correct 6-id set
+- [x] **T1 — Command-id source-of-truth** (AC3, AC4)
+  - [x] `smpp.companion.codec.command.SmppCommandIds` with `BIND_FAMILY` = the correct 6-id set
         (spec reconciliation #1) + `MAX_COMMAND_LENGTH = 65536` (AD-30) + response-bit helpers.
-  - [ ] `package-info.java` (`@NullMarked`) for the new sub-package.
-  - [ ] Unit tests: CODEC-026/027/028/029.
-  - [ ] RELAY-026 stub test (AC4); log remainder to `deferred-work.md`.
+  - [x] `package-info.java` (`@NullMarked`) for the new sub-package.
+  - [x] Unit tests: CODEC-026/027/028/029.
+  - [x] RELAY-026 stub test (AC4); log remainder to `deferred-work.md`.
 - [ ] **T2 — `SmppFrameDecoder`** (AC1)
   - [ ] `smpp.companion.codec.framer.SmppFrameDecoder extends ByteToMessageDecoder` (NOT
         `LengthFieldBasedFrameDecoder`). Read `command_length` via `in.getInt(in.readerIndex())`;
@@ -276,6 +283,14 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
   - [ ] Confirm CODEC-039/040/041 + AD-35 green; add `@NullMarked package-info.java` to every new
         sub-package; full `./gradlew clean build :buildSrc:test` green.
   - [ ] Record the spec-error correction (reconciliation #1) in the Dev Agent Record.
+
+### Review Findings
+
+_T1 code review (2026-07-27) — 3 parallel adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor). Verdict: clean — no High/Med defects; spec reconciliation #1 (`bind_transceiver = 0x09`) verified correct against `docs/SMPP_v3_4_Issue1_2.pdf` §5.1.2 (`0x0F` is the `ESME_RINVSYSID` status code, confirming the catalog typo); AC3/AC4 + AD-3/AD-7/AD-27/AD-30/AD-35 all met; CODEC-039/040 gates green. 3 low-severity patches below; 4 items dismissed (redundant hex assertion, harmless class-level `@NullMarked`, `p1` tag verified-correct vs catalog, CODEC-027/028 scope-split already documented)._
+
+- [x] [Review][Patch] Warn the T2 framer in the `MAX_COMMAND_LENGTH` javadoc about the signed-int comparison pitfall — `ByteBuf.getInt` returns a *signed* int, so an overflow-class `command_length` (e.g. `0xFFFFFFFF` = -1) passes a naive `> MAX` check; the AD-30 `< 16` floor is the real guard. [`codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java:31`]
+- [x] [Review][Patch] Add a caveat to `requestIdOf` — it returns `0x00000000` (unassigned) for `generic_nack` (`0x80000000`), which has no underlying request; the current javadoc overpromises. [`codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java:74`]
+- [x] [Review][Patch] Pin the bit-31 predicate at its boundaries — assert `isResponse`/`requestIdOf` at `0x80000000`, `0x00000000`, `0xFFFFFFFF`, and `requestIdOf(0x80000000) == 0`; the boundaries most likely to drift in a future regression. [`codec/src/test/java/smpp/companion/codec/command/SmppCommandIdsTest.java:69`]
 
 ---
 
@@ -481,10 +496,67 @@ requires benchmark classes to be JSpecify-clean under `smpp.companion.*` (or exc
 
 ### Agent Model Used
 
-_(to be filled by dev agent)_
+glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflow orchestration).
 
 ### Debug Log References
 
+- **RED→GREEN cycle (T1):** wrote `SmppCommandIdsTest` + `MaxCommandLengthContractTest` + the `command`
+  `package-info.java` first; `./gradlew :codec:compileTestJava` → **25 errors** (`cannot find symbol
+  SmppCommandIds`) = RED confirmed (tests genuinely depend on the impl). Implemented `SmppCommandIds`;
+  `./gradlew :codec:build` → **BUILD SUCCESSFUL** = GREEN.
+- **Gates re-verified with the new code:** `:codec:enforceDependencyAllowlist` → "CODEC-040 OK — codec
+  classpath is {io.netty, org.jspecify} + JDK stdlib only"; ArchUnit CODEC-039 green against the new
+  `smpp.companion.codec.command..` sub-package (no proxy deps); `compileJava` NullAway-clean (AD-35).
+- **Test execution (verified, 0 skipped):** `SmppCommandIdsTest`=5, `MaxCommandLengthContractTest`=1,
+  `CodecIsolationArchitectureTest`=1 — all green, no regressions in `codec`.
+
 ### Completion Notes List
 
+- **T1 complete — Command-id source-of-truth (AC3, AC4).** Delivered `SmppCommandIds` (`BIND_FAMILY` =
+  the spec-correct 6-id set, `MAX_COMMAND_LENGTH = 65536` (AD-30), response-bit helpers `isResponse` /
+  `requestIdOf` / `isBindFamily`) + `@NullMarked` `command/package-info.java`.
+- **Spec reconciliation #1 APPLIED (not copy-paste):** `bind_transceiver = 0x00000009` /
+  `bind_transceiver_resp = 0x80000009`, NOT the `0x0F` / `0x8000000F` asserted at
+  `test-coverage-scenarios.md:221,241`. CODEC-026 asserts the corrected set; the jSMPP cross-oracle
+  (CODEC-031, T5) will independently confirm `0x09` (`org.jsmpp.bean.CommandId.BIND_TRANSCEIVER`).
+  **Correction logged here, not edited into the planning artifact** — the catalog is a planning doc;
+  its CODEC-026/029 literals still read `0x0F`/`0x8000000F` upstream and are flagged for the next
+  planning-docs pass (see `deferred-work.md`).
+- **CODEC-027/028 scope split (transparent):** the *membership* clauses (outbind `0x0B` /
+  generic_nack `0x80000000` / submit_sm·deliver_sm·enquire_link·unbind are NOT bind-family) are
+  asserted at the SoT level here. The *parser-runtime* halves ("the bind parser emits no typed object
+  for those ids") land with the bind parser in T3 — the parser consumes only `BIND_FAMILY`, so opacity
+  is structural. Mirrored in the `SmppCommandIdsTest` javadoc.
+- **RELAY-026 stub shipped (AC4):** `MaxCommandLengthContractTest` pins `MAX_COMMAND_LENGTH == 65536`
+  and documents the AD-30 three-way contract (codec-constant ≡ formula-input ≡ config-default). The
+  full assertion lands in Story 1.3 (config key + `MaxDirectMemorySize` formula); remainder logged to
+  `deferred-work.md`.
+- **No `// FIXME` markers introduced.** No new dependencies (`java.util.Set` + `org.jspecify` only —
+  inside the CODEC-040 allowlist). The AC10 full `./gradlew clean build :buildSrc:test` is deferred to
+  T8 (story completion); `:codec:build` is green for T1.
+- **T1 code review (2026-07-27) — clean; 3 low patches applied, build green.** 3 parallel adversarial
+  layers found no High/Med defects; the `0x09` spec reconciliation was verified correct against
+  `docs/SMPP_v3_4_Issue1_2.pdf` §5.1.2 (`0x0F` = `ESME_RINVSYSID` status code). Applied: (1)
+  `MAX_COMMAND_LENGTH` javadoc warns T2's framer about the signed-int `ByteBuf.getInt` pitfall (the
+  `<16` floor is the guard); (2) `requestIdOf` javadoc caveats the generic_nack→`0` undefined case;
+  (3) `SmppCommandIdsTest` +1 boundary test pinning the bit-31 predicate at `0x80000000`/`0x00000000`/
+  `0xFFFFFFFF` (now 6 tests, 0 skipped, green). CODEC-039/040 + AD-35 still green; see `### Review Findings`.
+- **FIXME resolved (2026-07-27) — `// FIXME: replace with lombok` → ADOPTED (user-directed).**
+  Widened CODEC-040's `allowedGroups` to admit `org.projectlombok` (compile-time-only, mirroring
+  `org.jspecify`); applied the `io.freefair.lombok` plugin (`9.5.0`; forward-compat to Gradle 9.6.1 —
+  green build is the proof) in `codec/build.gradle.kts`, pinning Lombok `1.18.46` (JDK 25 support) via
+  its `lombok { }` extension — the plugin wires `compileOnly` + `annotationProcessor` for every source
+  set; applied `@lombok.experimental.UtilityClass` to `SmppCommandIds` (Lombok now makes it final +
+  generates the private ctor). AD-7/AD-27 RUNTIME purity unchanged — lombok stays off runtimeClasspath
+  (compileOnly); only the COMPILE allowlist grew. AD-23's runtime-annotation-dispatch ban is not
+  triggered (Lombok is compile-time codegen). Verified: `./gradlew clean build :buildSrc:test` GREEN;
+  CODEC-040 prints `{io.netty, org.jspecify, org.projectlombok}`; CODEC-041 +1 symmetric
+  lombok-accepted control (6 tests); ErrorProne+NullAway coexist with Lombok on JDK 25. AC9 allowlist
+  text + gate comment/messages updated to match.
+
 ### File List
+
+- `codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java` (new)
+- `codec/src/main/java/smpp/companion/codec/command/package-info.java` (new)
+- `codec/src/test/java/smpp/companion/codec/command/SmppCommandIdsTest.java` (new)
+- `codec/src/test/java/smpp/companion/codec/command/MaxCommandLengthContractTest.java` (new)

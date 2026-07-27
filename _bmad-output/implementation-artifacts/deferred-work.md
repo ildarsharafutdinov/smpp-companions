@@ -33,3 +33,16 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   `compileClasspath`/`runtimeClasspath`), so it proves the deps don't leak by construction, not that
   they couldn't under a future `extendsFrom` change. Low value (reflects actual gate design); optional
   scope-note in the test name. [buildSrc/src/test/kotlin/smpp/companions/buildsrc/gates/CodecPurityGateTest.kt:90-104]
+
+## Deferred from: story-1-2-smpp-3-4-codec (T1 — command-id source-of-truth, 2026-07-27)
+
+- **RELAY-026 three-way max-frame constant assertion → Story 1.3** — T1 shipped the
+  `MaxCommandLengthContractTest` stub pinning `SmppCommandIds.MAX_COMMAND_LENGTH == 65536` (AD-30).
+  The full contract — codec-constant ≡ future `MaxDirectMemorySize` formula input
+  (`max_frame × max_inbound_depth × concurrent_pairs × safety_factor`) ≡ `companion.*` config default
+  all referencing ONE constant — lands when Story 1.3 owns the config keys + formula. (AC4 / RELAY-026.)
+- **Planning-doc literal correction pending** — `test-coverage-scenarios.md` CODEC-026 (:221) and
+  CODEC-029 (:241) still assert `bind_transceiver = 0x0F` / `0x8000000F` (the `ESME_RINVSYSID` *status*
+  code, not a command_id). Story 1.2 implemented the spec-correct `0x09` / `0x80000009` (verified vs
+  `docs/SMPP_v3_4_Issue1_2.pdf` §5.1.2 + the jSMPP oracle, CODEC-031). Correct the catalog literals at
+  the next planning-docs pass. Not code-blocking.
