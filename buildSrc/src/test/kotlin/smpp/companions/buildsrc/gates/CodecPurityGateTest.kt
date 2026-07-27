@@ -71,8 +71,8 @@ class CodecPurityGateTest {
     @Test
     fun `passes when org_jspecify is on the codec classpath (AC5 jspecify-allowed half)`() {
         // Symmetric control: the existing tests prove a non-allowed group is REJECTED; this proves the
-        // ONE whitelisted non-netty group (org.jspecify, AD-35) is ACCEPTED — compileOnly so it never
-        // reaches the runtime classpath (AD-7/AD-27 codec purity), but it IS on compileClasspath.
+        // whitelisted non-netty groups (org.jspecify AD-35 + org.projectlombok codegen) are ACCEPTED —
+        // compileOnly so they never reach the runtime classpath (AD-7/AD-27 codec purity), but ARE on compileClasspath.
         fixture(
             """
             plugins { java; id("smpp.codec-purity") }
@@ -80,6 +80,25 @@ class CodecPurityGateTest {
             dependencies {
                 implementation("io.netty:netty-buffer:4.2.16.Final")   // allowed
                 compileOnly("org.jspecify:jspecify:1.0.0")             // AD-35: the whitelisted non-netty group
+            }
+            """
+        )
+        val result = runner("enforceDependencyAllowlist").build()
+        assertEquals(TaskOutcome.SUCCESS, result.task(":enforceDependencyAllowlist")?.outcome)
+    }
+
+    @Test
+    fun `passes when org_projectlombok is on the codec classpath (compile-time codegen, compileOnly)`() {
+        // Symmetric control for the second whitelisted non-netty group: org.projectlombok (Lombok
+        // compile-time code generation). Compile-time-only — compileOnly + annotationProcessor — so it
+        // sits on compileClasspath but never on runtimeClasspath (codec RUNTIME stays {io.netty}+JDK).
+        fixture(
+            """
+            plugins { java; id("smpp.codec-purity") }
+            repositories { mavenCentral() }
+            dependencies {
+                implementation("io.netty:netty-buffer:4.2.16.Final")   // allowed
+                compileOnly("org.projectlombok:lombok:1.18.46")        // whitelisted non-netty group (compile-time codegen)
             }
             """
         )
