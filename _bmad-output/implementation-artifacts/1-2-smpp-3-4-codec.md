@@ -245,15 +245,15 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
   - [x] `package-info.java` (`@NullMarked`) for the new sub-package.
   - [x] Unit tests: CODEC-026/027/028/029.
   - [x] RELAY-026 stub test (AC4); log remainder to `deferred-work.md`.
-- [ ] **T2 — `SmppFrameDecoder`** (AC1)
-  - [ ] `smpp.companion.codec.framer.SmppFrameDecoder extends ByteToMessageDecoder` (NOT
+- [x] **T2 — `SmppFrameDecoder`** (AC1)
+  - [x] `smpp.companion.codec.framer.SmppFrameDecoder extends ByteToMessageDecoder` (NOT
         `LengthFieldBasedFrameDecoder`). Read `command_length` via `in.getInt(in.readerIndex())`;
         honor the ByteToMessageDecoder contract (check `readableBytes()`, return without moving
         reader index when incomplete).
-  - [ ] AD-30 reject policy: `<16` drop+close; `>65536` drop+close; overflow-class
+  - [x] AD-30 reject policy: `<16` drop+close; `>65536` drop+close; overflow-class
         (`0x7FFFFFFF`/`0x80000000`/`0xFFFFFFFF`) reject **before** any allocation.
-  - [ ] `package-info.java` (`@NullMarked`).
-  - [ ] Unit tests CODEC-001..015 (use Netty `EmbeddedChannel`); real-TCP tests CODEC-034..036.
+  - [x] `package-info.java` (`@NullMarked`).
+  - [x] Unit tests CODEC-001..015 (use Netty `EmbeddedChannel`); real-TCP tests CODEC-034..036.
 - [ ] **T3 — `SmppCodec` bind parser + PDU model + encoder** (AC2, AC6)
   - [ ] `smpp.companion.codec.bind` package: typed bind PDU model (header + `system_id`, `password`
         as `char[]`/`byte[]`, `system_type`, `interface_version`), `SmppCodec` (bind branch:
@@ -291,6 +291,12 @@ _T1 code review (2026-07-27) — 3 parallel adversarial layers (Blind Hunter, Ed
 - [x] [Review][Patch] Warn the T2 framer in the `MAX_COMMAND_LENGTH` javadoc about the signed-int comparison pitfall — `ByteBuf.getInt` returns a *signed* int, so an overflow-class `command_length` (e.g. `0xFFFFFFFF` = -1) passes a naive `> MAX` check; the AD-30 `< 16` floor is the real guard. [`codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java:31`]
 - [x] [Review][Patch] Add a caveat to `requestIdOf` — it returns `0x00000000` (unassigned) for `generic_nack` (`0x80000000`), which has no underlying request; the current javadoc overpromises. [`codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java:74`]
 - [x] [Review][Patch] Pin the bit-31 predicate at its boundaries — assert `isResponse`/`requestIdOf` at `0x80000000`, `0x00000000`, `0xFFFFFFFF`, and `requestIdOf(0x80000000) == 0`; the boundaries most likely to drift in a future regression. [`codec/src/test/java/smpp/companion/codec/command/SmppCommandIdsTest.java:69`]
+
+_T2 code review (2026-07-28) — 3 parallel adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor) + per-finding verification (7 agents), run on the uncommitted LFBD-subclass framer + the `MIN_COMMAND_LENGTH` move. Verdict: the framer PRODUCT CODE is correct — no product defect, no AC1/AD violation (CODEC-010 reject-before-allocation, CODEC-008 off-by-one, CODEC-013 exception containment, CODEC-014 per-channel isolation all genuinely hold; verified against the Netty 4.2.16 bytecode). 3 CONFIRMED findings, all low / test-quality — the framer's TESTS prove less than they claim:_
+
+- [x] [Review][Patch] CODEC-015 reject-path "no leaked buffer escapes channel close" assertion is vacuous — `ResourceLeakDetector` PARANOID only `logger.error`s at GC (never throws) and `EmbeddedChannel.finishAndReleaseAll()` doesn't throw on an orphaned retained slice, so the leak dimension isn't actually enforced; the adjacent `maxRequested<=MAX` carries the real evidence (see next finding). [`codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java:442`]
+- [x] [Review][Patch] CODEC-010 load-bearing reject-before-allocation proof is weak — the single `writeInbound` builds its input via `Unpooled.buffer` (the DEFAULT allocator) and `MERGE_CUMULATOR` returns that input directly (cumulation empty + contiguous), so the per-channel `RecordingAllocator`/`ctx.alloc()` is never called → `maxRequested` stays 0 → `assertThat(maxRequested).isLessThanOrEqualTo(MAX)` evaluates to `0 <= 65536` (true for any decoder). It still catches a `ctx.alloc().buffer(malformed)` regression but not a `Unpooled.buffer(malformed)` bypass, and doesn't measure cumulation growth as the `RecordingAllocator` javadoc claims. [`codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java:360`]
+- [x] [Review][Patch] CODEC-013 inline comment `// reads as -1 (signed getInt)` is stale — the LFBD subclass reads UNSIGNED (`getUnsignedInt`) so `0xFFFFFFFF`→4294967295 and is rejected by the `maxFrameLength` ceiling (`TooLongFrameException`), not the `<16` floor; the `isInstanceOf(DecoderException.class)` assertion still holds (`TooLongFrameException extends DecoderException`) but the comment misrepresents the active AD-30 overflow path. [`codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java:373`]
 
 ---
 
@@ -448,11 +454,16 @@ requires benchmark classes to be JSpecify-clean under `smpp.companion.*` (or exc
 
 ### Latest tech information (Context7, 2026-07)
 
-- **Netty 4.2 framing** — `LengthFieldBasedFrameDecoder` treats the length field as *bytes-following*
-  by default; SMPP's `command_length` *includes* the field, so don't reach for it. A custom
-  `ByteToMessageDecoder` is correct (per decision + CODEC-009/003). Discipline: check `readableBytes()`
-  before reading; return **without modifying the reader index** if a frame is incomplete; read the
-  length via `in.getInt(in.readerIndex())` — never `getInt(0)`.
+- **Netty 4.2 framing** — _SUPERSEDED 2026-07-28 (user-directed; see the FIXME-resolution entry in the
+  Dev Agent Record): the framer is now a `LengthFieldBasedFrameDecoder` subclass, NOT a custom
+  `ByteToMessageDecoder`._ `LengthFieldBasedFrameDecoder` does treat the length field as *bytes-following*
+  by default, but `lengthAdjustment = -4` reconciles that with SMPP's total-length `command_length`
+  (verified against the 4.2.16 source). The AD-30 reject-before-alloc policy is enforced via `maxFrameLength`
+  (ceiling, strict `>` + `failFast`) + a `getUnadjustedFrameLength` override (the `< 16` floor); the
+  reader-index discipline below is now LFBD's responsibility rather than hand-rolled. _(Original pre-switch
+  note, kept for T3+ `EmbeddedChannel` context: when a custom `ByteToMessageDecoder` IS warranted — e.g. the
+  bind parser — check `readableBytes()` before reading; return **without modifying the reader index** if a
+  frame is incomplete; read the length via `in.getInt(in.readerIndex())` — never `getInt(0)`.)_
 - **Jazzer (default fuzz lib)** — `@FuzzTest` + `FuzzedDataProvider`
   (`com.code_intelligence.jazzer.junit.FuzzTest` / `com.code_intelligence.jazzer.api.FuzzedDataProvider`);
   dep `com.code-intelligence:jazzer-junit`; fuzzing mode via `JAZZER_FUZZ=1 ./gradlew test`, plain
@@ -510,6 +521,38 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
 - **Test execution (verified, 0 skipped):** `SmppCommandIdsTest`=5, `MaxCommandLengthContractTest`=1,
   `CodecIsolationArchitectureTest`=1 — all green, no regressions in `codec`.
 
+- **RED→GREEN cycle (T2):** wrote `framer/package-info.java` + `SmppFrameDecoderTest` (13 tests) first;
+  `:codec:compileTestJava` → **cannot find symbol `SmppFrameDecoder`** = RED confirmed. Implemented
+  `SmppFrameDecoder` (custom `ByteToMessageDecoder`: peek `getInt(readerIndex())`, AD-30 reject before
+  alloc, `readRetainedSlice` zero-copy frame); first GREEN run → 12/13, 1 test-logic bug (CODEC-002's split
+  loop asserted no-frame-after-first at `split==len`, where the first fragment IS the complete PDU) — fixed to
+  uniformly assert exactly-one-byte-identical-frame across both writes at every split. Then GREEN (13/13).
+- **Netty 4.2 API gotchas (caught red, not green-by-luck):** (a) `io.netty.channel.EmbeddedChannel` moved to
+  `io.netty.channel.embedded` in 4.2 (was `io.netty.channel` in 4.1) — import fixed. (b) `NioEventLoopGroup`
+  (io.netty.channel.nio) is `@Deprecated` in 4.2; the real-TCP harness switched to
+  `MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory())`. Found via direct `javac -Xlint:deprecation`
+  on the file (Gradle's lint config surfaced only the bare "Note: deprecated API" summary).
+  `NioServerSocketChannel`/`NioSocketChannel` are NOT deprecated (still in `netty-transport`).
+- **CODEC-010 (the load-bearing AD-30 case):** proved reject-before-allocation with a `RecordingAllocator`
+  (wraps `UnpooledByteBufAllocator`, records the max requested capacity) — `0x7FFFFFFF`/`0x80000000`/
+  `0xFFFFFFFF` all reject with `maxRequested ≤ MAX` (the cumulation only grew to the input size, never to the
+  malformed length). The `< 16` floor catches the two negative overflow values (signed `getInt`); `0x7FFFFFFF`
+  hits `> MAX` — the single guard the T1 review patch #1 prescribed.
+- **CODEC-036 (real-TCP close-mid-PDU):** first attempt timed out — the latch awaits were OUTSIDE the
+  try-with-resources, so the server was torn down (and the connection RST'd on close) before the read loop
+  drained P1. Fixed by awaiting WHILE the server is alive (mirrors CODEC-034/035). `shutdownOutput()` → the
+  server reads EOF → `channelInactive` (latched) → no truncated second frame (`decodeLast` default discards
+  the partial cumulation).
+- **Gates re-verified (T2):** CODEC-040 prints `{io.netty, org.jspecify, org.projectlombok}` (no new dep —
+  the NIO classes live in `netty-transport`, already transitive of netty-codec; nothing added to
+  `codec/build.gradle.kts`); CODEC-039 ArchUnit green against the new `..codec.framer..` package (now
+  load-bearing); CODEC-041 + AD-35 green via the full `:buildSrc:test`. `compileJava` NullAway-clean + zero
+  ErrorProne warnings (the one `FutureReturnValueIgnored` on `ctx.close()` is `@SuppressWarnings`'d with a
+  reason — Netty's `ChannelFuture`, best-effort fail-closed close, AC9 third-party allowance).
+- **Test execution (verified, 0 skipped, T2):** `SmppFrameDecoderTest`=13, `SmppFrameDecoderTcpTest`=3 — all
+  green; full codec suite 26 tests (1+1+6+3+13+2) 0 fail / 0 skip, no regressions. `./gradlew clean build
+  :buildSrc:test` GREEN (AC10).
+
 ### Completion Notes List
 
 - **T1 complete — Command-id source-of-truth (AC3, AC4).** Delivered `SmppCommandIds` (`BIND_FAMILY` =
@@ -554,9 +597,77 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
   lombok-accepted control (6 tests); ErrorProne+NullAway coexist with Lombok on JDK 25. AC9 allowlist
   text + gate comment/messages updated to match.
 
-### File List
+- **T2 complete — `SmppFrameDecoder` length-framing (AC1; AD-2/AD-7/AD-30).** Delivered a custom
+  `ByteToMessageDecoder` (NOT `LengthFieldBasedFrameDecoder` — SMPP's `command_length` is the TOTAL PDU
+  length, not bytes-following): peeks `in.getInt(in.readerIndex())` without advancing the reader index,
+  waits for the full body, emits one zero-copy `readRetainedSlice` frame per PDU (the AD-2 forward unit),
+  and loops naturally for coalesced PDUs. AD-30 reject-before-alloc (`< 16 || > MAX`, the floor catching
+  every overflow-class negative signed-int) throws a `DecoderException`; `exceptionCaught` fires it
+  downstream (CODEC-013 observability) then `ctx.close()` (drop + close, AC1). + `@NullMarked`
+  `framer/package-info.java`.
+- **CODEC-011/012 scope split (transparent):** CODEC-011 (Jazzer framer fuzz) and CODEC-012 (jqwik
+  chunking property) are Level `fuzz`, mapped to AC7, and land in **T6** with the fuzz/property libraries
+  (no Jazzer/jqwik dep yet). T2 owns the deterministic framer proof: CODEC-001..010, 013, 014, 015
+  (`EmbeddedChannel`) + CODEC-034..036 (real loopback TCP). The CODEC-011/012 invariants (no Throwable
+  escapes decode; chunk-invariance) are structurally pre-supported by the defensive decode (bounds-checked,
+  framework-contained throws).
+- **No new dependencies.** The real-TCP harness needs `NioServerSocketChannel`/`NioSocketChannel`/
+  `MultiThreadIoEventLoopGroup` — all in `netty-transport` (already transitive of netty-codec). Nothing
+  added to `codec/build.gradle.kts`; CODEC-040 allowlist unchanged.
+- **Netty 4.2 reconciliation (act, don't carry over):** `NioEventLoopGroup` is `@Deprecated` (→
+  `MultiThreadIoEventLoopGroup` + `NioIoHandler`); `EmbeddedChannel` is in `io.netty.channel.embedded`.
+  Recorded here so T3+ (bind parser on `EmbeddedChannel`) reuse the corrected imports.
+- **AC1 fully met** (every CODEC-001..010/013/014/015 + 034..036 clause asserted, 0 skipped); story stays
+  `in-progress` (T3–T8 pending). AC10 `./gradlew clean build :buildSrc:test` GREEN.
+- **FIXME resolved (2026-07-28) — `// FIXME: use LengthFieldBasedFrameDecoder` → SWITCHED to an LFBD
+  subclass (user-directed; supersedes T2's "NOT `LengthFieldBasedFrameDecoder`" directive and the
+  "Latest tech information" Netty-framing bullet below).** The note's `{offset=0,len=4,adjust=-4,strip=0}`
+  recipe was verified against the actual Netty 4.2.16 `LengthFieldBasedFrameDecoder` source (Context7 +
+  decompiled class): `lengthAdjustment = -4` reconciles LFBD's default "bytes following the field" with
+  SMPP's total-length `command_length`, so LFBD frames SMPP correctly. The AD-30 policy maps onto two LFBD
+  hooks, BOTH firing before the only happy-path slice (`extractFrame`): the **ceiling** is LFBD's native
+  `maxFrameLength` (strict `>` → `==65536` accepted / `65537` rejected — CODEC-008; `failFast` throws
+  `TooLongFrameException` before the body is read/allocated, so overflow-class `0x7FFFFFFF/0x80000000/
+  0xFFFFFFFF` reject with no oversized alloc — CODEC-006/010/015; LFBD reads UNSIGNED so overflow is caught
+  by the ceiling, not the floor — contrast the prior custom decoder's signed-`getInt` floor trick, same
+  outcome); the **floor** is a `getUnadjustedFrameLength` override that throws a `DecoderException` on
+  `command_length < 16` (the earliest length read, after the 4-byte-present guard — CODEC-005).
+  `exceptionCaught` (fire + `ctx.close()`) is unchanged. Verified: `:codec:build` GREEN;
+  `SmppFrameDecoderTest`=13, `SmppFrameDecoderTcpTest`=3 — **0 fail / 0 skip**; CODEC-040 still
+  `{io.netty, org.jspecify, org.projectlombok}` (LFBD ∈ netty-codec — no new dep); zero `// FIXME` in
+  source (AC9). Files: `SmppFrameDecoder.java` (rewritten), `framer/package-info.java` (doc updated).
+- **FIXME resolved (2026-07-28) — `// FIXME: move to SmppCommandIds near MAX_COMMAND_LENGTH` → DONE.**
+  Moved `MIN_COMMAND_LENGTH = 16` from `SmppFrameDecoder` (package-private) to `SmppCommandIds`
+  (`public static final int`, immediately before `MAX_COMMAND_LENGTH`) so the AD-30 `{min, max}` bounds
+  share one source of truth (AD-27/AD-30). The decoder now references `SmppCommandIds.MIN_COMMAND_LENGTH`
+  in both the `getUnadjustedFrameLength` floor check and its javadoc. **Also corrected a stale note** left
+  by the LFBD switch: the `MAX_COMMAND_LENGTH` "Framer handoff note" still described the *prior* custom
+  decoder's signed-`getInt` floor catching overflow — under the LFBD subclass the framer reads unsigned
+  (`getUnsignedInt`), so overflow is caught by the `maxFrameLength` *ceiling*, not the floor; rewritten to
+  state the accurate mechanism (signed-int pitfall preserved as contrast). No test changes (tests use their
+  own `HEADER=16` PDU-builder constant, untouched); `:codec:build` GREEN, 26 tests 0 fail/skip; CODEC-040
+  unchanged; zero `// FIXME` in source (AC9).
+- **T2 code review (2026-07-28) — applied all 3 CONFIRMED patches (low / test-quality); the framer product code
+  was already correct (verified against Netty 4.2.16 bytecode; no AC1/AD violation).** (1) **CODEC-013** —
+  replaced the stale `// reads as -1 (signed getInt)` comment with the LFBD reality (unsigned `getUnsignedInt` →
+  4294967295, rejected by the `maxFrameLength` ceiling, not the `<16` floor). (2) **CODEC-010** — made the
+  load-bearing reject-before-allocation proof MEANINGFUL: a single `writeInbound` of an `Unpooled.buffer` bypasses
+  `ctx.alloc()` (MERGE_CUMULATOR returns the input directly when the cumulation is empty + contiguous), leaving
+  `maxRequested==0` so the old `maxRequested<=MAX` held for any decoder. Added an allocator-aware `declaringLength`
+  overload and routed the CODEC-006/008/010/015 reject-path inputs through `ctx.alloc()`; the bound is now
+  `<= actual input size` (HEADER + filler), proving no allocation was driven by the malformed length. (3) **CODEC-015**
+  — replaced the vacuous PARANOID + `finishAndReleaseAll` leak assertion (PARANOID only `logger.error`s at GC;
+  `finishAndReleaseAll` can't throw on an orphaned slice) with a real guard: `RecordingAllocator.allocationCount()==1`
+  on the reject path (the framer allocated nothing beyond the test input → nothing to leak). Tight bounds verified
+  empirically — `maxRequested == input size` (MERGE_CUMULATOR short-circuits, no cumulation alloc),
+  `allocationCount == 1`. `:codec:build` GREEN; framer 16 tests (13+3) 0 fail/skip; CODEC-040 unchanged. Story
+  stays in-progress (T3–T8 pending; this was a task-level review, not the story-completion CR).
 
 - `codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java` (new)
 - `codec/src/main/java/smpp/companion/codec/command/package-info.java` (new)
 - `codec/src/test/java/smpp/companion/codec/command/SmppCommandIdsTest.java` (new)
 - `codec/src/test/java/smpp/companion/codec/command/MaxCommandLengthContractTest.java` (new)
+- `codec/src/main/java/smpp/companion/codec/framer/SmppFrameDecoder.java` (new — T2; **rewritten 2026-07-28 → `LengthFieldBasedFrameDecoder` subclass**; see Dev Agent Record)
+- `codec/src/main/java/smpp/companion/codec/framer/package-info.java` (new — T2)
+- `codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java` (new — T2; CODEC-001..010,013,014,015)
+- `codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTcpTest.java` (new — T2; CODEC-034..036)

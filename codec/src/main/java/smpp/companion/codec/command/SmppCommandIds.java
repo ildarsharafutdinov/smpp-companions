@@ -26,16 +26,29 @@ import org.jspecify.annotations.NullMarked;
 public class SmppCommandIds {
 
     /**
-     * AD-30: the codec's hard cap on a PDU's declared {@code command_length}. Covers the
+     * AD-30 floor: the minimum legal {@code command_length}. A PDU is at least the 16-octet header
+     * (header-only PDUs: {@code unbind}, {@code enquire_link}, {@code generic_nack}). The framer rejects
+     * a {@code command_length < MIN_COMMAND_LENGTH} before any allocation (CODEC-005). Co-located with
+     * {@link #MAX_COMMAND_LENGTH} so the AD-30 {@code [min, max]} bounds are one source of truth.
+     */
+    public static final int MIN_COMMAND_LENGTH = 16;
+
+    /**
+     * AD-30 ceiling: the codec's hard cap on a PDU's declared {@code command_length}. Covers the
      * {@code message_payload} TLV maximum. The framer's drop+close policy references this constant,
      * and from Story 1.3 it is the single input to the relay direct-memory formula and the config
      * default — one named value so codec max and allocator budget cannot drift.
      *
-     * <p><b>Framer handoff note (T2):</b> {@code command_length} is a 4-octet <em>unsigned</em>
-     * big-endian field, but Netty's {@code ByteBuf.getInt} returns a <em>signed</em> Java {@code int}.
-     * An overflow-class length such as {@code 0xFFFFFFFF} reads as {@code -1} and would slip a naive
-     * {@code length > MAX_COMMAND_LENGTH} check. The framer MUST reject {@code length < 16} first —
-     * that floor catches every negative value before any signed comparison or allocation (CODEC-005/010).
+     * <p><b>Framer handoff note ({@code SmppFrameDecoder} is a {@code LengthFieldBasedFrameDecoder}
+     * subclass):</b> the framer reads {@code command_length} <em>unsigned</em> (LFBD's
+     * {@code getUnadjustedFrameLength} → {@code getUnsignedInt}), so an overflow-class length reads as a
+     * large positive — e.g. {@code 0xFFFFFFFF} → 4294967295, <em>not</em> {@code -1} — and is caught by
+     * this ceiling ({@code > MAX_COMMAND_LENGTH} → {@code TooLongFrameException} before allocation,
+     * CODEC-006/008/010). {@link #MIN_COMMAND_LENGTH} is the undersized-PDU floor; both bounds reject
+     * before the only happy-path slice. (Contrast a naive framer reading <em>signed</em>
+     * {@code ByteBuf.getInt}, where {@code 0xFFFFFFFF} reads as {@code -1} and slips a bare
+     * {@code > MAX} check — the prior custom decoder leaned on the {@code < MIN} floor to catch that;
+     * under LFBD's unsigned read the ceiling is the overflow guard.)
      */
     public static final int MAX_COMMAND_LENGTH = 65536;
 
