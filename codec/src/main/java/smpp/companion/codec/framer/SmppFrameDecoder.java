@@ -5,7 +5,6 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import java.nio.ByteOrder;
-import smpp.companion.codec.command.SmppCommandIds;
 
 /**
  * SMPP 3.4 length-framing decoder (AC1; AD-2, AD-7, AD-30). Generic over every PDU — it parses NO
@@ -32,7 +31,7 @@ import smpp.companion.codec.command.SmppCommandIds;
  *       ({@code getUnsignedInt}), so these overflow values pass the floor and are caught HERE — under LFBD
  *       the ceiling, not the floor, rejects overflow. (Contrast the prior custom decoder, which read
  *       signed {@code getInt} so the {@code < 16} floor caught overflow; same observable outcome.)
- *   <li><b>Floor ({@code <} {@link SmppCommandIds#MIN_COMMAND_LENGTH}):</b> {@link #getUnadjustedFrameLength} is overridden
+ *   <li><b>Floor ({@code <} {@link SmppFrame#MIN_COMMAND_LENGTH}):</b> {@link #getUnadjustedFrameLength} is overridden
  *       to throw a {@link DecoderException} when the unsigned {@code command_length < 16}. This hook is the
  *       earliest point LFBD reads the field (called once the 4-octet field is present, so a mid-header
  *       split reassembles first — CODEC-002) and it precedes the {@code maxFrameLength} check, so an
@@ -55,12 +54,12 @@ public final class SmppFrameDecoder extends LengthFieldBasedFrameDecoder {
      * {@code initialBytesToStrip = 0} forwards the whole PDU (AD-2); {@code maxFrameLength} is the AD-30
      * ceiling (strict {@code >}: {@code == 65536} accepted, {@code 65537}+ rejected — CODEC-008);
      * {@code failFast} (the 5-arg-ctor default) rejects before the body is read or allocated. The cap is
-     * pinned to {@link SmppCommandIds#MAX_COMMAND_LENGTH} here; a future config-derived cap (Story 1.3's
+     * pinned to {@link SmppFrame#MAX_COMMAND_LENGTH} here; a future config-derived cap (Story 1.3's
      * AD-30 formula) would widen this constructor rather than change the policy logic.
      */
     public SmppFrameDecoder() {
         super(
-                SmppCommandIds.MAX_COMMAND_LENGTH, // maxFrameLength — AD-30 ceiling (CODEC-006/008/010)
+                SmppFrame.MAX_COMMAND_LENGTH, // maxFrameLength — AD-30 ceiling (CODEC-006/008/010)
                 0,                                 // lengthFieldOffset — command_length is at octet 0
                 4,                                 // lengthFieldLength — 4-octet big-endian int
                 -4,                                // lengthAdjustment — command_length includes the field itself
@@ -68,7 +67,7 @@ public final class SmppFrameDecoder extends LengthFieldBasedFrameDecoder {
     }
 
     /**
-     * AD-30 floor: reject a {@code command_length <} {@link SmppCommandIds#MIN_COMMAND_LENGTH} BEFORE any allocation. The earliest
+     * AD-30 floor: reject a {@code command_length <} {@link SmppFrame#MIN_COMMAND_LENGTH} BEFORE any allocation. The earliest
      * length read in LFBD (called once the 4-octet field is present, before the adjusted-length /
      * {@code maxFrameLength} checks); throwing here rejects an undersized PDU before {@code extractFrame}.
      * {@code super} reads {@code getUnsignedInt}, so {@code raw} is the true unsigned command_length —
@@ -78,9 +77,9 @@ public final class SmppFrameDecoder extends LengthFieldBasedFrameDecoder {
     @Override
     protected long getUnadjustedFrameLength(ByteBuf buf, int offset, int length, ByteOrder order) {
         long raw = super.getUnadjustedFrameLength(buf, offset, length, order);
-        if (raw < SmppCommandIds.MIN_COMMAND_LENGTH) {
+        if (raw < SmppFrame.MIN_COMMAND_LENGTH) {
             throw new DecoderException(
-                    "SMPP framer: command_length " + raw + " < " + SmppCommandIds.MIN_COMMAND_LENGTH);
+                    "SMPP framer: command_length " + raw + " < " + SmppFrame.MIN_COMMAND_LENGTH);
         }
         return raw;
     }
