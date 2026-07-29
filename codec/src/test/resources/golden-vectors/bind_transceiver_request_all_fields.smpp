@@ -1,0 +1,1 @@
+# provenance: SMPP 3.4 §4.1.4.1 BIND_TRANSCEIVER request, all fields (system_id=ESME_001, password=secret, system_type=SMPP, interface_version=0x34, addr_ton=0, addr_npi=0, address_range=empty) ; raw-hex: 0000002900000009000000000000002a45534d455f3030310073656372657400534d50500034000000

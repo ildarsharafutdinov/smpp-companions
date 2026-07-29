@@ -264,10 +264,10 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
         non-mutating slice read, and a bind-family **encoder** (for CODEC-032).
   - [x] `package-info.java` (`@NullMarked`).
   - [x] Unit tests CODEC-016..023, CODEC-028, CODEC-037 (+ encoder round-trip).
-- [ ] **T4 — Golden-vector corpus** (AC5)
-  - [ ] Author `.bin`/`.smpp` bind-family + negative vectors with provenance headers in
+- [x] **T4 — Golden-vector corpus** (AC5)
+  - [x] Author `.bin`/`.smpp` bind-family + negative vectors with provenance headers in
         `codec/src/test/resources/golden-vectors/`.
-  - [ ] Promote the deferred non-empty assertion; fold in the `Locale.ROOT` fix; clear `deferred-work.md`.
+  - [x] Promote the deferred non-empty assertion; fold in the `Locale.ROOT` fix; clear `deferred-work.md`.
 - [ ] **T5 — jSMPP cross-oracle conformance** (AC6)
   - [ ] `testImplementation("org.jsmpp:jsmpp:3.0.2")` on `codec`; CODEC-031 + CODEC-032 tests.
 - [ ] **T6 — Fuzz + properties** (AC7)
@@ -307,6 +307,14 @@ _T3 code review (2026-07-29) — 3 parallel adversarial layers (Blind Hunter, Ed
 - [x] [Review][Decision→Defer] **`password` is `AsciiString` (the 2026-07-28 override) BUT the record's auto-`toString()` concretely leaks it via the documented "fragile seam" (CODEC-024 / PRIV-1).** The type choice is a documented user override (not a defect); the sharper issue: `SmppBindRequest` is a `record`, so its auto-generated `toString()` renders every component — calling `AsciiString.toString()` on the password, which caches a surviving `String`. So "callers must avoid `toString()` on the password" is insufficient: logging the PDU object (a plausible relay debug/error path) leaks it, and this would FAIL the deferred CODEC-024 P2 "no `String` from password octets" bytecode scan. [`codec/src/main/java/smpp/companion/codec/bind/SmppBindRequest.java:49`] — **deferred to T6 (CODEC-024 P2):** the bytecode scan will enforce "no `String` from password octets"; the `AsciiString` type + the record `toString()` leak are accepted until then under the 2026-07-28 override. See `deferred-work.md`.
 - [x] [Review][Patch] `address_range` spec-max (≤41 incl. terminator) is not exercised — `maxLengthFieldsDecode` hits `system_id`/`password`/`system_type` at max but passes `address_range=""`; the AC2 "C-octet max-length" clause isn't covered for that field (same `readAscii` path → code correct, test gap). One assertion closes it. [`codec/src/test/java/smpp/companion/codec/bind/SmppCodecTest.java:259`]
 - [x] [Review][Patch] Dev Agent Record / AC2 text drift after the refactor — AC2 :153 still says "`char[]`/`byte[]`"; Dev Record :704 says the password accessor is "`char[]`"; Dev Record :728 references "`SmppCommandIds.MIN_COMMAND_LENGTH`" (moved to `SmppFrame` this session). Reconcile the stale passages. [`_bmad-output/implementation-artifacts/1-2-smpp-3-4-codec.md`]
+
+_T4 code review (2026-07-29) — 3 parallel adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor) + per-finding verification (14 verifiers), run on the uncommitted golden-vector corpus + promoted loader test (`GoldenVectorCorpusTest`, 11 `.smpp` vectors, `README.md`). Verdict: AC5 is MET — corpus populated (6 positive bind-family + 5 negative, all 5 negative categories present + tagged), scaffold promoted to a real non-empty + per-vector provenance assertion, `Locale.ROOT` folded, `deferred-work.md` entry cleared; the vectors are spec-correct today (every `command_length` == octet count, every `command_id` ∈ `BIND_FAMILY`, `bind_transceiver = 0x09`). 8 findings dismissed (5 by-design/T5-deferred non-defects — `command_status`/NUL/field-semantics validation is explicitly T5's jSMPP decode oracle; the unsigned-overflow `0xFFFFFFFF` class is already covered in `SmppFrameDecoderTest` CODEC-010; the C-octet max-length happy path is already in `SmppCodecTest` CODEC-020; `isNotEmpty`≡`isGreaterThan(0)`). 1 decision-needed (resolved 2026-07-29 → defer to T5), 2 patch, 3 defer below._
+
+- [x] [Review][Defer] **Negative vectors are not a biting oracle — the `CODEC-…` reject tag is never tied to the bytes (AC5/CODEC-030, R14).** `if (!negative)` skips `assertWellFormedBindPdu`, so a negative vector's bytes are parsed and discarded; the reject tag is checked for shape only (non-empty, `CODEC-` prefix), never against the actual malformation. 2 of 5 negatives (`negative_unterminated_string`, `negative_body_shorter_than_fields`) are length-self-consistent with a bind-family `command_id`, so they would PASS as valid positives if their ` ; reject: ` tag were dropped. The framer-stage negatives (CODEC-005/008/009) have no bite-verification in the golden oracle at all. AC5's literal text is met (tags present) and the vectors are correct today, so this is latent — but a corpus whose stated purpose is independent falsification does not falsify its negatives. [`codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java:70-93`] — **deferred to T5 (user decision 2026-07-29):** a T5 codec-conformance test will feed each golden negative vector through the real decoder + jSMPP and verify each rejects as tagged (strictly stronger than T4 structural assertions; requires a deliberate negative-reject test alongside CODEC-031, which is positive-only field-equality today).
+- [ ] [Review][Patch] **Provenance parser uses unscoped `indexOf` — a marker substring inside `<ref>` can misclassify / throw `StringIndexOutOfBoundsException`.** `negative = header.contains(REJECT_MARKER)` and `hexEnd = header.indexOf(REJECT_MARKER)` are unscoped; a future vector whose provenance notes mention ` ; reject: ` before the real marker would set `hexEnd < hexStart` and `substring` would throw (an uncaught error, not a clean assertion). No current vector triggers it (all refs clean). Minimal fix: scope the reject search to after the raw-hex marker. [`codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java:70,79-81`]
+- [ ] [Review][Patch] **Stale `StringCaseLocaleUsage` line cite after T4 folded the fix.** The story doc cites `GoldenVectorCorpusTest.java:67` (AC5 :186, skeleton :328) but the call is now at `:145` after T4 grew the file; the `1-4` story doc (:162/:193/:218) still points readers to a cleared `deferred-work.md` entry. Fix the line cite (the AC5 spec stays imperative — do not past-tense it). [`_bmad-output/implementation-artifacts/1-2-smpp-3-4-codec.md:186,328`]
+- [x] [Review][Defer] **No independent per-vector `command_id` pin — membership-only via `isBindFamily`.** [`codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java:124`] — deferred: deliberate T4 trade-off (catches the 0x09↔0x0F constant drift; only a wrong-but-bind-family id would slip); T5's jSMPP decode oracle pins the `command_id` per vector.
+- [x] [Review][Defer] **`bind_transmitter_resp` (0x80000002) has no positive vector — 5 of 6 `BIND_FAMILY` ids covered.** [`codec/src/test/resources/golden-vectors/`] — deferred: the three response ids parse identically (no untested path); AC5 does not mandate one vector per id; a 12th vector would be a near-no-op against an already-covered decode path.
 
 ---
 
@@ -754,6 +762,30 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
     0 fail / 0 skip; zero `// FIXME`; CODEC-040 unchanged; `ArrayRecordComponent` fully resolved (no array
     components remain — no suppression anywhere).
 
+- **T4 complete — Spec-derived golden-vector corpus (AC5; CODEC-030).** Populated `codec/src/test/resources/golden-vectors/`
+  with **6 positive** bind-family vectors (all three request types — `bind_transceiver` all-fields,
+  `bind_transmitter` all-empty, `bind_receiver` all-fields — plus `bind_receiver_resp` ROK,
+  `bind_transceiver_resp` ROK + `sc_interface_version` TLV, and a non-ROK `bind_receiver_resp`
+  `ESME_RINVPASWD` that decodes clean with `isOk()=false` per AD-25/CODEC-019) and **5 negative** vectors
+  (length<16 / length>65536 / truncated-header / unterminated-C-octet / body-shorter-than-fields), each
+  tagged with its expected reject outcome. Each vector is a one-line text file: first line is the provenance
+  header `# provenance: <§ref> ; raw-hex: <lowercase hex>` (+ optional ` ; reject: CODEC-…` for negatives);
+  the `raw-hex` IS the wire bytes, decoded by the loader via `java.util.HexFormat` (one source, diff-stable,
+  no header/body drift). Authored independently of the codec — no vector is produced by invoking
+  `SmppCodec`/`SmppBindEncoder` (R14/R33). Promoted `GoldenVectorCorpusTest`: the deferred scaffold
+  assertion → a real `assertThat(corpus).isNotEmpty()` + a per-vector provenance assertion (parseable
+  lowercase hex; positive vectors are length-self-consistent — `command_length == byte count`, AD-30 bounds,
+  bind-family `command_id` via `SmppCommandIds.isBindFamily`; negative vectors carry a `CODEC-…` reject tag).
+  Folded the deferred `StringCaseLocaleUsage` fix (`.toLowerCase()` → `.toLowerCase(Locale.ROOT)` at the
+  `listVectors` filename filter) — entry cleared from `deferred-work.md`. RED→GREEN observed (corpus-empty →
+  `corpusIsNonEmpty` FAILED → vectors authored → GREEN). **Tests (verified, 0 skipped):** `GoldenVectorCorpusTest`=3
+  (was 2; +1); full codec suite **47** tests, 0 fail / 0 skip. **Gates (T4):** CODEC-039/040 + AD-35 green;
+  CODEC-040 unchanged `{io.netty, org.jspecify, org.projectlombok}` (no new dep — corpus is test resources +
+  a test class using only `HexFormat`/`SmppCommandIds`/`SmppFrame`, all already on the classpath); zero
+  `// FIXME` (AC9); zero ErrorProne warnings (the last one, `StringCaseLocaleUsage`, is resolved). `:codec:build`
+  GREEN (AC10 full `clean build :buildSrc:test` stays deferred to T8). **AC5 fully met by T4**; the
+  field-by-field jSMPP cross-oracle (CODEC-031/033) lands in T5. Story stays `in-progress` (T5–T8 pending).
+
 - `codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java` (new; +`INTERFACE_VERSION_3_4` T3)
 - `codec/src/main/java/smpp/companion/codec/command/package-info.java` (new)
 - `codec/src/test/java/smpp/companion/codec/command/SmppCommandIdsTest.java` (new)
@@ -771,3 +803,6 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
 - `codec/src/main/java/smpp/companion/codec/bind/SmppBindEncoder.java` (new — T3; static encoder, CODEC-032)
 - `codec/src/test/java/smpp/companion/codec/bind/SmppCodecTest.java` (new — T3; CODEC-016..023, 028, 037)
 - `codec/src/test/java/smpp/companion/codec/bind/SmppBindEncoderTest.java` (new — T3; encode round-trip)
+- `codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java` (rewritten — T4; promoted scaffold → non-empty + per-vector provenance/structure assertions, CODEC-030)
+- `codec/src/test/resources/golden-vectors/README.md` (rewritten — T4; populated-corpus status + one-line format spec + vector inventory)
+- `codec/src/test/resources/golden-vectors/*.smpp` (new — T4; 6 positive + 5 negative golden vectors, hand-authored from `docs/SMPP_v3_4_Issue1_2.pdf`, each a one-line provenance header)

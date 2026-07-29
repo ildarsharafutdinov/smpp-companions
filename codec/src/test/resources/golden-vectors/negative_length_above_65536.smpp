@@ -1,0 +1,1 @@
+# provenance: SMPP 3.4 negative — command_length=65537 (0x00010001) > MAX 65536 (off-by-one) ; raw-hex: 00010001000000090000000000000002 ; reject: CODEC-008 length>65536

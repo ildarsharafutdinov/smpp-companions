@@ -1,0 +1,1 @@
+# provenance: SMPP 3.4 negative — valid-length bind body with no NUL terminator (8x 0x41, unterminated C-octet) ; raw-hex: 000000180000000900000000000000034141414141414141 ; reject: CODEC-021 unterminated-c-octet

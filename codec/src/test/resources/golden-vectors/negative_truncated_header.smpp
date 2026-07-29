@@ -1,0 +1,1 @@
+# provenance: SMPP 3.4 negative — incomplete header, only 12 octets present (<16, no full command_status/sequence) ; raw-hex: 0000001a0000000900000000 ; reject: CODEC-009 header-incomplete
