@@ -13,14 +13,6 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - **`CompanionLifecycle` phase ordering (default `MAX_VALUE` stops first) once a 2nd `SmartLifecycle` lands** — single bean today; Epic 4 manages phases. [proxy/src/main/java/.../bootstrap/CompanionLifecycle.java]
 - **SEC-099 has only a Nimbus floor — other deps unchecked** — AC5 is Nimbus-specific; the OWASP lane is the general scanner. Maintenance concern, not a 1.1 defect. [buildSrc/src/main/kotlin/smpp.dependency-floors.gradle.kts]
 
-## Deferred from: story-1-4-compile-time-null-safety-enforcement (2026-07-25)
-
-- **Error Prone `StringCaseLocaleUsage` warning on codec test code** — enabling EP (AD-35) surfaces a
-  pre-existing `[StringCaseLocaleUsage]` warning in `GoldenVectorCorpusTest.java:67`
-  (`String#toLowerCase()` without a `Locale`). It is a WARNING (build stays green; no test removed or
-  `@Disabled`), and is outside this story's null-safety scope, so left untouched. Trivial fix when
-  convenient: `.toLowerCase()` → `.toLowerCase(java.util.Locale.ROOT)` (ASCII filename-extension match).
-
 ## Deferred from: code review of 1-4-compile-time-null-safety-enforcement (2026-07-25)
 
 - **No dedicated NullAway mutation control for the `AnnotatedPackages` line** — the line is implicitly
@@ -56,3 +48,29 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   The `AsciiString` password type is the user's 2026-07-28 override (kept); the fix — override
   `SmppBindRequest.toString()` to redact the password — is deferred to T6's CODEC-024 P2 enforcement.
   (Decision at T3 code review 2026-07-29.) [`codec/src/main/java/smpp/companion/codec/bind/SmppBindRequest.java:49`]
+
+## Deferred from: code review of 1-2-smpp-3-4-codec (T4 — golden-vector corpus, 2026-07-29)
+
+- **Golden negative vectors are not a biting oracle — the `CODEC-…` reject tag is never tied to the bytes.**
+  `GoldenVectorCorpusTest` skips `assertWellFormedBindPdu` for negatives (`if (!negative)`), so a negative's bytes are
+  parsed and discarded; the reject tag is checked for shape only. 2 of 5 negatives (`negative_unterminated_string`,
+  `negative_body_shorter_than_fields`) are length-self-consistent with a bind-family `command_id`, so they would pass as
+  valid positives if their ` ; reject: ` tag were dropped, and the framer-stage negatives (CODEC-005/008/009) have no
+  bite-home in the golden oracle (`SmppFrameDecoderTest` proves those reject paths with its own hand-rolled bytes, not
+  the golden vectors). Latent — the vectors are correct today; AC5's literal "tagged with its expected reject outcome" is
+  met. **User decision 2026-07-29: defer to T5** — a T5 codec-conformance test will feed each golden negative through the
+  real decoder + jSMPP and verify each rejects as tagged (strictly stronger than T4 structural assertions; requires a
+  deliberate negative-reject test alongside CODEC-031, which is positive-only field-equality today).
+  [codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java:70-93]
+
+- **No independent per-vector `command_id` pin in the golden loader — membership-only via `SmppCommandIds.isBindFamily`.**
+  `GoldenVectorCorpusTest` asserts each positive vector's `command_id` is bind-family but does not pin the specific id
+  expected for the named PDU (e.g. that `bind_transceiver_*` carries `0x09`). Deliberate T4 trade-off: it still catches
+  the `0x09`↔`0x0F` constant drift (a vector encoding `0x09` would fail `isBindFamily` if the constant drifted to `0x0F`);
+  only a wrong-but-bind-family id would slip. Closed by T5's jSMPP decode oracle (CODEC-031), which decodes each vector
+  field-by-field and keys on `command_id`. [codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java:124]
+- **`bind_transmitter_resp` (command_id `0x80000002`) has no positive golden vector — 5 of 6 `BIND_FAMILY` ids covered.**
+  The corpus covers `0x01`/`0x02`/`0x09` (requests) and `0x80000001`/`0x80000009` (responses) but not `0x80000002`.
+  The three bind-response ids parse identically (system_id C-octet + optional opaque TLVs) through one decode branch,
+  so there is no untested code path; AC5 does not mandate one vector per id, and a 12th vector would be a near-no-op
+  against an already-covered path. Add for 6-id symmetry only if desired. [codec/src/test/resources/golden-vectors/]

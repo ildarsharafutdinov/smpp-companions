@@ -1,0 +1,1 @@
+# provenance: SMPP 3.4 negative — declared body holds only system_id='id' then NUL, missing password/system_type/interface_version/addr_ton/addr_npi/address_range ; raw-hex: 00000013000000090000000000000004696400 ; reject: CODEC-022 body-shorter-than-fields

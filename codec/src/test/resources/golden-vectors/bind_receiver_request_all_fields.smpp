@@ -1,0 +1,1 @@
+# provenance: SMPP 3.4 §4.1.4.1 BIND_RECEIVER request, all fields (system_id=RX_01, password=pw, system_type=empty, interface_version=0x34, addr_ton=1, addr_npi=1, address_range=123) ; raw-hex: 0000002100000001000000000000000152585f3031007077000034010131323300

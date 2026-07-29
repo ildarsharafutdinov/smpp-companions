@@ -1,0 +1,1 @@
+# provenance: SMPP 3.4 §4.1.4.2 BIND_TRANSCEIVER_RESP, command_status=ESME_ROK, system_id=SMSC_01 + sc_interface_version TLV (tag=0x0210, len=1, val=0x34) — TLV tail stays opaque (AD-3) ; raw-hex: 0000001d80000009000000000000002a534d53435f3031000210000134
