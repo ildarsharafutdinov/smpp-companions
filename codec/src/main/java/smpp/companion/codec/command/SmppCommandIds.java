@@ -22,35 +22,7 @@ import org.jspecify.annotations.NullMarked;
  */
 @NullMarked
 @UtilityClass
-// Lombok: makes the class final + generates the private no-arg constructor (CODEC-040 permits org.projectlombok as compile-time-only).
 public class SmppCommandIds {
-
-    /**
-     * AD-30 floor: the minimum legal {@code command_length}. A PDU is at least the 16-octet header
-     * (header-only PDUs: {@code unbind}, {@code enquire_link}, {@code generic_nack}). The framer rejects
-     * a {@code command_length < MIN_COMMAND_LENGTH} before any allocation (CODEC-005). Co-located with
-     * {@link #MAX_COMMAND_LENGTH} so the AD-30 {@code [min, max]} bounds are one source of truth.
-     */
-    public static final int MIN_COMMAND_LENGTH = 16;
-
-    /**
-     * AD-30 ceiling: the codec's hard cap on a PDU's declared {@code command_length}. Covers the
-     * {@code message_payload} TLV maximum. The framer's drop+close policy references this constant,
-     * and from Story 1.3 it is the single input to the relay direct-memory formula and the config
-     * default — one named value so codec max and allocator budget cannot drift.
-     *
-     * <p><b>Framer handoff note ({@code SmppFrameDecoder} is a {@code LengthFieldBasedFrameDecoder}
-     * subclass):</b> the framer reads {@code command_length} <em>unsigned</em> (LFBD's
-     * {@code getUnadjustedFrameLength} → {@code getUnsignedInt}), so an overflow-class length reads as a
-     * large positive — e.g. {@code 0xFFFFFFFF} → 4294967295, <em>not</em> {@code -1} — and is caught by
-     * this ceiling ({@code > MAX_COMMAND_LENGTH} → {@code TooLongFrameException} before allocation,
-     * CODEC-006/008/010). {@link #MIN_COMMAND_LENGTH} is the undersized-PDU floor; both bounds reject
-     * before the only happy-path slice. (Contrast a naive framer reading <em>signed</em>
-     * {@code ByteBuf.getInt}, where {@code 0xFFFFFFFF} reads as {@code -1} and slips a bare
-     * {@code > MAX} check — the prior custom decoder leaned on the {@code < MIN} floor to catch that;
-     * under LFBD's unsigned read the ceiling is the overflow guard.)
-     */
-    public static final int MAX_COMMAND_LENGTH = 65536;
 
     // --- Bind-family REQUEST command_ids (SMPP 3.4 §5.1.2) ---
     public static final int BIND_RECEIVER = 0x00000001;
@@ -112,4 +84,11 @@ public class SmppCommandIds {
     public static boolean isBindFamily(int commandId) {
         return BIND_FAMILY.contains(commandId);
     }
+
+    /**
+     * SMPP 3.4 §4.1.1 {@code interface_version} value advertising SMPP 3.4 ({@code 0x34}). The version a bind
+     * request carries in its mandatory body; the codec stores it on {@code SmppBindRequest} and the credential
+     * verifier compares against this named constant (CODEC-016/017 round-trip it).
+     */
+    public static final byte INTERFACE_VERSION_3_4 = 0x34;
 }

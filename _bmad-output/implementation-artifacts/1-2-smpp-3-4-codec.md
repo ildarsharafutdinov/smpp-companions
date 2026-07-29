@@ -147,10 +147,13 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
 `system_id`, `password`, `system_type`, `interface_version`.
 - Decode golden `bind_transceiver` (all fields), `bind_transmitter`, `bind_receiver`. Maps: CODEC-016, CODEC-017.
 - `command_status == ESME_ROK` predicate on `bind_*_resp` (the AD-25 flip trigger); non-ROK
-  `bind_*_resp` (e.g. `ESME_RINVPASWD 0x0000000E`) decodes cleanly without raising. Maps: CODEC-018, CODEC-019.
+  `bind_*_resp` (e.g. `ESME_RINVPASWD 0x0000000E`) decodes cleanly without raising — **assuming a `system_id`-bearing response (SMPP §4.1.4.2 lists `system_id` mandatory)**; a header-only denial (no body — a shape some SMSCs send) is rejected + closed as fail-closed (T3 review 2026-07-29: strict reject chosen over graceful empty-body decode). Maps: CODEC-018, CODEC-019.
 - C-octet-string edge cases (empty / max-length / all-empty); unterminated C-octet-string → no
   over-read / no spin; truncated body → no AIOOBE / no negative-size; header decodes even with junk body. Maps: CODEC-020..023.
-- **Password exposed as `char[]`/`byte[]`, never `String`** (zeroization seam; CODEC-024, PRIV-1).
+- **Password exposed as `AsciiString`** (revises the original `char[]`/`byte[]` clause — user-directed
+  2026-07-28 override for C-octet type-uniformity; zeroization via `AsciiString.array()` is fragile due to
+  the `toString()` cache, so the deeper "no `String` from password" guarantee is deferred to CODEC-024 P2;
+  CODEC-024, PRIV-1).
 - **Byte-exact forwarding**: after parsing a bind request the original framed `ByteBuf` is
   byte-identical and un-mutated (reader index restored; parser reads a slice/copy). This is a
   **security** property — the ORIGINAL bind is relayed to the SMSC (AD-12). Maps: CODEC-037.
@@ -254,13 +257,13 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
         (`0x7FFFFFFF`/`0x80000000`/`0xFFFFFFFF`) reject **before** any allocation.
   - [x] `package-info.java` (`@NullMarked`).
   - [x] Unit tests CODEC-001..015 (use Netty `EmbeddedChannel`); real-TCP tests CODEC-034..036.
-- [ ] **T3 — `SmppCodec` bind parser + PDU model + encoder** (AC2, AC6)
-  - [ ] `smpp.companion.codec.bind` package: typed bind PDU model (header + `system_id`, `password`
-        as `char[]`/`byte[]`, `system_type`, `interface_version`), `SmppCodec` (bind branch:
-        `MessageToMessageDecoder`/`ByteToMessageDecoder` over a framed `ByteBuf`), `ESME_ROK`
-        predicate, non-mutating slice read, and a bind-family **encoder** (for CODEC-032).
-  - [ ] `package-info.java` (`@NullMarked`).
-  - [ ] Unit tests CODEC-016..023, CODEC-037.
+- [x] **T3 — `SmppCodec` bind parser + PDU model + encoder** (AC2, AC6)
+  - [x] `smpp.companion.codec.bind` package: typed bind PDU model (header + `system_id`, `password`
+        as `char[]`, `system_type`, `interface_version`), `SmppCodec` (bind branch:
+        `MessageToMessageDecoder<ByteBuf>` over a framed `ByteBuf`), `ESME_ROK` predicate,
+        non-mutating slice read, and a bind-family **encoder** (for CODEC-032).
+  - [x] `package-info.java` (`@NullMarked`).
+  - [x] Unit tests CODEC-016..023, CODEC-028, CODEC-037 (+ encoder round-trip).
 - [ ] **T4 — Golden-vector corpus** (AC5)
   - [ ] Author `.bin`/`.smpp` bind-family + negative vectors with provenance headers in
         `codec/src/test/resources/golden-vectors/`.
@@ -297,6 +300,13 @@ _T2 code review (2026-07-28) — 3 parallel adversarial layers (Blind Hunter, Ed
 - [x] [Review][Patch] CODEC-015 reject-path "no leaked buffer escapes channel close" assertion is vacuous — `ResourceLeakDetector` PARANOID only `logger.error`s at GC (never throws) and `EmbeddedChannel.finishAndReleaseAll()` doesn't throw on an orphaned retained slice, so the leak dimension isn't actually enforced; the adjacent `maxRequested<=MAX` carries the real evidence (see next finding). [`codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java:442`]
 - [x] [Review][Patch] CODEC-010 load-bearing reject-before-allocation proof is weak — the single `writeInbound` builds its input via `Unpooled.buffer` (the DEFAULT allocator) and `MERGE_CUMULATOR` returns that input directly (cumulation empty + contiguous), so the per-channel `RecordingAllocator`/`ctx.alloc()` is never called → `maxRequested` stays 0 → `assertThat(maxRequested).isLessThanOrEqualTo(MAX)` evaluates to `0 <= 65536` (true for any decoder). It still catches a `ctx.alloc().buffer(malformed)` regression but not a `Unpooled.buffer(malformed)` bypass, and doesn't measure cumulation growth as the `RecordingAllocator` javadoc claims. [`codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java:360`]
 - [x] [Review][Patch] CODEC-013 inline comment `// reads as -1 (signed getInt)` is stale — the LFBD subclass reads UNSIGNED (`getUnsignedInt`) so `0xFFFFFFFF`→4294967295 and is rejected by the `maxFrameLength` ceiling (`TooLongFrameException`), not the `<16` floor; the `isInstanceOf(DecoderException.class)` assertion still holds (`TooLongFrameException extends DecoderException`) but the comment misrepresents the active AD-30 overflow path. [`codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java:373`]
+
+_T3 code review (2026-07-29) — 3 parallel adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor) on the staged bind-family parser + encoder + helpers (`SmppCodec`, `SmppBindEncoder`, `SmppBytes`, `SmppHeaderEncoder`, `SmppBindRequest/Response/Pdu`, `SmppFrame`) + the FIXME-refactor fallout (`SmppCommandIds`, `SmppFrameDecoder`). Verdict: the product code is sound. Edge Case Hunter found **0** defects, verifying the load-bearing Netty 4.2.16 contracts from source (`bytesBefore` bounds `[readerIndex, writerIndex)`; `ByteBufUtil.copy(AsciiString, ByteBuf)` advances writerIndex via `writeBytes`; `MessageToMessageDecoder` releases the input in its `finally` — exactly offset by the codec's `retain()`/`retainedSlice()`); refcount on all paths incl. throw-mid-parse (no reject-path leak), CODEC-037 non-mutation, bounded NUL scan (CODEC-021), truncated-body reject (CODEC-022), and R3 fail-closed containment all hold. `./gradlew clean build` GREEN; `:codec:test` = 46 / 0 fail / 0 skip; CODEC-039/040/041 + AD-35 green; AC9 (no `FIXME`) clean. 2 decision-needed + 2 low patch findings; 2 dismissed (password type = documented 2026-07-28 user override; `SmppFrame` extraction = architecturally sound — frame-length bounds ≠ `command_id`s, and `public` is required for AD-30 cross-module consumption)._
+
+- [x] [Review][Decision→Patch] **Header-only `bind_*_resp` denial raises instead of decoding cleanly (AC2 / CODEC-019 / AD-25).** A non-ROK `bind_*_resp` from a real SMSC frequently arrives header-only (no `system_id` body — e.g. a bare `ESME_RINVPASWD`); `SmppCodec.decodeResponse` calls `readAscii(body, "system_id")` first, which throws `DecoderException` (empty body → `bytesBefore` returns −1) → `exceptionCaught` → `ctx.close()`, so the relay never observes the typed denial / `isOk()==false`. The security property holds (no splice — fail-closed close) but the explicit AC2/AD-25 "non-ROK `bind_resp` decodes cleanly (no throw)" is violated for a common interop shape and the denial code is lost to diagnostics. CODEC-019's test only ships a `system_id`-bearing response, so the gap is unexercised. [`codec/src/main/java/smpp/companion/codec/bind/SmppCodec.java:80`]
+- [x] [Review][Decision→Defer] **`password` is `AsciiString` (the 2026-07-28 override) BUT the record's auto-`toString()` concretely leaks it via the documented "fragile seam" (CODEC-024 / PRIV-1).** The type choice is a documented user override (not a defect); the sharper issue: `SmppBindRequest` is a `record`, so its auto-generated `toString()` renders every component — calling `AsciiString.toString()` on the password, which caches a surviving `String`. So "callers must avoid `toString()` on the password" is insufficient: logging the PDU object (a plausible relay debug/error path) leaks it, and this would FAIL the deferred CODEC-024 P2 "no `String` from password octets" bytecode scan. [`codec/src/main/java/smpp/companion/codec/bind/SmppBindRequest.java:49`] — **deferred to T6 (CODEC-024 P2):** the bytecode scan will enforce "no `String` from password octets"; the `AsciiString` type + the record `toString()` leak are accepted until then under the 2026-07-28 override. See `deferred-work.md`.
+- [x] [Review][Patch] `address_range` spec-max (≤41 incl. terminator) is not exercised — `maxLengthFieldsDecode` hits `system_id`/`password`/`system_type` at max but passes `address_range=""`; the AC2 "C-octet max-length" clause isn't covered for that field (same `readAscii` path → code correct, test gap). One assertion closes it. [`codec/src/test/java/smpp/companion/codec/bind/SmppCodecTest.java:259`]
+- [x] [Review][Patch] Dev Agent Record / AC2 text drift after the refactor — AC2 :153 still says "`char[]`/`byte[]`"; Dev Record :704 says the password accessor is "`char[]`"; Dev Record :728 references "`SmppCommandIds.MIN_COMMAND_LENGTH`" (moved to `SmppFrame` this session). Reconcile the stale passages. [`_bmad-output/implementation-artifacts/1-2-smpp-3-4-codec.md`]
 
 ---
 
@@ -663,7 +673,88 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
   `allocationCount == 1`. `:codec:build` GREEN; framer 16 tests (13+3) 0 fail/skip; CODEC-040 unchanged. Story
   stays in-progress (T3–T8 pending; this was a task-level review, not the story-completion CR).
 
-- `codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java` (new)
+- **T3 complete — `SmppCodec` bind parser + typed bind PDU model + encoder (AC2, AC6; AD-3/AD-7/AD-12/
+  AD-25/AD-27/AD-32).** _Type/suppression note: the field types, helper class name, and suppression mentions
+  in this entry reflect the INITIAL T3 state (password `char[]`, C-octet fields `byte[]`, helper `CoctetStrings`,
+  `ArrayRecordComponent` suppressions). They are SUPERSEDED by the "FIXME resolved (2026-07-28)" entry below —
+  password + ALL C-octet fields are `AsciiString`, the helper is `SmppBytes`, and both records are array-free
+  (no suppressions). Read this entry as the pre-refactor snapshot._
+  Delivered `smpp.companion.codec.bind`: a sealed `SmppBindPdu` (permits
+  `SmppBindRequest` / `SmppBindResponse`) carrying the header (`commandId`/`commandStatus`/`sequenceNumber`)
+  + a retained, byte-exact `originalFrame()` (the AD-2 forward unit); `SmppBindResponse.isOk()` is the AD-25
+  ROK predicate, placed on the response ONLY (a request carries status 0 == ROK, so a shared predicate would
+  be a splice footgun). `SmppCodec extends MessageToMessageDecoder<ByteBuf>` sits one hop after the framer;
+  it parses `BIND_FAMILY` only (opacity is structural — every other `command_id` is forwarded as the untouched
+  framed `ByteBuf` via `buf.retain()`, AD-3/AD-32). The parse is non-mutating (CODEC-037): header via absolute
+  `getInt`, body via an UNRETAINED `slice`, so the input's content + reader index are never touched; the
+  original is `retainedSlice`'d ONLY after the whole body parses → a malformed-body throw retains nothing
+  (no reject-path leak). A package-private `CoctetStrings` does the bounded C-octet scan (finite
+  `[readerIndex, writerIndex)` range → CODEC-021 no over-read / no spin; bounds-checked fixed-field reads →
+  CODEC-022 no AIOOBE), and the symmetric encode. _(Password / C-octet field types: see the superseding FIXME-resolution note below.)_ `SmppBindEncoder`
+  is a static utility (offline — AD-32 forbids hot-path reserialise) for the CODEC-032 round-trip. + `@NullMarked`
+  `bind/package-info.java`.
+- **Two design forks locked with the user (AskUserQuestion, 2026-07-28):** (1) **password = `char[]`**
+  _(initial decision — SUPERSEDED 2026-07-28 by the user's `DO use AsciiString password`; see the FIXME-resolution
+  entry below: the password is now an `AsciiString`, zeroization via `array()` is fragile due to the `toString()`
+  cache)_ — the Java credential convention + the CODEC-024/PRIV-1 zeroization seam (`Arrays.fill(pw,'\0')`);
+  decoded from the
+  ASCII C-octet bytes via US_ASCII (high-bit/non-ASCII password octets map to `'?'` — an accepted lossy tradeoff,
+  documented at `CoctetStrings.chars`). (2) **sealed `SmppBindPdu` hierarchy** — `SmppBindRequest` (all body
+  fields) / `SmppBindResponse` (`systemId` only; TLV tail stays in `originalFrame`, AD-3) — no `@Nullable` body
+  fields under `@NullMarked`. Other C-octet fields (`systemId`/`systemType`/`addressRange`) — kept as lossless
+  `byte[]` initially, later unified to `AsciiString` (SUPERSEDED — see the FIXME-resolved note below; non-ASCII
+  octets preserved, not lossy `String`).
+- **Tests (verified, 0 skipped):** `SmppCodecTest`=18 (CODEC-016 transceiver-decode-all-fields; 017 ×3 the three
+  request types; 018 ROK-true; 019 non-ROK-false; 020 all-empty + spec-max-length; 021 unterminated→reject
+  bounded; 022 truncated→reject; 023 header-parses-with-junk-body; 028 ×6 non-bind opaque pass-through incl.
+  outbind/generic_nack; 037 byte-exact + reader-index-restored) + `SmppBindEncoderTest`=2 (encode→exact-wire-bytes
+  + decode(encode(·)) symmetry). Every bind PDU is hand-authored from the spec (raw `ByteBuffer`) — never
+  codec-synthesised (R14/R33). Full codec suite 46 tests, 0 fail / 0 skip, no regressions.
+- **Gates (T3):** CODEC-039 ArchUnit green against the new `..codec.bind..` package (no proxy deps — now
+  load-bearing); CODEC-040 unchanged `{io.netty, org.jspecify, org.projectlombok}` (no new dep — `MessageToMessageDecoder`
+  ∈ netty-codec); `compileJava` NullAway-clean (AD-35); zero `// FIXME` (AC9). ErrorProne `ArrayRecordComponent`
+  — initially ×5 on the `byte[]`/`char[]` record components, but **fully resolved** once every C-octet field
+  (incl. the password) became an `AsciiString` (both records array-free → all such suppressions removed; see
+  the FIXME-resolution note below). Only the pre-existing deferred `StringCaseLocaleUsage` warning remains
+  (AC5/T4 owns it).
+- **CODEC-024 scope note (transparent):** the password accessor is `AsciiString` (revised 2026-07-28 — see the FIXME-resolved note below; the return-type half of CODEC-024 is
+  proven — CODEC-016 compiles + asserts on `req.password()` as an `AsciiString`); the deeper ASM "no `java.lang.String`
+  constructed from the password octets" bytecode-scan half is P2 and needs an `org.ow2.asm` testImplementation —
+  it is NOT in T3's listed test set and is deferred (the design supports it; surface for T6/confirmation). The
+  full CODEC-032 golden-corpus round-trip lands in T5 (jSMPP) + T4 (corpus); T3 ships the encoder + a hand-built
+  round-trip. CODEC-025 (bind fuzz) / CODEC-038 (opaque jqwik) are fuzz-tier → T6. **AC2 is substantially met by
+  T3** (every parser clause asserted); story stays `in-progress` (T4–T8 pending).
+
+- **FIXME resolved (2026-07-28) — three themes the dev marked across the T3 source, addressed:**
+  - **`use AsciiString` (ADOPTED for ALL C-octet fields — user-directed, 2026-07-28):** every C-octet field,
+    INCLUDING the password, is now Netty `io.netty.util.AsciiString` (∈ netty-common, already transitive on the
+    codec classpath → CODEC-040 unchanged) — a lossless `CharSequence` over the raw bytes (high-bit octets
+    preserved), zero-conversion to `ByteBuf`, and NOT an array (kills every `ArrayRecordComponent` warning — both
+    records are array-free → all such suppressions removed; the `@SuppressWarnings` on `SmppBindRequest` is gone).
+    **The password was initially kept `char[]` (the CODEC-024 zeroization seam); the user then directed
+    `DO use AsciiString password`, overriding that for full type-uniformity.** This revises CODEC-024/AC2: the
+    accessor is an `AsciiString`, not `char[]`/`byte[]`. Zeroization is still *possible* — `AsciiString.array()`
+    exposes the backing `byte[]` for `Arrays.fill(pw.array(), pw.arrayOffset(), pw.arrayOffset()+pw.length(),
+    (byte)0)` — but FRAGILE: `AsciiString` lazily caches `toString()`, so a `password.toString()` call leaves a
+    `String` copy that survives a backing-array wipe (callers must avoid `toString()` on the password). The deferred
+    CODEC-024 P2 bytecode scan will assert the AsciiString form + this caveat rather than a `char[]` return type.
+    `CoctetStrings` is simplified to `readAscii` (→ `AsciiString`, every field) + a lossless zero-alloc
+    `write(ByteBuf, AsciiString)` via `array()`/`arrayOffset()`/`length()`; the `char[]` password read/write paths
+    were removed.
+  - **`use MIN_COMMAND_LENGTH` (ADOPTED):** `SmppCodec` + `SmppBindEncoder` now reference
+    `SmppFrame.MIN_COMMAND_LENGTH` (moved out of `SmppCommandIds` → `SmppFrame` — frame-length bounds ≠ `command_id`s;
+    T3 review-refactor 2026-07-29; the 16-octet command header IS the minimum legal PDU — a header-only PDU)
+    instead of local `HEADER = 16` literals; the bind package no longer redefines the `16`.
+  - **`create const for comparison` (ADOPTED):** added `SmppCommandIds.INTERFACE_VERSION_3_4 = 0x34` (SMPP 3.4
+    §4.1.1); referenced in the `SmppBindRequest.interfaceVersion` javadoc, the encoder, and the tests (replacing
+    the `0x34` literals).
+  - **Test-side note:** `assertThat(asciiString)` is ambiguous in AssertJ (`AsciiString` is both `CharSequence` and
+    `Comparable`, matching both `assertThat(CharSequence)` and `<T>assertThat(T extends Comparable)`); the AsciiString
+    assertions cast to `(CharSequence)` to pick the content-`.equals` overload. `:codec:build` GREEN; 46 tests
+    0 fail / 0 skip; zero `// FIXME`; CODEC-040 unchanged; `ArrayRecordComponent` fully resolved (no array
+    components remain — no suppression anywhere).
+
+- `codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java` (new; +`INTERFACE_VERSION_3_4` T3)
 - `codec/src/main/java/smpp/companion/codec/command/package-info.java` (new)
 - `codec/src/test/java/smpp/companion/codec/command/SmppCommandIdsTest.java` (new)
 - `codec/src/test/java/smpp/companion/codec/command/MaxCommandLengthContractTest.java` (new)
@@ -671,3 +762,12 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
 - `codec/src/main/java/smpp/companion/codec/framer/package-info.java` (new — T2)
 - `codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTest.java` (new — T2; CODEC-001..010,013,014,015)
 - `codec/src/test/java/smpp/companion/codec/framer/SmppFrameDecoderTcpTest.java` (new — T2; CODEC-034..036)
+- `codec/src/main/java/smpp/companion/codec/bind/package-info.java` (new — T3; @NullMarked)
+- `codec/src/main/java/smpp/companion/codec/bind/SmppBindPdu.java` (new — T3; sealed interface + ESME_ROK)
+- `codec/src/main/java/smpp/companion/codec/bind/SmppBindRequest.java` (new — T3; record)
+- `codec/src/main/java/smpp/companion/codec/bind/SmppBindResponse.java` (new — T3; record + isOk(), AD-25)
+- `codec/src/main/java/smpp/companion/codec/bind/CoctetStrings.java` (new — T3; bounded C-octet read/write)
+- `codec/src/main/java/smpp/companion/codec/bind/SmppCodec.java` (new — T3; bind-branch decoder)
+- `codec/src/main/java/smpp/companion/codec/bind/SmppBindEncoder.java` (new — T3; static encoder, CODEC-032)
+- `codec/src/test/java/smpp/companion/codec/bind/SmppCodecTest.java` (new — T3; CODEC-016..023, 028, 037)
+- `codec/src/test/java/smpp/companion/codec/bind/SmppBindEncoderTest.java` (new — T3; encode round-trip)

@@ -13,7 +13,7 @@ import io.netty.util.ResourceLeakDetector;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import smpp.companion.codec.command.SmppCommandIds;
+import smpp.companion.codec.framer.SmppFrame;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,7 +38,7 @@ class SmppFrameDecoderTest {
 
     /** SMPP 3.4 §4.1 header size (octets): command_length | command_id | command_status | sequence_number. */
     private static final int HEADER = 16;
-    private static final int MAX = SmppCommandIds.MAX_COMMAND_LENGTH;
+    private static final int MAX = SmppFrame.MAX_COMMAND_LENGTH;
 
     // ---------- harness ----------
 

@@ -3,6 +3,7 @@ package smpp.companion.codec.command;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import smpp.companion.codec.framer.SmppFrame;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,7 +30,7 @@ class MaxCommandLengthContractTest {
     @Test
     @DisplayName("MAX_COMMAND_LENGTH == 65536 (AD-30 cap; covers message_payload TLV max)")
     void maxCommandLength_isPinnedAt65536() {
-        assertThat(SmppCommandIds.MAX_COMMAND_LENGTH).isEqualTo(65536);
-        assertThat(SmppCommandIds.MAX_COMMAND_LENGTH).isEqualTo(0x00010000);
+        assertThat(SmppFrame.MAX_COMMAND_LENGTH).isEqualTo(65536);
+        assertThat(SmppFrame.MAX_COMMAND_LENGTH).isEqualTo(0x00010000);
     }
 }

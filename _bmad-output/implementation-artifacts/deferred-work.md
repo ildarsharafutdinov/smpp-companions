@@ -46,3 +46,13 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   code, not a command_id). Story 1.2 implemented the spec-correct `0x09` / `0x80000009` (verified vs
   `docs/SMPP_v3_4_Issue1_2.pdf` §5.1.2 + the jSMPP oracle, CODEC-031). Correct the catalog literals at
   the next planning-docs pass. Not code-blocking.
+
+## Deferred from: code review of 1-2-smpp-3-4-codec (T3 — bind parser + encoder, 2026-07-29)
+
+- **CODEC-024 P2 password `toString()` leak deferred to T6** — `SmppBindRequest` is a `record`, so its
+  auto-generated `toString()` renders every component, calling `AsciiString.toString()` on the password
+  (which caches a surviving `String`). Logging the PDU object (a plausible relay debug/error path) would
+  leak it, and it would FAIL the deferred CODEC-024 P2 "no `String` from password octets" bytecode scan.
+  The `AsciiString` password type is the user's 2026-07-28 override (kept); the fix — override
+  `SmppBindRequest.toString()` to redact the password — is deferred to T6's CODEC-024 P2 enforcement.
+  (Decision at T3 code review 2026-07-29.) [`codec/src/main/java/smpp/companion/codec/bind/SmppBindRequest.java:49`]
