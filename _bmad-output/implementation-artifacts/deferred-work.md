@@ -62,6 +62,10 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   real decoder + jSMPP and verify each rejects as tagged (strictly stronger than T4 structural assertions; requires a
   deliberate negative-reject test alongside CODEC-031, which is positive-only field-equality today).
   [codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java:70-93]
+  **✅ RESOLVED 2026-07-30 (Story 1.2 T5):** `BindConformanceTest.negativeVectorRejectsAsTagged` (CODEC-033) now
+  feeds every golden negative through the real `SmppFrameDecoder → SmppCodec` pipeline and asserts each rejects/
+  awaits exactly as tagged — framer-reject (CODEC-005/008), await (CODEC-009), parser-reject (CODEC-021/022); no
+  negative surfaces a typed PDU. (The loader code cited above moved to `GoldenVectors.java` in T5.)
 
 - **No independent per-vector `command_id` pin in the golden loader — membership-only via `SmppCommandIds.isBindFamily`.**
   `GoldenVectorCorpusTest` asserts each positive vector's `command_id` is bind-family but does not pin the specific id
@@ -69,6 +73,8 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   the `0x09`↔`0x0F` constant drift (a vector encoding `0x09` would fail `isBindFamily` if the constant drifted to `0x0F`);
   only a wrong-but-bind-family id would slip. Closed by T5's jSMPP decode oracle (CODEC-031), which decodes each vector
   field-by-field and keys on `command_id`. [codec/src/test/java/smpp/companion/codec/golden/GoldenVectorCorpusTest.java:124]
+  **✅ RESOLVED 2026-07-30 (Story 1.2 T5):** CODEC-031 (`BindConformanceTest.codecDecodeAgreesWithJsmpp`) decodes
+  each golden vector via jSMPP and asserts the `command_id` (and every field) per vector.
 - **`bind_transmitter_resp` (command_id `0x80000002`) has no positive golden vector — 5 of 6 `BIND_FAMILY` ids covered.**
   The corpus covers `0x01`/`0x02`/`0x09` (requests) and `0x80000001`/`0x80000009` (responses) but not `0x80000002`.
   The three bind-response ids parse identically (system_id C-octet + optional opaque TLVs) through one decode branch,
