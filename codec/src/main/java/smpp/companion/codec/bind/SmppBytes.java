@@ -56,7 +56,10 @@ class SmppBytes {
      * Reads one C-octet-string as a lossless {@link AsciiString} (every field, including the password).
      */
     static AsciiString readAscii(ByteBuf slice, String fieldName) {
-        return new AsciiString(readNullTerminated(slice, fieldName)); // AsciiString's own defensive copy
+        byte[] string = readNullTerminated(slice, fieldName);
+        return string.length == 0
+                ? AsciiString.EMPTY_STRING
+                : new AsciiString(string); // reuse the bytes already read — re-calling readNullTerminated would consume the NEXT field (regression fix 2026-07-30)
     }
 
     /**

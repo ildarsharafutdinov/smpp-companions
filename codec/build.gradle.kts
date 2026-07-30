@@ -31,4 +31,9 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2") // CODEC-039 inward-only rule
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // CODEC-031 (AC6): jSMPP 3.0.2 is the INTEROP-ONLY independent decode oracle — the 2nd oracle alongside
+    // the hand-authored golden corpus (R33/R14). testImplementation ONLY (never production): it stays off the
+    // main compileClasspath/runtimeClasspath, so CODEC-040's {io.netty, org.jspecify, org.projectlombok} main
+    // gate and AD-7/AD-27 runtime purity are unaffected (the gate scans the MAIN configurations, not test).
+    testImplementation("org.jsmpp:jsmpp:3.0.2")
 }
