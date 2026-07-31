@@ -18,6 +18,7 @@ build/
 **/build/
 out/
 *.class
+**/.jqwik-database
 
 # Keep the Gradle wrapper committed (regenerable but intentionally tracked)
 !gradle/wrapper/gradle-wrapper.jar
