@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-07-30
+last_updated: 2026-07-31
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system

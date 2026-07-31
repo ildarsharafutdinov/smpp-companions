@@ -36,4 +36,19 @@ dependencies {
     // main compileClasspath/runtimeClasspath, so CODEC-040's {io.netty, org.jspecify, org.projectlombok} main
     // gate and AD-7/AD-27 runtime purity are unaffected (the gate scans the MAIN configurations, not test).
     testImplementation("org.jsmpp:jsmpp:3.0.2")
+
+    // AC7 (T6) fuzz + property testing. Jazzer + jqwik are JUnit Platform test engines; testImplementation
+    // ONLY so they stay off the MAIN compile/runtime classpath and CODEC-040's {io.netty, org.jspecify,
+    // org.projectlombok} main gate + AD-7/AD-27 runtime purity are unaffected (the gate scans MAIN
+    // configurations, not test). Both execute on this toolchain's NATIVE JUnit Platform 6.0.3 — NO downgrade
+    // is needed (the earlier "jqwik needs Platform 1.14.4" hypothesis was disproven: the real cause was
+    // Jupiter annotations on @Property, below).
+    //   • LOAD-BEARING jqwik gotcha (verified 2026-07-31): a Jupiter @DisplayName OR @Tag on a jqwik
+    //     @Property method makes jqwik SILENTLY SKIP execution (the method is discovered but never run, and
+    //     the build stays GREEN — a no-op-test trap that evades AC9/AC10). The @Property methods therefore
+    //     carry NO Jupiter annotations; the display name + tier tags live at the CLASS level (which jqwik
+    //     honors), and per-tier properties are split into separate classes. CODEC-011/025 (Jazzer @FuzzTest,
+    //     regression mode via the Jupiter engine) are unaffected. See the Dev Agent Record.
+    testImplementation("com.code-intelligence:jazzer-junit:0.24.0") // CODEC-011/025 fuzz (regression-mode PR tier; JAZZER_FUZZ=1 nightly)
+    testImplementation("net.jqwik:jqwik:1.10.1")                     // CODEC-012/037/038 properties (Platform 6.0.3 native; annotation-free @Property methods)
 }
