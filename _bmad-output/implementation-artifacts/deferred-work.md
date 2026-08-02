@@ -80,3 +80,20 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   The three bind-response ids parse identically (system_id C-octet + optional opaque TLVs) through one decode branch,
   so there is no untested code path; AC5 does not mandate one vector per id, and a 12th vector would be a near-no-op
   against an already-covered path. Add for 6-id symmetry only if desired. [codec/src/test/resources/golden-vectors/]
+
+## Deferred from: code review of story-1-2-smpp-3-4-codec (T7 — JMH microbench, 2026-08-02)
+
+- **PERF-004 (`-prof gc`) is not reproducibly wired — a one-shot manual measurement reverted from the
+  committed build.** AC8/PERF-004 requires "`-prof gc` confirms per-op allocation is controlled." The
+  committed `jmh {}` block (`proxy/build.gradle.kts:47-53`) sets only `jmhVersion`/`includeTests` — no
+  `profilers = [gc]` line — and `CodecMicrobenchmarks` carries no `@Profiler` override (JMH gc profiling
+  is CLI/plugin-config-driven, not annotation-driven). The Dev Record confirms `-prof gc` was added
+  temporarily to record encode 172.3 B/op, decode 448 B/op, frame 104 B/op, then REVERTED "so default
+  throughput runs stay clean"; a fresh `./gradlew :proxy:jmh` yields throughput only and does not
+  reproduce the PERF-004 allocation evidence, so a future regression inflating per-op allocation would
+  not be surfaced by re-running the committed benchmark. Mild: PERF-006's counting-allocator unit guard
+  (`CodecAllocationGuardTest`, PR-tier `:codec:test`) is the durable substitute for the encode path, and
+  the Dev Record is transparent about the revert + the substitute. **Deferred:** the no-profilers config
+  is a deliberate, documented tradeoff (clean nightly throughput runs); permanently re-wiring `-prof gc`
+  (e.g. `profilers = ["gc"]` in the `jmh {}` block, or a documented `./gradlew :proxy:jmh -Pprof=gc`
+  invocation) is a design choice, not an unambiguous patch. (Decision at T7 code review 2026-08-02.)

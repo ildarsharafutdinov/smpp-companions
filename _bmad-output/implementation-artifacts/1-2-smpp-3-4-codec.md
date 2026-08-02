@@ -273,15 +273,15 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
 - [x] **T6 — Fuzz + properties** (AC7)
   - [x] Add fuzz lib (default Jazzer `com.code-intelligence:jazzer-junit`) + jqwik as
         `testImplementation` on `codec`; CODEC-011, CODEC-025, CODEC-012/037/038.
-- [ ] **T7 — JMH microbench** (AC8)
-  - [ ] Apply `me.champeau.jmh` (`0.7.3`) in `proxy/build.gradle.kts`; sources at
+- [x] **T7 — JMH microbench** (AC8)
+  - [x] Apply `me.champeau.jmh` (`0.7.3`) in `proxy/build.gradle.kts`; sources at
         `proxy/src/jmh/java/...`; PERF-001..006.
-  - [ ] Widen the null-safety predicate to `name == "compileJava" || name == "compileJmhJava"`
+  - [x] Widen the null-safety predicate to `name == "compileJava" || name == "compileJmhJava"`
         (`buildSrc/.../smpp.null-safety.gradle.kts:37`) — decision #3 hardening add #2; keep
         benchmark classes JSpecify-clean under `smpp.companion.*`.
-  - [ ] Add a one-line ArchUnit rule: classes in `..jmh..` may NOT depend on
+  - [x] Add a one-line ArchUnit rule: classes in `..jmh..` may NOT depend on
         `..smpp.companion.proxy..` — decision #3 hardening add #1.
-  - [ ] Smoke-test `./gradlew jmh` on Gradle 9.6.1 / JDK 25 (JMH .37 ASM risk); nightly-tier.
+  - [x] Smoke-test `./gradlew jmh` on Gradle 9.6.1 / JDK 25 (JMH .37 ASM risk); nightly-tier.
 - [ ] **T8 — Gates green + finalize** (AC9, AC10)
   - [ ] Confirm CODEC-039/040/041 + AD-35 green; add `@NullMarked package-info.java` to every new
         sub-package; full `./gradlew clean build :buildSrc:test` green.
@@ -342,6 +342,15 @@ _T6 code review (2026-07-31) — 3 parallel adversarial layers (Blind Hunter, Ed
 _Dismissed (7): (1) "PR/nightly fuzz split is fictitious / JAZZER_FUZZ unwired" — Jazzer's regression-vs-continuous dual mode is native; regression runs on every build (not cosmetic), and the nightly mechanism is the standard `JAZZER_FUZZ=1` env-var (a CI-finalize concern, out of scope for a test-only task). (2) "CODEC-025 over-read assertion only conditional" — the non-null `DecoderException` lower bound for malformed/truncated bodies IS asserted in `SmppCodecTest` CODEC-021/022; the fuzz test's job is the over-read direction. (3) "RecordingAllocator bounds initialCapacity not footprint" — refuted by Netty 4.2.16 source: `initialCapacity` IS the actual `new byte[]`/direct-allocation size (`maxCapacity` is a never-pre-reserved growth ceiling). (4) "CODEC-011 controlled-close only checked when `!isActive`" — unreachable: `SmppFrameDecoder.exceptionCaught` always fires-then-closes, so the active branch necessarily has no cause; plus covered by CODEC-005/006/008/010/013/014. (5) "CODEC-037 throwaway `Unpooled.buffer(1)` dummy is a smell" — self-admitted nitpick; no leak (refcnt 1 → released once), `encode` genuinely ignores `originalFrame`. (6) "'wire the tag' has no in-repo Gradle wiring" — over-reads AC7; the tag IS attached (selectable by CI), and continuous fuzz being an env-var opt-in is what keeps the build unblocked. (7) "tier tags inconsistent (CODEC-012/038 `fuzz` vs CODEC-037 `unit`)" — real but cosmetic (no tag filter is wired, so zero effect today) and the "correct" tier for a bounded jqwik property is itself ambiguous; the finding's premise (CODEC-012 is "deterministic") is wrong — all three use jqwik random generation._
 
 _✅ Patches applied + verified (2026-07-31): all 6 resolved — corpus shipped (CODEC-011/025 `@MethodSource` seeds), CODEC-011 chunked feeding (bounded-memory assertion now non-vacuous — `maxRequested` reflects real cumulation growth) + positive oversize→close, stale "downgraded to 5.14.4" javadoc reconciled, jqwik `ExceptionCapture` made fail-loud, CODEC-037 pre-try block hoisted. `./gradlew clean build :buildSrc:test` GREEN; codec **79 tests / 0 fail / 0 skip / 0 errors** (was 66; +13 regression seeds — `SmppFrameDecoderFuzzTest` 1→8, `SmppCodecFuzzTest` 1→7, both now exercising well-formed / oversize / overflow-class / floor / truncated / unterminated / coalesced shapes on PR); CODEC-040 unchanged `{io.netty, org.jspecify, org.projectlombok}`; zero ErrorProne warnings. Story stays `in-progress` (T7 JMH + T8 finalize pending)._
+
+_T7 code review (2026-08-02) — 3 parallel adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor) + a gradle build-smoke agent + per-finding source-re-derivation verification (12 agents total), run on the uncommitted JMH microbench + guards (`proxy/build.gradle.kts` +`me.champeau.jmh` 0.7.3 + the `test→compileJmhJava` edge, `buildSrc` null-safety predicate widened to `compileJmhJava`, `CodecMicrobenchmarks` PERF-001/002/003, `JmhIsolationArchitectureTest`, `CodecAllocationGuardTest` PERF-006). Verdict: the T7 product + guard code is **FUNCTIONALLY CORRECT — zero production defects, zero AC8 intent actually unmet, zero AD violations.** Empirically verified: `./gradlew :proxy:compileJmhJava` GREEN with NullAway **PROVEN live on `compileJmhJava`** (a throwaway `@Nullable`→`@NonNull` probe FAILED the compile, then recompiled clean after removal — the widened predicate is genuinely fail-closed); `./gradlew :codec:test --tests *CodecAllocationGuardTest` = 2/0/0 (encode==1, decode==0, `refCnt==1`); `JmhIsolationArchitectureTest` **NON-VACUOUS** (a probe asserted `ClassFileImporter().importPackages("smpp.companion")` loads `smpp.companion.jmh.*` — the rule evaluates real classes, not an empty selection); full `:proxy:test` = 9/0/0; and the AC8 / decision-#3-hardening-#3 smoke test **`./gradlew :proxy:jmh` → BUILD SUCCESSFUL in 34s on Gradle 9.6.1 / JDK 25**, clearing the JMH 1.37 bytecode-gen ASM-on-JDK-25 risk (the story's #1 cited risk) — encode 8.5 ops/µs, decode 6.4 ops/µs, frame 10.2 ops/µs (faster than the conservative AC8 bands, as expected for characterization; the Dev Record's smoke-test claim is TRUE). The codec API surface the benchmarks call (`SmppBindEncoder.encode(req, alloc)`, the 11-component `SmppBindRequest` ctor order/types, `SmppCommandIds.BIND_TRANSCEIVER=0x09`/`INTERFACE_VERSION_3_4=0x34`, `SmppCodec` zero-alloc slice decode, `SmppFrameDecoder` LFBD `retainedSlice`) was independently verified against the committed T1-T6 source. **All 6 confirmed findings are LOW-severity and confined to documentation/wording overclaims in nightly-tier benchmark + guard code** (prose that overstates what the structural mechanisms actually intercept); 1 dismissed. 3 patch + 1 defer below._
+
+- [x] [Review][Patch] **PERF-006 decode guard overclaims "zero scratch allocations" — `decode` never routes through the `CountingAllocator`, so `allocations()==0` is a tautology, not an interception.** `CountingAllocator` overrides only `newHeapBuffer`/`newDirectBuffer`, so it counts only ByteBufs from `alloc.buffer(...)`. `SmppCodec.decode` NEVER consults `ctx.alloc()` — it reads via `buf.slice()` + `frame.retainedSlice(...)` (both allocator-bypassing derived views) and `SmppBytes.readAscii` allocates `new byte[]` + `new AsciiString` per non-empty C-octet field (≈4 `byte[]` + 3 `AsciiString` of genuine per-op GC garbage for the golden bind, none allocator-routed). So `alloc.allocations()==0` holds because decode bypasses the allocator entirely, not because the delegate intercepted zero allocations — the same `RecordingAllocator`-bypass anti-pattern flagged+fixed in the T2 CODEC-010 and T6 CODEC-011 reviews. The load-bearing decode checks that DO bite are `originalFrame().refCnt()==1` (the literal spec property "decode retains no extras") + the `commandId` sanity; the encode half IS genuinely guarded (`SmppBindEncoder.encode` calls `alloc.buffer(commandLength)`, count==1 holds regardless of `preferDirect`). Fix: tighten the `@DisplayName` / assertion message / class javadoc to "zero scratch **ByteBuf** allocations via the channel allocator" (the decode path is genuinely zero-ByteBuf-alloc by design, so the count cannot be made to bite — the durable invariant is the `refCnt==1` check, which already bites). [`codec/src/test/java/smpp/companion/codec/perf/CodecAllocationGuardTest.java:103,108,116-118`]
+- [x] [Review][Patch] **`CodecMicrobenchmarks` class javadoc claims "no allocation enters the measured path," but PERF-002/PERF-003 allocate a `retainedDuplicate()` wrapper inside each `@Benchmark`.** The class javadoc (lines 44-45) holds only for PERF-001 `encodeBindRequest`; PERF-002 `decodeBindRequest` and PERF-003 `frameSubmitSm` call `goldenFrame.retainedDuplicate()` / `submitFrame.retainedDuplicate()` per invocation to feed the `EmbeddedChannel` without consuming the shared `@State` buffer (necessary — `MessageToMessageDecoder`/`ByteToMessageDecoder` release the input after decode). `ByteBuf.retainedDuplicate()` allocates a fresh wrapper per call — a real per-op heap allocation in the measured path, so PERF-004's `-prof gc` per-op count for PERF-002/003 includes this harness wrapper (an engineer relying on the javadoc would mis-attribute it to the codec). The `retainedDuplicate` is unavoidable harness setup (not deletable); the durable PERF-006 counting-allocator guard is correctly unaffected (slice/duplicate views don't route through it). Fix: reword the javadoc to acknowledge the necessary `retainedDuplicate` wrapper on the decode/frame paths. [`proxy/src/jmh/java/smpp/companion/jmh/CodecMicrobenchmarks.java:44-45`, contradicted by :82 (PERF-002) and :102 (PERF-003)]
+- [x] [Review][Patch] **PERF-005 overclaimed as a "durable in-CI guard"; warmup (2×1s) cannot demonstrate convergence and no CoV<5% gate exists.** The class javadoc (lines 32-33) labels "PERF-005 fork-variance + PERF-006's unit allocation guard" as the durable in-CI guards (plural). PERF-006 genuinely is one (a unit test in `:codec:test`); PERF-005 is neither — the `:proxy:jmh` task is nightly-tier (NOT wired into `build`/`check`, by AC8 design), there is **no CoV<5% assertion anywhere in the repo**, and the CoV figure is a one-time manual characterization in the Dev Record (not a guard). `@Warmup(iterations=2, time=1)` gives only 2 warmup points — too few to observe convergence (JMH best practice is 5+). The Dev Record is internally inconsistent with the javadoc (it says "PERF-006 is the durable guard", singular). Fix: one-line javadoc reword (PERF-005 is a manual characterization; PERF-006 is the sole durable in-CI guard); optionally bump `@Warmup(iterations=5)` so a future run can actually show convergence. [`proxy/src/jmh/java/smpp/companion/jmh/CodecMicrobenchmarks.java:32-33,50-52`]
+- [x] [Review][Defer] **PERF-004 (`-prof gc`) is not reproducibly wired — a one-shot manual measurement reverted from the committed build; `./gradlew :proxy:jmh` yields throughput only.** The committed `jmh {}` block sets only `jmhVersion`/`includeTests` — no `profilers = [gc]` line — and `CodecMicrobenchmarks` carries no `@Profiler` override (JMH gc profiling is CLI/plugin-config-driven, not annotation-driven). The Dev Record confirms `-prof gc` was added temporarily to record encode 172.3 B/op, decode 448 B/op, frame 104 B/op, then REVERTED "so default throughput runs stay clean"; a fresh `:proxy:jmh` does not reproduce the PERF-004 allocation evidence. Mild because PERF-006's counting-allocator unit guard is the durable PR-tier substitute and the Dev Record is transparent about the revert + substitute; re-deriving the PERF-004 evidence is a trivial one-line change. [`proxy/build.gradle.kts:47-53`] — **deferred:** the no-profilers config is a deliberate, documented tradeoff (clean nightly throughput runs); permanently re-wiring `-prof gc` is a design choice, not an unambiguous patch. See `deferred-work.md`.
+
+_Dismissed (1): PERF-002 decodes 10 of 11 `SmppBindRequest` fields into the Blackhole (`originalFrame()` is `.release()`d, not `bh.consume()`d — a literal "every field Blackholed" wording deviation). Confirmed but dismissed: `SmppCodec` constructs `originalFrame` via `frame.retainedSlice(...)` (a refcount side effect on `frame`), and `pdu.originalFrame().release()` mutates that refcount via a volatile write, so the JIT cannot elide the field load — the read is preserved exactly as `bh.consume()` would preserve it, and the retainedSlice allocation cannot be DCE'd. PERF-002 decode throughput is measured correctly; the deviation is purely literal-text non-compliance with zero functional consequence._
 
 ---
 
@@ -900,6 +909,65 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
   ErrorProne warnings on test compile. `./gradlew clean build :buildSrc:test` GREEN (AC10). **AC7 fully met
   by T6**; story stays `in-progress` (T7 JMH, T8 finalize pending).
 
+- **T7 complete — JMH codec microbenchmarks (AC8; PERF-001..006; AD-7/AD-27).** Applied `me.champeau.jmh`
+  `0.7.3` in `proxy/build.gradle.kts` (jmh sourceSet at `proxy/src/jmh/java`, decision #3 RESOLVED); pinned
+  `jmhVersion = 1.37`; set `includeTests = false` (benchmarks depend ONLY on the pure codec, AD-7 — never on
+  test sources — and this breaks the test↔jmh cycle the T7-c `testImplementation(jmh.output)` edge would
+  otherwise create with the plugin's default `includeTests = true`). **Smoke test PASSED on Gradle 9.6.1 /
+  JDK 25** (`./gradlew :proxy:jmh` GREEN in ~35s): the flagged "JMH 1.37 ASM unverified on JDK-25 class
+  files" risk did NOT materialize — the bytecode generator (`jmhRunBytecodeGenerator`, which the Context7
+  docs confirm runs `org.openjdk.jmh.generators.bytecode.JmhBytecodeGenerator` over the compiled `.class`)
+  handled the JDK-25 class files cleanly; **no `jmhVersion` bump needed**. The `jmh` task chain is NOT wired
+  into `build`/`check` (nightly-tier, AC8); only `compileJmhJava` (plain javac) is pulled into `:proxy:test`.
+- **PERF spec reconciliation (act, don't ask — same class as reconciliation #1):** PERF-001/002 name
+  `submit_sm`, but the codec is BIND-ONLY (AD-3/AD-7/AD-32 — `SmppCodec` parses only `BIND_FAMILY`;
+  `SmppBindEncoder` is the codec's only encode path; there is no submit_sm encoder/typed-decode). AC8 pins
+  "input = golden-vector bytes" while AC5 makes the golden corpus bind-only (**zero** submit_sm vectors
+  exist) — so PERF-001/002 bench the codec's REAL surfaces: `SmppBindEncoder.encode` (PERF-001) and
+  `SmppCodec.decode` (PERF-002) on the golden `bind_transceiver` all-fields vector. PERF-003 honors
+  `submit_sm` literally where it IS valid — framing is PDU-agnostic (the framer reads only `command_length`),
+  so a submit_sm-shaped opaque PDU is the per-PDU hot path it frames. (Catalog `test-coverage-scenarios.md`
+  PERF-001/002 literals still read `submit_sm` upstream — flagged for the next planning-docs pass.)
+- **Measured throughput (Temurin 25.0.3; ops/s/core = ops/µs × 10⁶; `@Fork(2)` `@Threads(1)`):** PERF-001
+  encode = **8.5×10⁶ ±0.50** ops/s/core; PERF-002 decode = **6.5×10⁶ ±0.18** ops/s/core; PERF-003 framing =
+  **10.2×10⁶ ±0.38** ops/s/core. **The encode/decode numbers EXCEED the AC8 bands (3×10⁵–1.5×10⁶ /
+  5×10⁵–1.8×10⁶)** — expected, NOT a defect: the bands were sized for the heavier `submit_sm` encode/decode
+  the PERF doc assumed; bind-family encode/decode is structurally lighter (7 fixed fields, no TLV parse), so
+  it is faster. The codec-capability characterization holds well above any floor; per the PERF overclaim-
+  warning the absolute number is codec-only/no-I/O (never relay msg/s). Bands are characterization targets,
+  not CI gates.
+- **PERF-005 (fork-to-fork variance):** `frameSubmitSm` stdev 0.135 / mean 10.151 → **CoV 1.3%** (encode/
+  decode analogous — ±-error half-widths ≈3–6% at 99.9% CI → stdev/mean ≈1%); all well under the 5% gate.
+- **PERF-004 (-prof gc, per-op allocation controlled):** ran with `profilers = [gc]` (temp) —
+  `encodeBindRequest` **172.3 ±0.13 B/op** (the single framed ByteBuf), `decodeBindRequest` **448.0 B/op**
+  (the typed PDU object graph: record + AsciiString fields — zero scratch ByteBufs), `frameSubmitSm`
+  **104.0 ±0.001 B/op** (one retainedSlice). Rock-stable across all 6 iterations → no per-op scratch/leak.
+  (Config reverted to no-profilers so default throughput runs stay clean; PERF-006 is the durable guard.)
+- **PERF-006 (UNIT allocation guard — codec test, P2):** `CodecAllocationGuardTest` wraps a
+  `CountingAllocator` (extends `AbstractByteBufAllocator`, counts `newHeapBuffer`/`newDirectBuffer` — slice/
+  duplicate views do NOT route there): encode drives **exactly 1** allocation (the AD-2 splice unit) +
+  `writerIndex == command_length`; decode drives **0** allocator allocations (the original frame is a
+  zero-copy `retainedSlice`) + retains exactly the one original-frame slice (`refCnt == 1`). Satisfies
+  PERF-004's assumption deterministically in-CI.
+- **Decision #3 hardening adds — both load-bearing + PROVEN:** (1) **ArchUnit rule**
+  `JmhIsolationArchitectureTest` (proxy test): `noClasses().that().resideInAPackage("..jmh..").should()
+  .dependOnClassesThat().resideInAPackage("..smpp.companion.proxy..")` — green (benchmarks import only
+  `smpp.companion.codec` + netty + jmh). The rule sees the real compiled benchmarks because
+  `testImplementation(jmh.output)` + `test { dependsOn("compileJmhJava") }` put `compileJmhJava` (plain
+  javac) on the test classpath — nightly-tier preserved (no JMH ASM in `build`). **PROVEN via positive
+  control**: a temporary `jmh -> ProxyCompanionApplication` dependency made `JmhIsolationArchitectureTest`
+  fail; removing it restored GREEN — so the rule sees the benchmark classes and bites (not vacuous). (2) **Null-safety predicate
+  widened** (`smpp.null-safety.gradle.kts`: `name == "compileJava" || name == "compileJmhJava"`) — **PROVEN
+  via positive control**: a deliberate `@Nullable`-dereference in the benchmark made `:proxy:compileJmhJava`
+  fail with `[NullAway] dereferenced expression … is @Nullable`; removing the probe restored GREEN.
+  Benchmark classes are JSpecify-clean under `smpp.companion.*`.
+- **Gates (T7):** CODEC-040 unchanged `{io.netty, org.jspecify, org.projectlombok}` (PERF-006 is a codec
+  test using only netty/junit/assertj — already on the test classpath; no new main dep); CODEC-039/041 +
+  AD-35 green; zero `// FIXME` (AC9); `compileJmhJava` NullAway-clean (ErrorProne+NullAway coexist on the
+  jmh sourceSet). `./gradlew clean build :buildSrc:test` GREEN (AC10); `:buildSrc:test --rerun-tasks`
+  re-green (the widened predicate passes the GradleTestKit positive control). Codec suite **81** tests (was
+  79; +2 PERF-006), 0 fail / 0 skip. **AC8 met by T7**; story stays `in-progress` (T8 finalize pending).
+
 - `codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java` (new; +`INTERFACE_VERSION_3_4` T3)
 - `codec/src/main/java/smpp/companion/codec/command/package-info.java` (new)
 - `codec/src/test/java/smpp/companion/codec/command/SmppCommandIdsTest.java` (new)
@@ -930,3 +998,9 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
 - `codec/src/test/java/smpp/companion/codec/bind/SmppCodecFuzzTest.java` (new — T6; CODEC-025 Jazzer bind-parser fuzz: arbitrary body, no-throw + no-over-read)
 - `codec/src/test/java/smpp/companion/codec/bind/SmppCodecForwardingPropertyTest.java` (new — T6; CODEC-037 jqwik byte-exact bind forwarding; `@Tag("unit")` class-level — method `@Tag` breaks jqwik)
 - `codec/src/test/java/smpp/companion/codec/bind/SmppCodecOpaquePropertyTest.java` (new — T6; CODEC-038 jqwik opaque byte-identity; `@Tag("fuzz")` class-level)
+- `proxy/build.gradle.kts` (modified — T7; +`me.champeau.jmh` `0.7.3` plugin + `jmh {}` block (`jmhVersion` 1.37, `includeTests=false`) + `testImplementation(jmh.output)` + `test { dependsOn("compileJmhJava") }` for the ArchUnit classpath — PERF-001..003/005, AC8)
+- `buildSrc/src/main/kotlin/smpp.null-safety.gradle.kts` (modified — T7; `mainCompile` widened to `|| name == "compileJmhJava"` — decision #3 hardening add #2; proven via NullAway positive control)
+- `proxy/src/jmh/java/smpp/companion/jmh/package-info.java` (new — T7; `@NullMarked` for the benchmark package)
+- `proxy/src/jmh/java/smpp/companion/jmh/CodecMicrobenchmarks.java` (new — T7; PERF-001/002/003 JMH benches — bind encode/decode + submit_sm framing; nightly-tier)
+- `proxy/src/test/java/smpp/companion/proxy/JmhIsolationArchitectureTest.java` (new — T7; ArchUnit `..jmh..`→`..proxy..` isolation rule — decision #3 hardening add #1)
+- `codec/src/test/java/smpp/companion/codec/perf/CodecAllocationGuardTest.java` (new — T7; PERF-006 unit allocation guard — counting allocator: encode=1 buffer, decode=0 scratch)
