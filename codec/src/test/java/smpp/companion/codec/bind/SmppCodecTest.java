@@ -301,8 +301,12 @@ class SmppCodecTest {
     @DisplayName("CODEC-022: truncated bind body (declared fields exceed remaining bytes) -> reject, no AIOOBE")
     void truncatedBodyRejectsCleanly() {
         freshChannel();
-        // Body = just system_id "id\0" (3 octets); password/system_type/interface_version/… are absent.
-        byte[] pdu = bindWithRawBody(SmppCommandIds.BIND_TRANSCEIVER, 1, new byte[] {'i', 'd', 0});
+        // Body = system_id/password/system_type all NUL-terminated, then the fixed fields
+        // (interface_version/addr_ton/addr_npi/address_range) are ABSENT — so the parse reaches
+        // readByte(interface_version) on an empty slice (the genuine CODEC-022 throw site), NOT the
+        // CODEC-021 unterminated path that a bare "id\0" body would hit at password.
+        byte[] pdu = bindWithRawBody(SmppCommandIds.BIND_TRANSCEIVER, 1,
+                new byte[] {'i', 'd', 0, 'p', 'w', 0, 's', 't', 0});
 
         assertThatCode(() -> channel.writeInbound(inbound(pdu))).doesNotThrowAnyException();
         assertThat((ByteBuf) channel.readInbound()).as("truncated -> no typed PDU emitted").isNull();
