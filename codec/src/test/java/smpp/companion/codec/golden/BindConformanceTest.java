@@ -215,7 +215,7 @@ class BindConformanceTest {
                 assertThat(channel.isActive())
                         .as("%s: an awaited header must NOT close the channel", v.name()).isTrue();
             }
-            case "CODEC-021", "CODEC-022" -> { // length-self-consistent — framer emits a frame, PARSER rejects. NOTE: 021-vs-022 is NOT distinguished here (both => DecoderException); the 022 vector's body actually trips the 021 path — see the class javadoc.
+            case "CODEC-021", "CODEC-022" -> { // length-self-consistent — framer emits a frame, PARSER rejects. NOTE: 021-vs-022 is NOT distinguished at the assertion level (both => DecoderException); 021 trips the unterminated-C-octet path, 022 trips the readByte truncated-fixed-field path — see the class javadoc.
                 assertThat(capture.cause).as("%s: parser must reject", v.name()).isNotNull();
                 assertThat(capture.cause)
                         .as("%s: parser reject is a DecoderException", v.name())
