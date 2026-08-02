@@ -4,7 +4,7 @@ baseline_commit: 0515c48529a19a3de92ba7db18ab18ef3654df2c
 
 # Story 1.2: SMPP 3.4 Codec
 
-Status: in-progress
+Status: review
 
 > Story 1.2 fills the `codec/` module (seeded empty by Story 1.1) with the PURE SMPP 3.4 protocol
 > layer: length-framing, bind-family parsing, the `command_id` source-of-truth, a spec-derived
@@ -282,10 +282,10 @@ opaque (untouched `ByteBuf`). Exposes header `command_id`/`command_status`/`sequ
   - [x] Add a one-line ArchUnit rule: classes in `..jmh..` may NOT depend on
         `..smpp.companion.proxy..` — decision #3 hardening add #1.
   - [x] Smoke-test `./gradlew jmh` on Gradle 9.6.1 / JDK 25 (JMH .37 ASM risk); nightly-tier.
-- [ ] **T8 — Gates green + finalize** (AC9, AC10)
-  - [ ] Confirm CODEC-039/040/041 + AD-35 green; add `@NullMarked package-info.java` to every new
+- [x] **T8 — Gates green + finalize** (AC9, AC10)
+  - [x] Confirm CODEC-039/040/041 + AD-35 green; add `@NullMarked package-info.java` to every new
         sub-package; full `./gradlew clean build :buildSrc:test` green.
-  - [ ] Record the spec-error correction (reconciliation #1) in the Dev Agent Record.
+  - [x] Record the spec-error correction (reconciliation #1) in the Dev Agent Record.
 
 ### Review Findings
 
@@ -967,6 +967,28 @@ glm-5.2[1m] (via Claude Code harness); effort=ultracode (xhigh + dynamic workflo
   jmh sourceSet). `./gradlew clean build :buildSrc:test` GREEN (AC10); `:buildSrc:test --rerun-tasks`
   re-green (the widened predicate passes the GradleTestKit positive control). Codec suite **81** tests (was
   79; +2 PERF-006), 0 fail / 0 skip. **AC8 met by T7**; story stays `in-progress` (T8 finalize pending).
+- **T8 complete — Gates green + finalize (AC9, AC10).** Finalize task — **no production code added.** Verified:
+  (1) **AC9 gates** — **CODEC-039** (`CodecIsolationArchitectureTest`, inward-only ArchUnit) GREEN and now
+    load-bearing (analyzes the real `smpp.companion` classes — `SmppCommandIds`/`SmppFrameDecoder`/`SmppCodec`/…);
+    **CODEC-040** (`:codec:enforceDependencyAllowlist`) GREEN — allowlist `{io.netty, org.jspecify,
+    org.projectlombok}` (jspecify + lombok are `compileOnly`, so codec RUNTIME stays {io.netty}+JDK);
+    **CODEC-041** (`CodecPurityGateTest` — 6 buildSrc positive controls incl. the symmetric
+    jspecify-accepted + lombok-accepted halves) GREEN; **AD-35** (NullAway @ ERROR) GREEN on `compileJava`
+    AND `compileJmhJava` (the T7-widened predicate) — both compiled clean. **Every new codec MAIN
+    sub-package carries its own `@NullMarked package-info.java`** — `bind`/`command`/`framer` + the parent
+    `codec/` (JSpecify does not propagate to sub-packages; all four carry `@NullMarked` + the JSpecify
+    import — confirmed). **Zero `// FIXME` markers** in `codec`/`proxy`/`buildSrc` source (AC9).
+  (2) **AC10** — `./gradlew clean build :buildSrc:test` **BUILD SUCCESSFUL** (11s) on Temurin 25.0.3 +
+    `--enable-preview`; `:codec:test` = **81 tests / 0 fail / 0 error / 0 skip** (15 classes);
+    `:buildSrc:test` = **17 / 0 / 0 / 0**. No test removed or `@Disabled` to make a gate pass. (JMH is
+    nightly-tier — NOT in the `build`/`check` graph — so AC10's `build` does not run the microbench; its
+    Gradle-9.6.1/JDK-25 smoke-test proof is recorded under T7.)
+  (3) **Spec reconciliation #1 CLOSED.** `bind_transceiver = 0x09` (NOT the catalog's `0x0F` — `0x0F` is the
+    `ESME_RINVSYSID` *status* code) was recorded under T1 and is now **independently confirmed in-tree by
+    CODEC-031** (T5 jSMPP cross-oracle: `org.jsmpp.bean.CommandId.BIND_TRANSCEIVER` decodes every golden
+    vector at `0x09`/`0x80000009`), closing the T1 forward-reference. The upstream planning-doc literal
+    (`test-coverage-scenarios.md` CODEC-026/029 still read `0x0F`/`0x8000000F`) remains a deferred
+    planning-docs edit (`deferred-work.md`) — not a code artifact. **AC9 + AC10 met; Story 1.2 → `review`.**
 
 - `codec/src/main/java/smpp/companion/codec/command/SmppCommandIds.java` (new; +`INTERFACE_VERSION_3_4` T3)
 - `codec/src/main/java/smpp/companion/codec/command/package-info.java` (new)
