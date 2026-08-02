@@ -29,12 +29,13 @@ dependencies {
 }
 
 tasks.withType<JavaCompile>().configureEach {
-    // CAVEAT: this is an EXCLUSION (only `compileJava` is enforced), not the Dev Notes' "disable
-    // compileTestJava" inclusion. Correct today — proxy + codec carry only `main` + `test`. Any future
-    // MAIN-ish sourceSet (test-fixtures / jmh / generated) lands in the `else` branch and would BYPASS
-    // null-safety: opt it in explicitly by adding its compile task name to `mainCompile` when such a
-    // sourceSet is introduced (code-review decision ②, 2026-07-25).
-    val mainCompile = name == "compileJava"
+    // MAIN-ish compile tasks that must enforce NullAway. `compileJava` is the obvious one; `compileJmhJava`
+    // (the proxy `jmh` sourceSet — Story 1.2 T7 / AC8 decision #3 hardening add #2) is opted in here so JMH
+    // benchmark classes under `smpp.companion.*` are JSpecify-clean at ERROR severity (this file's own
+    // comment prescribed widening the predicate when a MAIN-ish sourceSet arrives). `compileTestJava` and
+    // every other JavaCompile stay in the `else` branch — test sources use AssertJ chains / Spring slices /
+    // @TempDir that would false-positive (Dev Notes; code-review decision ②, 2026-07-25).
+    val mainCompile = name == "compileJava" || name == "compileJmhJava"
     val errorprone = (options as ExtensionAware).extensions.getByType(ErrorProneOptions::class.java)
     if (mainCompile) {
         // fail-closed: a nullness violation fails javac (non-zero exit).
