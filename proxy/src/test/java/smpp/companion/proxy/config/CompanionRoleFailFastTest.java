@@ -7,23 +7,33 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.context.annotation.Configuration;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
-import smpp.companion.proxy.config.ProxyCompanionProperties.Role;
+import smpp.companion.proxy.config.ProxyCompanionProperties.Bind;
+import smpp.companion.proxy.config.ProxyCompanionProperties.ClientCert;
+import smpp.companion.proxy.config.ProxyCompanionProperties.Forward;
+import smpp.companion.proxy.config.ProxyCompanionProperties.ForwardModeA;
+import smpp.companion.proxy.config.ProxyCompanionProperties.Memory;
+import smpp.companion.proxy.config.ProxyCompanionProperties.Oidc;
+import smpp.companion.proxy.config.ProxyCompanionProperties.Reverse;
+import smpp.companion.proxy.config.ProxyCompanionProperties.ReverseModeC;
+import smpp.companion.proxy.config.ProxyCompanionProperties.RoutingEntry;
+import smpp.companion.proxy.config.ProxyCompanionProperties.ServerCert;
+import smpp.companion.proxy.config.ProxyCompanionProperties.Smsc;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Tls;
+import smpp.companion.proxy.config.ProxyCompanionProperties.TrustStore;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * AC9 / AD-17: the app refuses to start when {@code companion.role} is absent or not in
- * {forward, reverse}. The full role&times;mode matrix is Story 1.3; this is the single seed smoke.
- * Both branches are exercised through real Spring binding: an out-of-set value fails enum
- * conversion; an absent value is rejected by {@code @NotNull} bean validation ({@code @Validated}
- * on {@link ProxyCompanionProperties}).
+ * AD-17 binding smoke, evolved from the Story 1.1 {@code companion.role} seed. The role&times;mode cell
+ * is now selected structurally via a single {@code companion.<role>.<mode>} branch; {@code companion.role}
+ * itself is retired. This test retains three load-bearing checks through real Spring binding: the record
+ * shape accepts a forward and a reverse branch (1); the retired {@code companion.role} key is rejected
+ * by {@code ignoreUnknownFields=false} &mdash; fail-closed on a typo'd/legacy key (2); and a boot with no
+ * branch refuses (3). The exhaustive matrix (every cell, every SEC) lives in
+ * {@link CompanionConfigMatrixTest}.
  */
 @Tag("integration")
 @Tag("sec")
@@ -36,43 +46,61 @@ class CompanionRoleFailFastTest {
             java.util.List.of("TLS_AES_256_GCM_SHA384"));
 
     @Test
-    void recordAcceptsValidRole() {
-        new ProxyCompanionProperties(Role.FORWARD, TLS); // must not throw
-        new ProxyCompanionProperties(Role.REVERSE, TLS); // must not throw
+    void recordAcceptsValidBranches() {
+        // Construction does not run bean validation; this asserts the tree record shape accepts a
+        // forward branch and a reverse branch without throwing. (Matrix validation is exercised
+        // end-to-end in CompanionConfigMatrixTest.)
+        new ProxyCompanionProperties(
+                new Bind(2775),
+                new Memory(64, 1024, 1.5),
+                TLS,
+                new Forward(
+                        new ForwardModeA(
+                                new ServerCert("/run/secrets/server.crt", "/run/secrets/server.key"),
+                                List.of(new RoutingEntry("carrierOne", "reverse.internal", 2776, null)),
+                                new Oidc("https://idp.example.com", "/run/secrets/oidc")),
+                        null),
+                null);
+        new ProxyCompanionProperties(
+                new Bind(2775),
+                new Memory(64, 1024, 1.5),
+                TLS,
+                null,
+                new Reverse(
+                        null, null,
+                        new ReverseModeC(
+                                new Smsc("smsc.carrier.example", 2775),
+                                new ClientCert("/run/secrets/client.crt", "/run/secrets/client.key"),
+                                new TrustStore("/run/secrets/truststore.p12", "changeit"))));
     }
 
     @Test
-    void appRefusesToStartWithInvalidRole() {
-        // An out-of-set value fails enum conversion at bind time -> startup fails (non-zero exit).
-        // Command-line args (highest precedence) override application.yml's valid value.
-        // The assertion walks the cause chain (Spring wraps the ConversionFailedException/BindException,
-        // so the role detail may not be on the top-level message) and requires the failure to be ABOUT
-        // the role property — not just any exception (a bare isInstanceOf(Exception.class) would pass on
-        // an unrelated wiring failure, which is exactly the false-confidence this AC guards against).
+    void appRefusesToStartWithRetiredRoleKey() {
+        // companion.role is retired (the branch path now selects the cell). With ignoreUnknownFields=false
+        // a legacy/typo'd companion.role key is an unbindable element -> startup fails (non-zero exit).
+        // Command-line args (highest precedence) land on top of application.yml's common keys.
         Throwable thrown = catchThrowable(() ->
                 new SpringApplicationBuilder(ProxyCompanionApplication.class)
                         .web(WebApplicationType.NONE)
-                        .run("--companion.role=sideways"));
-        assertThat(thrown).isNotNull();
+                        .run("--companion.role=forward"));
+        assertThat(thrown).as("a retired/unknown companion.* key must refuse startup").isNotNull();
         assertThat(chainMessages(thrown))
-                .as("startup failure must reference companion.role (invalid value)")
+                .as("startup failure must reference the rejected companion.role key")
                 .anyMatch(msg -> msg.contains("role"));
     }
 
     @Test
-    void appRefusesToStartWithAbsentRole() {
-        // companion.role ABSENT through real Spring binding: an ApplicationContextRunner with an empty
-        // environment binds role=null -> @NotNull bean validation (@Validated) fires -> context fails
-        // to start. This exercises the Spring binding + validation path end-to-end (the fail-fast
-        // mechanism, replacing the former compact-constructor null-guard).
-        new ApplicationContextRunner()
-                .withUserConfiguration(AbsentRoleConfig.class)
-                .run(ctx -> {
-                    assertThat(ctx).hasFailed();
-                    assertThat(chainMessages(ctx.getStartupFailure()))
-                            .as("absent companion.role -> @NotNull validation references the role property")
-                            .anyMatch(msg -> msg.contains("role"));
-                });
+    void appRefusesToStartWithNoBranch() {
+        // Real Spring Boot boot reading ONLY application.yml: the common keys (bind/memory/tls) are
+        // present but NO companion.<role>.<mode> branch is -> single-branch selection refuses.
+        Throwable thrown = catchThrowable(() ->
+                new SpringApplicationBuilder(ProxyCompanionApplication.class)
+                        .web(WebApplicationType.NONE)
+                        .run());
+        assertThat(thrown).as("a boot with no branch must refuse startup").isNotNull();
+        assertThat(chainMessages(thrown))
+                .as("startup failure must demand exactly one branch")
+                .anyMatch(msg -> msg.contains("exactly one"));
     }
 
     /**
@@ -86,13 +114,5 @@ class CompanionRoleFailFastTest {
             }
         }
         return messages;
-    }
-
-    /**
-     * Minimal config that enables ProxyCompanionProperties binding without the full application context.
-     */
-    @Configuration
-    @EnableConfigurationProperties(ProxyCompanionProperties.class)
-    static class AbsentRoleConfig {
     }
 }
