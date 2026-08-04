@@ -5,9 +5,17 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 ## Deferred from: code review of story-1-1-gradle-two-module-substrate-and-ci-scaffold (2026-07-24)
 
 - **AD-30 config formula-inputs deferred to Story 1.3** — `max_frame` / `max_inbound_depth` / `concurrent_pairs` / `safety_factor` not added in 1.1; the config-matrix story (1.3) will own all `companion.*` keys together. (Decision at code review 2026-07-24.) [Dev Notes AD-30; application.yml; CompanionProperties.java]
+  **✅ RESOLVED 2026-08-03 (Story 1.3 T2/T5, simplified):** the three tunable AD-30 inputs
+  (`max-inbound-depth`/`concurrent-pairs`/`safety-factor`) land in `application.yml` under
+  `companion.memory.*`; the pure `MemoryBudget.compute(...)` formula is implemented (AC5).
+  `max-frame`/`max-command-length` are NOT config keys — they ARE `SmppFrame.MAX_COMMAND_LENGTH`,
+  referenced directly (RELAY-026 single-source; guarded by `Relay026ConstantContractTest`).
 - **CODEC-039 / SEC-090 ArchUnit rules have no positive control today** — scaffold form accepted by AC3/AC7 ("locks the boundary before code exists"); SEC-090 (PKIX / `javax.net.ssl`, not just `sun.security`) tightens in Epic 3. [codec/proxy ArchUnit tests]
 - **`--enable-preview` COMPILE/RUN not runtime-verified** — wiring present in `smpp.java-conventions`; only the test-JVM path is asserted. Future TestKit compile-arg hardening. [proxy/src/test/.../bootstrap/EnablePreviewArgTest.java]
 - **`CompanionProperties` has no `tls` / `tls.protocols` null guards** — only `role` is fail-fast-guarded (AC9's one-smoke scope); a tls-absent NPE is a Story 1.3 concern. [proxy/src/main/java/.../config/CompanionProperties.java]
+  **✅ RESOLVED 2026-08-03 (Story 1.3 T1):** `tls` is `@NotNull` (clear message) and the class-level
+  `CompanionConfigValidator.validateTls` null-guards `tls`/`protocols` before deref — a missing `tls`
+  block fails fast with a clear message, not an NPE.
 - **`contextCloseStopsLifecycleWithinGracefulTimeout` 30s-ceiling assertion is trivial** — stop()-ran IS checked (`isRunning` false); a meaningful upper-bound test lands with the AD-22 body in Epic 4. [proxy/src/test/.../bootstrap/BootstrapLifecycleTest.java]
 - **`BootstrapLifecycleTest` non-web assertion is tautological (forces `.web(NONE)`)** — AD-16 is guarded by OBS-013 + `spring.main.web-application-type: none`; the class-name check can't detect classpath drift. Cosmetic. [BootstrapLifecycleTest.java]
 - **`CompanionLifecycle` phase ordering (default `MAX_VALUE` stops first) once a 2nd `SmartLifecycle` lands** — single bean today; Epic 4 manages phases. [proxy/src/main/java/.../bootstrap/CompanionLifecycle.java]
@@ -33,11 +41,18 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   The full contract — codec-constant ≡ future `MaxDirectMemorySize` formula input
   (`max_frame × max_inbound_depth × concurrent_pairs × safety_factor`) ≡ `companion.*` config default
   all referencing ONE constant — lands when Story 1.3 owns the config keys + formula. (AC4 / RELAY-026.)
+  **✅ RESOLVED 2026-08-03 (Story 1.3 T5, simplified):** the proxy-side `Relay026ConstantContractTest`
+  guards (AST scan) that proxy main references `SmppFrame.MAX_COMMAND_LENGTH` with no magic `65536`
+  literal. `max-frame`/`max-command-length` are NOT config keys (they can only be the codec constant —
+  removed as redundant); the formula references the constant directly. The codec stub is the
+  constant-side anchor.
 - **Planning-doc literal correction pending** — `test-coverage-scenarios.md` CODEC-026 (:221) and
   CODEC-029 (:241) still assert `bind_transceiver = 0x0F` / `0x8000000F` (the `ESME_RINVSYSID` *status*
   code, not a command_id). Story 1.2 implemented the spec-correct `0x09` / `0x80000009` (verified vs
   `docs/SMPP_v3_4_Issue1_2.pdf` §5.1.2 + the jSMPP oracle, CODEC-031). Correct the catalog literals at
   the next planning-docs pass. Not code-blocking.
+  **✅ RESOLVED 2026-08-03 (Story 1.3, opportunistic):** `test-coverage-scenarios.md` CODEC-026/CODEC-029
+  literals corrected to `0x09` / `0x80000009`.
 
 ## Deferred from: code review of 1-2-smpp-3-4-codec (T3 — bind parser + encoder, 2026-07-29)
 
@@ -97,3 +112,22 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   is a deliberate, documented tradeoff (clean nightly throughput runs); permanently re-wiring `-prof gc`
   (e.g. `profilers = ["gc"]` in the `jmh {}` block, or a documented `./gradlew :proxy:jmh -Pprof=gc`
   invocation) is a design choice, not an unambiguous patch. (Decision at T7 code review 2026-08-02.)
+
+## Deferred from: story-1-3-config-matrix (T5 — AD-30 config half + RELAY-026, 2026-08-03)
+
+- **AD-30 live `ByteBufAllocatorMetric` startup self-check → Epic 2 (decision D1)** — AD-30 bundles two
+  assertions: (1) the static RELAY-026 one-named-constant scan (SHIPPED in 1.3 — `Relay026ConstantContractTest`);
+  and (2) a startup self-check reading LIVE `MaxDirectMemorySize` via `ByteBufAllocatorMetric` ≥ the
+  computed `MemoryBudget` and failing fast (AD-17) if under-budget. The shared `PooledByteBufAllocator`
+  (AD-21) + relay wiring land in Epic 2 — they do not exist in 1.3, so there is no live allocator metric
+  to read. 1.3 ships the config inputs + formula + the static scan NOW; Epic 2 mounts the live
+  self-check when the allocator exists (closes the JVM-flag gap the static scan cannot reach, per AD-30).
+  (Decision D1 at Story 1.3 dev-story 2026-08-03.) [proxy/src/main/java/.../config/MemoryBudget.java; ARCHITECTURE-SPINE.md AD-30:235–238]
+- **AD-34 per-egress-context cipher intersection → Epic 3 (decision D2)** — AD-34 names "EVERY context
+  (ingress server + every egress target + the IdP mTLS client context)" for the empty-intersection
+  fail-fast; those `SSLContext`s are built in Epic 3 (`proxy/security/`, package-info-only today). 1.3
+  ships the config-side TLS floor (SEC-061) + a config-time intersection against a JDK-default
+  `SSLContext`'s supported suites (proves the configured set is non-empty and JDK-supported); the
+  per-egress-context intersection DEFERRED to Epic 3 when those contexts exist. 1.3 deliberately does
+  NOT half-build SSLContexts in config validation (that would pre-empt Epic 3's SEC-087/088/089 runtime
+  vectors). (Decision D2 at Story 1.3 dev-story 2026-08-03.) [proxy/src/main/java/.../config/CompanionConfigValidator.java; ARCHITECTURE-SPINE.md AD-34:259–262]

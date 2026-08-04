@@ -218,7 +218,7 @@ Level: fuzz · Priority: P1 · Risks: R3 · NFR: SEC-2
 - Tooling: JQF + JUnit5 + AssertJ; AD-24 mandated fuzz of the bind parser.
 - Notes: AD-24 explicit requirement (a). Complements the framer fuzz (CODEC-011); the parsed attack surface is exactly these two decoders.
 
-**CODEC-026** — SmppCommandIds.BIND_FAMILY is exactly the 6-id set {0x01,0x02,0x0F,0x80000001,0x80000002,0x8000000F}
+**CODEC-026** — SmppCommandIds.BIND_FAMILY is exactly the 6-id set {0x01,0x02,0x09,0x80000001,0x80000002,0x80000009}
 Level: unit · Priority: P1 · Risks: R14 · NFR: FR-TRANSIT-4, COMP-1
 - Technique: exhaustive enumeration assertion: BIND_FAMILY contains exactly the three bind requests and their three responses, no more, no less.
 - Tooling: JUnit5 + AssertJ.
@@ -238,7 +238,7 @@ Level: unit · Priority: P1 · Risks: R14, R3 · NFR: FR-TRANSIT-4, SEC-2
 
 **CODEC-029** — command_id response bit (bit 31 / 0x80000000) correctly distinguishes bind request from bind_resp; both recognized as bind-family
 Level: unit · Priority: P1 · Risks: R14 · NFR: FR-TRANSIT-4
-- Technique: assert bind_transceiver (0x0F) and bind_transceiver_resp (0x8000000F) both recognized; masking/clearing bit 31 does not conflate request with response.
+- Technique: assert bind_transceiver (0x09) and bind_transceiver_resp (0x80000009) both recognized; masking/clearing bit 31 does not conflate request with response.
 - Tooling: JUnit5 + AssertJ.
 - Notes: R14: a parser that masks bit 31 would mis-handle responses; a parser that ignores it would mis-handle requests.
 
@@ -770,6 +770,12 @@ Level: unit · Priority: P1 · Risks: R17, R7 · NFR: FR-DEPLOY-3, SEC-1
 Level: unit · Priority: P1 · Risks: R17 · NFR: FR-DEPLOY-3, FR-DEPLOY-2
 - Technique: config matrix: role=forward + mode=B -> refuse (Mode B is reverse-only).
 - Tooling: JUnit5 + Spring Boot config test slice + AssertJ.
+- **Status (Story 1.3, 2026-08-04): STRUCTURALLY ENFORCED — retired from the runtime matrix.** The
+  config tree was restructured so the role×mode cell is the property path (`companion.<role>.<mode>.*`);
+  `Forward` exposes only `mode-a`/`mode-c`, so there is no `companion.forward.mode-b` node to configure.
+  The forbidden cell is impossible-by-construction; a stray `forward.mode-b` key is rejected by
+  `@ConfigurationProperties(ignoreUnknownFields=false)` at bind time. No cross-field validator rule and
+  no runtime refusal test remain for SEC-051.
 
 **SEC-052** — Mode B reverse starts only with opt-in ack; without ack it refuses, with ack it warns and starts
 Level: unit · Priority: P1 · Risks: R17 · NFR: FR-DEPLOY-3, FR-SEC-2

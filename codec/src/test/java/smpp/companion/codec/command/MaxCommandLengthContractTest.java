@@ -12,19 +12,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the future relay direct-memory formula input AND the Story 1.3 config default MUST reference, so the
  * codec max and the allocator budget can never drift apart.
  *
- * <p><b>Stub scope (Story 1.2 / T1):</b> only the codec constant exists today — assert its pinned value.
+ * <p><b>Codec pin (Story 1.2 / T1):</b> asserts the codec constant's pinned value — the
+ * constant-side anchor of the RELAY-026 contract.
  *
- * <p><b>Full three-way assertion (Story 1.3):</b> once {@code companion.*} config keys and the
- * {@code MaxDirectMemorySize = max_frame × max_inbound_depth × concurrent_pairs × safety_factor}
- * formula land, assert codec-constant ≡ formula-input ≡ config-default all resolve to ONE value.
- * Tracked in {@code deferred-work.md}.
+ * <p><b>Proxy-side guard (Story 1.3):</b> {@code smpp.companion.proxy.config.Relay026ConstantContractTest}
+ * guards that the proxy references this ONE named constant (no magic {@code 65536} literal); the
+ * formula ({@code MemoryBudget}) uses it directly. {@code max-frame}/{@code max-command-length} are not
+ * config keys &mdash; they can only be this constant. This codec pin stays as the constant-side anchor.
  *
  * <p>See Story 1.2 AC4 / AD-30 and {@code test-coverage-scenarios.md} RELAY-026.
  */
 @Tag("unit")
 @Tag("codec")
 @Tag("p1")
-@DisplayName("RELAY-026 stub — AD-30 shared max-frame constant contract")
+@DisplayName("RELAY-026 — AD-30 shared max-frame constant contract (codec pin)")
 class MaxCommandLengthContractTest {
 
     @Test

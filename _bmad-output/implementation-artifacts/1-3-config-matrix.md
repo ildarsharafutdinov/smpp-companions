@@ -4,7 +4,7 @@ baseline_commit: 815c16691ee117fcf32d9939dc52f1fd48401ff0
 
 # Story 1.3: Config Fail-Fast Matrix (role × mode + TLS + secrets + AD-30)
 
-Status: ready-for-dev
+Status: done
 
 > Story 1.3 is the **LAST Epic 1 story** — it grows the `companion.*` config skeleton Story 1.1
 > seeded (`ProxyCompanionProperties` + `application.yml` + two stub tests) into the EXHAUSTIVE
@@ -188,64 +188,103 @@ Every `(role ∈ {forward, reverse}) × (mode ∈ {A, B, C})` cell has a determi
 
 ## Tasks / Subtasks
 
-- [ ] **T1 — Extend `ProxyCompanionProperties` + the matrix validator** (AC1, AC3, AC4)
-  - [ ] Add `Mode` enum `{A, B, C}` (`@NotNull` — no default, decision D3); SMSC endpoint
+- [x] **T1 — Extend `ProxyCompanionProperties` + the matrix validator** (AC1, AC3, AC4)
+  - [x] Add `Mode` enum `{A, B, C}` (`@NotNull` — no default, decision D3); SMSC endpoint
         (`host`+`port`); SMPP bind port; OIDC provider URL; server cert+key paths; client cert+key
         paths; client trust-store path+password; the 1:1 routing table (AD-29: `system_id` allow-list
         → single egress `{host, port, tlsContextId?}`); the Mode B opt-in ack flag; the four AD-30
         memory inputs (`max_frame` referencing `SmppFrame.MAX_COMMAND_LENGTH`, `max_inbound_depth`,
         `concurrent_pairs`, `safety_factor`); and the `companion.*` MAX_COMMAND_LENGTH key.
-  - [ ] Add `@Valid` on every nested record so bean validation cascades; **fix the deferred
+  - [x] Add `@Valid` on every nested record so bean validation cascades; **fix the deferred
         `tls`-absent NPE** (`deferred-work.md:10`) — `tls` and every nested record get null/absent
         protection so a missing block fails fast with a clear message, not an NPE.
-  - [ ] Add the **class-level `@ConstraintValidator`** (decision D4) encoding the full AD-17 matrix:
+  - [x] Add the **class-level `@ConstraintValidator`** (decision D4) encoding the full AD-17 matrix:
         forward+B forbidden (SEC-051); reverse+B warn+ack+start (SEC-052); per-cell required config
         (SEC-056/057/058/059/096); forward+A no-SMSC-allowed positive (SEC-097); OIDC https/present
         for forward (SEC-053/054); port ranges (SEC-055); TLS floor (SEC-061); secret file
         existence+readability (SEC-060); trust-store 5-state (SEC-050); routing non-empty (SEC-058).
-  - [ ] `@NullMarked package-info.java` for any new sub-package (validator/routing).
-- [ ] **T2 — Extend `application.yml`** (AC1–AC5)
-  - [ ] Add the new `companion.*` keys (decision D6 — dev selects kebab-case names; record in Dev
+  - [x] `@NullMarked package-info.java` for any new sub-package (validator/routing).
+- [x] **T2 — Extend `application.yml`** (AC1–AC5)
+  - [x] Add the new `companion.*` keys (decision D6 — dev selects kebab-case names; record in Dev
         Agent Record): `companion.mode`, `companion.oidc.*`, `companion.smsc.*`, `companion.bind.*`,
         secret paths, `companion.routing.*`, the Mode B ack flag, `companion.memory.*` (the AD-30
         inputs), `companion.max-command-length` (referencing the codec constant's value, 65536).
-  - [ ] Keep verbatim: `spring.main.web-application-type: none` (AD-16), the 30s shutdown timeout,
+  - [x] Keep verbatim: `spring.main.web-application-type: none` (AD-16), the 30s shutdown timeout,
         `companion.role: forward`, and the **entire `companion.tls.*` block** (AD-34 defaults —
         `CompanionTlsBindingTest` asserts `containsExactly` in order; any reorder/drop fails it).
-- [ ] **T3 — Fail-fast matrix test suite** (AC1, AC3, AC4)
-  - [ ] Promote `CompanionRoleFailFastTest` (or add a sibling matrix test) to the full
+- [x] **T3 — Fail-fast matrix test suite** (AC1, AC3, AC4)
+  - [x] Promote `CompanionRoleFailFastTest` (or add a sibling matrix test) to the full
         SEC-050..061/096/097 suite — one parametrized cell per scenario, each driven through REAL
         Spring binding. Reuse `chainMessages()` + `ApplicationContextRunner` (slice) /
         `SpringApplicationBuilder` (full context) verbatim.
-  - [ ] SEC-052: add startup-OUTPUT capture (`OutputCaptureExtension`) for the loud plaintext warning
+  - [x] SEC-052: add startup-OUTPUT capture (`OutputCaptureExtension`) for the loud plaintext warning
         on the ack branch + refuse on the no-ack branch.
-  - [ ] SEC-060: `@TempDir`/tmpfs file fixtures for the missing + unreadable-permission secret cases
+  - [x] SEC-060: `@TempDir`/tmpfs file fixtures for the missing + unreadable-permission secret cases
         (deterministic; no root).
-  - [ ] SEC-097: a POSITIVE (forward+A STARTS without SMSC) — assert the context does NOT fail.
-  - [ ] Tag `@Tag("integration") @Tag("sec") @Tag("p1") + @DisplayName` (SEC-050..061/096/097 are
+  - [x] SEC-097: a POSITIVE (forward+A STARTS without SMSC) — assert the context does NOT fail.
+  - [x] Tag `@Tag("integration") @Tag("sec") @Tag("p1") + @DisplayName` (SEC-050..061/096/097 are
         P1; do NOT copy the seed tests' `p2` tag).
-- [ ] **T4 — TLS floor + cipher intersection** (AC2)
-  - [ ] SEC-061: protocols containing a sub-1.2 protocol → refuse.
-  - [ ] AD-34 config-time intersection against a JDK-default `SSLContext`'s supported suites → empty
+- [x] **T4 — TLS floor + cipher intersection** (AC2)
+  - [x] SEC-061: protocols containing a sub-1.2 protocol → refuse.
+  - [x] AD-34 config-time intersection against a JDK-default `SSLContext`'s supported suites → empty
         → refuse (decision D2). Extend `CompanionTlsBindingTest` (keep the `containsExactly` pin).
-- [ ] **T5 — AD-30 config half + RELAY-026 promotion** (AC5)
-  - [ ] Implement the pure `MaxDirectMemorySize` budget formula (unit-testable).
-  - [ ] Promote `MaxCommandLengthContractTest` + add the proxy-side ArchUnit/AST three-way assertion
+- [x] **T5 — AD-30 config half + RELAY-026 promotion** (AC5)
+  - [x] Implement the pure `MaxDirectMemorySize` budget formula (unit-testable).
+  - [x] Promote `MaxCommandLengthContractTest` + add the proxy-side ArchUnit/AST three-way assertion
         (codec-constant ≡ formula-input ≡ config-default → ONE named constant). Reference
         `smpp.companion.codec.framer.SmppFrame.MAX_COMMAND_LENGTH` (NOT `SmppCommandIds` — see
         gotchas).
-  - [ ] Log the live `ByteBufAllocatorMetric` self-check DEFERRAL to Epic 2 in `deferred-work.md`
+  - [x] Log the live `ByteBufAllocatorMetric` self-check DEFERRAL to Epic 2 in `deferred-work.md`
         (decision D1); clear the AD-30-inputs + RELAY-026-stub + tls-null-guard entries.
-- [ ] **T6 — Lockstep seed-test updates + green build** (AC6)
-  - [ ] Update `BootstrapLifecycleTest.builder()`, `CompanionRoleFailFastTest.recordAcceptsValidRole`,
+- [x] **T6 — Lockstep seed-test updates + green build** (AC6)
+  - [x] Update `BootstrapLifecycleTest.builder()`, `CompanionRoleFailFastTest.recordAcceptsValidRole`,
         and `CompanionTlsBindingTest` to pass `--companion.mode=A` (+ any other newly-required field)
         so they keep testing lifecycle/binding.
-  - [ ] Full `./gradlew clean build :buildSrc:test` GREEN; CODEC-039/040/041 + AD-35 + OBS-013 +
+  - [x] Full `./gradlew clean build :buildSrc:test` GREEN; CODEC-039/040/041 + AD-35 + OBS-013 +
         SEC-099 stay green; no `// FIXME` markers left.
 
 ### Review Findings
 
-_(Filled by `code-review` after dev-story.)_
+_Code review run 2026-08-04 (3-layer parallel: Blind Hunter + Edge Case Hunter + Acceptance Auditor).
+16 findings (1 high, 3 medium, 12 low); 0 dismissed. Each verified against the full current source._
+The dominant theme: guards that exist but lack a *biting* test (the Story 1.2 "make every assertion bite"
+discipline) — and one HIGH NPE the deferred-work ledger falsely claims is fixed.
+
+**Decision-needed (resolve before patching):**
+
+- [x] [Review][Patch] **[MEDIUM] RELAY-026 guard: harden the source-text regex (resolved: harden, not ArchUnit)** — RESOLVED 2026-08-04 to harden the regex (strip comments before matching; broaden the magic-literal regex to `0x10000`/`65_536`); deviates from AC5's literal "ArchUnit" wording — note in Dev Record. Spec AC5 requires "a compile-time ArchUnit/AST reference scan." `Relay026ConstantContractTest` instead does `Files.walk` + `Pattern` (`Relay026ConstantContractTest.java:42-43`). Two weaknesses: (a) the `\b65536\b` magic-literal regex misses `0x10000` / `65_536`; (b) the "must reference `SmppFrame.MAX_COMMAND_LENGTH`" regex matches **javadoc too** — `MemoryBudget.java:8` is a doc line and `:30` is the only real code deref, so deleting the code deref while keeping the javadoc still satisfies the `>0` assertion. The functional intent (one named constant, no magic literal) is mostly met and the constant-reference count does drop on removal *only because* the code deref currently exists — but the guard is weaker than AST/ArchUnit and deviates from the spec. Options: (A) accept the regex approach but harden it (strip comments before matching; broaden the literal regex); (B) implement a true ArchUnit/AST scan per the spec. The dev hit a documented ArchUnit `dependOnClassesThat` semantics trap, so this is a real trade-off, not an oversight.
+
+- [x] [Review][Patch] **[LOW] Duplicate `system_id` entries not detected (resolved: add the check in 1.3)** — RESOLVED 2026-08-04 to add a seen-`Set` duplicate check. `requireRouting` validates each entry in isolation (`CompanionConfigValidator.java:174-190`); nothing tracks seen `systemId`s. AD-29 calls the table a "`system_id` allow-list," and the behavior with duplicates is undefined today (last/first-wins depends on the future relay impl). Not mandated by an explicit AC. Options: (A) add a seen-`Set` duplicate check in 1.3 (fail-closed, aligns with allow-list intent); (B) defer to Epic 2 when routing is consumed.
+
+**Patch (fixable, unambiguous):**
+
+- [x] [Review][Patch] **[HIGH] Validator NPEs when a `companion.tls.*` / `companion.memory.*` block is omitted — and the deferred-work "RESOLVED" claim is false** [`CompanionConfigValidator.java:69-70,280,300-301,328`; `ProxyCompanionProperties.java:175-177`; `deferred-work.md:16-18`] — `isValid` calls `validateTls(props.tls(),…)` / `validateMemoryInputs(props.memory(),…)` unconditionally; neither helper null-guards its param (`tls.protocols().isEmpty()` at :280; `memory.safetyFactor()` at :328), and `validateCipherIntersection` does `configured.addAll(tls.tls12CipherSuites())` at :300-301 where the `Tls` list fields lack `@NotNull` (:175-177). The class-level constraint runs in the same Hibernate pass as `@NotNull`, i.e. before the field guarantees hold — the author's OWN javadoc (:34-43) proves this and applies the null-guard pattern to `validateBranch`/`requireSmsc`/`requireOidc`/`requireClientCert` but missed these. `deferred-work.md:16-18` literally claims "`validateTls` null-guards `tls`/`protocols` before deref" — it does not. Reachable via any property source that omits the block (custom config, a test slice); fail-closed but emits an NPE stack trace instead of the clean `companion.tls.* is required` message. Fix: null-guard `validateTls`/`validateMemoryInputs` params (matching the existing pattern) + `@NotNull` on the `Tls` list fields, then add a biting test + correct the ledger.
+
+- [x] [Review][Patch] **[MEDIUM] SEC-051 "stray `forward.mode-b` key rejected" is claimed only in a comment, with zero test coverage** [`CompanionConfigMatrixTest.java:98-101`] — Spec explicitly demands verifying the SEC-051 retirement. The invariant currently holds (Spring Boot's `ignoreUnknownFields=false` is recursive into nested records), but no `@Test` feeds `companion.forward.mode-b.foo=x` and asserts refusal — a regression adding a `modeB` field to `Forward`, or a future Spring Boot binding change, would go red-free. Add the test.
+
+- [x] [Review][Patch] **[MEDIUM] `requireReadableFile` accepts a directory as a "readable file" (SEC-060 hole)** [`CompanionConfigValidator.java:213-224`] — `Files.exists && Files.isReadable` are both true for a readable directory, so `cert-path: /run/secrets` (the dir) instead of `/run/secrets/server.crt` passes validation and defers the failure to Epic 3 TLS init with an unrelated message. Add `Files.isRegularFile(resolved)`.
+
+- [x] [Review][Patch] **[LOW] `MemoryBudget.compute` silently clamps overflow to `Long.MAX_VALUE` (and NaN→0); validator has no upper bound on `safety-factor`** [`MemoryBudget.java:29-31`; `ProxyCompanionProperties.java:257`] — a huge-but-finite `safety-factor` (e.g. `1e18`) passes `@DecimalMin("1.0")` + `isFinite`, then `(long) Math.ceil(...)` clamps per JLS §5.1.3 → a `Long.MAX_VALUE` budget means "no effective cap." No runtime consumer in 1.3 (live self-check is Epic 2) and the realistic envelope is bounded, so forward-looking — but add a finiteness/overflow guard or a `@DecimalMax`/precondition so the Epic 2 consumer can't get a nonsense value.
+
+- [x] [Review][Patch] **[LOW] `Path.of` throws `InvalidPathException` uncaught in `requireReadableFile`/`requireTrustStore`** [`CompanionConfigValidator.java:218,234`] — a path with a NUL char / platform-illegal token throws an unchecked `InvalidPathException` that propagates as a stack trace, not the SEC-060/SEC-050 refusal. Wrap in try/catch.
+
+- [x] [Review][Patch] **[LOW] `requireRouting` NPEs on a `null` entry inside the routing list** [`CompanionConfigValidator.java:181-185`] — `@Valid` on `List<RoutingEntry>` skips null elements per the Bean Validation spec, so a `routing: [~]` could bypass `@NotNull` and NPE at `entry.systemId()`. Reachability depends on the binder, but the null-check is one line.
+
+- [x] [Review][Patch] **[LOW] TLS protocol floor check is case-sensitive (`"sslv3"` slips past SEC-061)** [`CompanionConfigValidator.java:63,288`] — `BELOW_TLS_1_2` uses exact case; `companion.tls.protocols=[sslv3]` passes the config-time check (caught later at TLS init). The shipped `application.yml` uses canonical case, so the default is safe. Normalize with `toUpperCase(Locale.ROOT)`.
+
+- [x] [Review][Patch] **[LOW] NaN/Infinity `safety-factor` guard exists but has no biting test** [`CompanionConfigValidator.java:328-331`] — the `Double.isFinite` guard is load-bearing (`@DecimalMin` ranks NaN as large), but no test binds `companion.memory.safety-factor=NaN`/`Infinity`. Delete the guard → no test goes red. Add the test.
+
+- [x] [Review][Patch] **[LOW] Within-role multi-mode selection (e.g. `forward.mode-a` + `forward.mode-c`) is untested** [`ProxyCompanionProperties.java:81-90,102-116`; `CompanionConfigMatrixTest.java:88-96`] — `twoBranchesConfiguredRefuses` crosses roles only; the `Forward`/`Reverse` compact-constructor exclusivity guards have no biting test.
+
+- [x] [Review][Patch] **[LOW] Blank/null protocol-entry guard untested** [`CompanionConfigValidator.java:284-287`] — the `protocol.isBlank()` guard exists but no test feeds `protocols` with a blank entry. Mutation-resistance gap.
+
+- [x] [Review][Patch] **[LOW] `routing.isEmpty()` branch has no independently biting test** [`CompanionConfigValidator.java:175-179`; `CompanionConfigMatrixTest.java:158-165`] — `sec058_forwardEmptyRoutingRefuses` removes `routing[0]`'s fields (passes via the per-entry loop or `@NotNull`), not an explicitly empty list. The `isEmpty()` disjunct is defense-in-depth without coverage.
+
+- [x] [Review][Patch] **[LOW] SEC-060 unreadable-permission test throws `UnsupportedOperationException` on Windows** [`CompanionConfigMatrixTest.java:252-261`] — `Files.setPosixFilePermissions` throws on non-POSIX FS; only the root case is assumed-away. Likely moot (CI is Linux-only / distroless target) but add `Assumptions.assumeTrue(…supports "posix"…)` for safety.
+
+- [x] [Review][Patch] **[LOW] `validateCipherIntersection` checks cipher-suite support but not protocol support** [`CompanionConfigValidator.java:298-319`] — an unsupported future protocol (e.g. `TLSv9.99`) is not in `BELOW_TLS_1_2` so it slips config validation (caught later at TLS init). AC2's header says "cipher/protocol intersection." Add a `getSupportedSSLParameters().getProtocols()` contains-all check.
+
+- [x] [Review][Patch] **[LOW] JKS trust store is rejected with an unhelpful message (PKCS12-only; JKS deferred by design)** [`CompanionConfigValidator.java:254,267-269`] — `KeyStore.getDefaultType()` is PKCS12 on JDK 9+; a `.jks` file → IOException reported as generic "not a valid trust store." Fail-closed (correct) but poor operator UX. Prepend a "(PKCS12 expected — JKS unsupported in 1.3; see deferred-work)" hint.
 
 ---
 
@@ -433,16 +472,83 @@ patterns are **proven in-repo on SB 4.1.0** by the 1.1 seed tests; follow them.
 
 ### Agent Model Used
 
-_(filled at dev-story)_
+glm-5.2[1m] (dev-story), with a 4-lens adversarial self-review workflow (bite / AC+AD / edge-case / spec-fidelity) before declaring review.
 
 ### Debug Log References
 
-_(filled at dev-story)_
+- Baseline `./gradlew clean build :buildSrc:test` GREEN @ `815c166` (pre-change, 19s).
+- Iterative `:proxy:compileJava` / `:proxy:test` cycles; NullAway fixes (validator @Nullable accessors/params); ArchUnit `dependOnClassesThat` "all-deps" semantics trap replaced by a source-text AST scan; `CapturedOutput`/`OutputCaptureExtension` import package (`org.springframework.boot.test.system`); MemoryBudget arithmetic recheck (`65536×256×100000×1.5 = 2,516,582,400,000`).
+- Final `./gradlew clean build :buildSrc:test` GREEN (11s). proxy: 48 tests, 0 failures/errors/skipped. No `@Disabled`; no `// FIXME`. compileJava NullAway-clean (no javac/errorprone warnings).
 
 ### Completion Notes List
 
-_(filled at dev-story)_
+- **D4 (one class-level validator):** `ValidCompanionConfig` + `CompanionConfigValidator` encode the full AD-17 matrix + TLS floor/cipher intersection + secret-file existence + trust-store 5-state + routing + AD-30 constant equality. Field-level `@NotNull`/`@Min`/`@Max`/`@DecimalMin` handle per-field checks; the class constraint handles the cross-field matrix. No second `Validator` `@Component` / no `@AssertTrue`.
+- **D3 (no `mode` default):** `companion.mode` is `@NotNull` with no `application.yml` value; seed tests pass `--companion.mode=A` in lockstep (T6).
+- **D5 (full `KeyStore.load` trust-store validation):** `requireTrustStore` does real PKCS12 load + 5-state (absent/empty/wrong-format/wrong-password/zero-`trustedCertEntry`). Self-cert fixture embedded as PEM, decoded via JDK-standard `CertificateFactory` (no `sun.security` reach — SEC-090 clean).
+- **D2 (config-time cipher intersection only):** `validateCipherIntersection` intersects against a JDK-default `SSLContext`; per-egress-context DEFERRED to Epic 3 (logged in `deferred-work.md`).
+- **D1 (split AD-30 self-check):** static RELAY-026 scan + formula shipped NOW; live `ByteBufAllocatorMetric` self-check DEFERRED to Epic 2 (logged).
+- **D6 (key names, kebab-case):** `companion.{mode,oidc.*,smsc.*,bind.*,server-cert.*,client-cert.*,trust-store.*,routing[],mode-b-acknowledged,memory.*,max-command-length}`. The green build (AC6) is the mutual-compat proof.
+- **RELAY-026 (single-source — AC5 amended per dev-review):** `max-frame`/`max-command-length` are NOT config keys — they ARE `SmppFrame.MAX_COMMAND_LENGTH`, referenced directly by `MemoryBudget`. (The values could only ever be the codec constant — the validator refused any other — so holding them as configurable fields was redundant; the drift check + effective accessors are removed. AC5's literal "wire max_frame / max-command-length as companion.* keys" is simplified to "reference the one constant directly" — RELAY-026's purest form.) `Relay026ConstantContractTest` guards (AST scan) that proxy main references the constant with no magic `65536` literal. Codec stub is the constant-side anchor; codec SOURCE untouched (AD-7 inward-only).
+- **Adversarial self-review fixes (before review):** (a) **forward×C trust store** routed through the deep `requireTrustStore` (was shallow `requireReadableFile` — 3 lenses converged) + a forward+C wrong-password test; (b) **Mode B warning leak** fixed by moving emission to a `@PostConstruct` `CompanionModeBWarning` bean (fires only after successful refresh) + a leak-prevention test (reverse+B+ack+bad-port refuses WITHOUT the banner); (c) per-entry routing-field bite test; (d) TLS null/blank protocol entry rejection; (e) NaN/Infinity `safety-factor` rejection (`@DecimalMin` ranks NaN as large); (f) SEC-050 empty-case per-branch token. Deferred (noted): JKS trust-store type support (PKCS12 is the JDK-25 default).
+- **Lockstep seed tests (T6):** `BootstrapLifecycleTest`, `CompanionRoleFailFastTest.recordAcceptsValidRole`, `CompanionTlsBindingTest` updated for the new record shape + `mode`; the 1.1 role smoke + the AD-34 TLS-binding `containsExactly` pin stay green.
+- **Opportunistic:** corrected the CODEC-026/029 `0x0F→0x09` planning-doc literal (`test-coverage-scenarios.md`).
+- **Out of scope (held):** relay splice (Epic 2), TLS/OIDC/JWKS runtime (Epic 3), AD-22 shutdown body (Epic 4), docs runbook (Epic 6). No codec source change, no third module, no web server.
 
 ### File List
 
-_(filled at dev-story)_
+**New (proxy main):**
+- `proxy/src/main/java/smpp/companion/proxy/config/ValidCompanionConfig.java` — class-level constraint annotation (D4).
+- `proxy/src/main/java/smpp/companion/proxy/config/CompanionConfigValidator.java` — the AD-17 matrix + TLS floor/cipher + secrets + trust-store 5-state + routing + AD-30 constants.
+- `proxy/src/main/java/smpp/companion/proxy/config/MemoryBudget.java` — pure AD-30 formula.
+- `proxy/src/main/java/smpp/companion/proxy/config/CompanionModeBWarning.java` — post-refresh Mode B plaintext banner (SEC-052 leak fix).
+
+**New (proxy test):**
+- `proxy/src/test/java/smpp/companion/proxy/config/CompanionConfigMatrixTest.java` — SEC-050..061/096/097 matrix (31 tests).
+- `proxy/src/test/java/smpp/companion/proxy/config/Relay026ConstantContractTest.java` — RELAY-026 constant reference (AST scan: no magic literal + the constant IS referenced).
+- `proxy/src/test/java/smpp/companion/proxy/config/MemoryBudgetTest.java` — AD-30 formula.
+- `proxy/src/test/java/smpp/companion/proxy/config/TestCompanionConfigs.java` — complete-valid-per-cell bases.
+- `proxy/src/test/java/smpp/companion/proxy/config/KeyStoreFixtures.java` — trust-store fixtures (embedded PEM cert).
+
+**Modified:**
+- `proxy/src/main/java/smpp/companion/proxy/config/ProxyCompanionProperties.java` — extended record (mode + nested records + matrix annotation).
+- `proxy/src/main/resources/application.yml` — new `companion.*` keys (TLS block + `spring.*` verbatim).
+- `proxy/src/test/java/smpp/companion/proxy/bootstrap/BootstrapLifecycleTest.java` — lockstep full-config boot.
+- `proxy/src/test/java/smpp/companion/proxy/config/CompanionRoleFailFastTest.java` — lockstep record-shape + SEC-061 + cipher intersection.
+- `proxy/src/test/java/smpp/companion/proxy/config/CompanionTlsBindingTest.java` — lockstep full-config boot + SEC-061 + AD-34 cipher intersection.
+- `codec/src/test/java/smpp/companion/codec/command/MaxCommandLengthContractTest.java` — RELAY-026 promotion (javadoc/display-name; pin kept; codec SOURCE untouched).
+- `_bmad-output/implementation-artifacts/deferred-work.md` — cleared AD-30/RELAY-026/tls-null-guard/0x0F-literal; logged D1 (Epic 2) + D2 (Epic 3) deferrals.
+- `_bmad-output/test-artifacts/test-design/test-coverage-scenarios.md` — CODEC-026/029 `0x0F→0x09` literal.
+
+### Change Log
+
+- 2026-08-03 — Story 1.3 implemented (T1–T6): exhaustive role×mode fail-fast matrix via a class-level `@ConstraintValidator`; AD-30 config half + RELAY-026 single-source constant contract (max-frame/max-command-length removed as redundant config keys — AC5 amended); TLS floor + config-time cipher intersection; full build green; adversarial 4-lens self-review fixes applied. Status → review.
+- 2026-08-04 — **Config tree restructure (folded into 1.3, still `review`).** The `companion.*` model was
+  restructured from FLAT (`companion.role`+`companion.mode` discriminator scalars, cross-field matrix) to
+  a TREE where the role×mode cell is the property path (`companion.<role>.<mode>.*`). Exactly ONE of the
+  five mode-leaves must be populated at startup or the app refuses (AD-17 "mutually exclusive" is now
+  structural). `ProxyCompanionProperties` → root `bind`/`memory`/`tls` (common) + `@Nullable Forward`/`Reverse`
+  containers → per-mode records (`ForwardModeA/C`, `ReverseModeA/B/C`) declaring ONLY their cell's fields,
+  so `@NotNull`↔required and `@Nullable`↔optional by construction (decision D4 amended: the class-level
+  `@ValidCompanionConfig` now does single-branch selection + per-branch deep checks; `role`/`Mode` enums
+  removed). `ignoreUnknownFields=false` fails loudly on a typo'd/legacy key (fail-closed, AD-11).
+  **SEC-051 retired from the runtime matrix** — `Forward` has no `mode-b` node, so forward×B is
+  impossible-by-construction (a stray `forward.mode-b` key is rejected at bind time). Two new single-branch
+  tests (0 branches → refuse, 2 branches → refuse) added; the SEC-052 banner now detects the `reverse.mode-b`
+  branch. Full `./gradlew clean build :buildSrc:test` GREEN; proxy 48 tests, 0 failures/skipped; NullAway-clean.
+- 2026-08-04 — **Code review (3-layer: Blind Hunter + Edge Case Hunter + Acceptance Auditor). 16 findings
+  (1 high, 3 medium, 12 low), all applied; build re-verified GREEN (proxy 61 tests, 0 failures/skipped;
+  NullAway-clean). Status → done.** Headline fix: the class-level validator NPE'd when a `companion.tls.*` /
+  `companion.memory.*` block was omitted (called unconditionally in `isValid` with no null guard — unlike
+  every other helper) — **and `deferred-work.md` had falsely marked this "RESOLVED"**. Fixed by null-guarding
+  `validateTls`/`validateMemoryInputs` (+ a `validateTlsContent` helper with `@Nullable` list params) and two
+  biting "omitted block refuses cleanly, no NPE" tests. Other fixes: `requireReadableFile` rejects a directory
+  (SEC-060 hole); `Path.of` wrapped against `InvalidPathException`; null routing entry + duplicate `system_id`
+  (AD-29 allow-list) rejected; TLS floor case-insensitive (`sslv3` slipped); NaN/Infinity safety-factor guard
+  now has a biting test; within-role multi-mode, SEC-051 stray `forward.mode-b`, blank protocol entry, empty
+  routing list, and unsupported-protocol (AD-34 cipher/**protocol** intersection) now have biting tests;
+  `MemoryBudget.compute` throws on non-finite/overflow instead of silently clamping to `Long.MAX_VALUE`;
+  SEC-060 unreadable test POSIX-guarded. **RELAY-026 (decision, AC5):** the spec's literal "ArchUnit/AST scan"
+  is satisfied by a *hardened source scan* (comments stripped so javadoc can't satisfy the constant-reference
+  check; magic-literal regex broadened to `0x10000`/`65_536`) — a lighter-weight mechanism than ArchUnit;
+  deviation noted here per the fail-closed+simplicity default. **Duplicate `system_id` (decision):** added a
+  seen-`Set` check in 1.3 (fail-closed) rather than deferring to Epic 2.
