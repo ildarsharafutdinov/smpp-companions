@@ -16,6 +16,13 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   **✅ RESOLVED 2026-08-03 (Story 1.3 T1):** `tls` is `@NotNull` (clear message) and the class-level
   `CompanionConfigValidator.validateTls` null-guards `tls`/`protocols` before deref — a missing `tls`
   block fails fast with a clear message, not an NPE.
+  **⚠️ Attribution correction (2026-08-06 audit):** this "RESOLVED 2026-08-03 (T1)" marker was FALSE at
+  the 78e4ff6 merge — Story 1.3's own 2026-08-04 code review (HIGH finding) proved `validateTls` did NOT
+  null-guard at merge (it NPE'd on an omitted `companion.tls.*` block). The guard was re-added in the
+  2026-08-04 review fix and is retained through the 2026-08-06 pre-pass refactor (still the root-level
+  `@NotNull` blind-spot guard, mutation-verified LIVE by `omittedTlsBlockRefusesCleanly`). The ledger
+  credited T1 for a guard T1 had removed — a re-occurrence of the false-RESOLVED failure mode; recorded
+  here so the timeline is not misread as continuous correctness since 2026-08-03.
 - **`contextCloseStopsLifecycleWithinGracefulTimeout` 30s-ceiling assertion is trivial** — stop()-ran IS checked (`isRunning` false); a meaningful upper-bound test lands with the AD-22 body in Epic 4. [proxy/src/test/.../bootstrap/BootstrapLifecycleTest.java]
 - **`BootstrapLifecycleTest` non-web assertion is tautological (forces `.web(NONE)`)** — AD-16 is guarded by OBS-013 + `spring.main.web-application-type: none`; the class-name check can't detect classpath drift. Cosmetic. [BootstrapLifecycleTest.java]
 - **`CompanionLifecycle` phase ordering (default `MAX_VALUE` stops first) once a 2nd `SmartLifecycle` lands** — single bean today; Epic 4 manages phases. [proxy/src/main/java/.../bootstrap/CompanionLifecycle.java]

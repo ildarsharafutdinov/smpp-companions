@@ -156,6 +156,26 @@ class CompanionTlsBindingTest {
                 });
     }
 
+    @Test
+    @DisplayName("AD-34: empty cipher suites refuse startup (the intersection guard owns the empty-ciphers case)")
+    void ad34_emptyCipherSuitesRefuseStartup(@TempDir Path dir) throws IOException {
+        // Both cipher lists blanked → configured set empty → the AD-34 intersection guard rejects it
+        // (empty ∩ JDK-supported = empty). The dedicated empty-ciphers early-return was removed as
+        // redundant; this proves the intersection guard still catches an empty configured set.
+        new ApplicationContextRunner()
+                .withUserConfiguration(TlsMatrixConfig.class)
+                .withPropertyValues(TestCompanionConfigs.forwardA(dir)
+                        .put("companion.tls.tls12-cipher-suites", "")
+                        .put("companion.tls.tls13-cipher-suites", "")
+                        .propertyValues())
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(chainMessages(ctx.getStartupFailure()))
+                            .as("empty cipher suites must be refused via the AD-34 intersection guard")
+                            .anyMatch(msg -> msg.contains("intersection") && msg.contains("AD-34"));
+                });
+    }
+
     private static java.util.List<String> chainMessages(Throwable t) {
         java.util.List<String> messages = new java.util.ArrayList<>();
         for (Throwable c = t; c != null; c = c.getCause()) {
