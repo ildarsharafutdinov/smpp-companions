@@ -430,7 +430,154 @@ class CompanionConfigMatrixTest {
         });
     }
 
+    // --- Story 1.3 post-merge hardening (2026-08-06): biting tests for guards the mutation pass found
+    //     untested. Each binds the specific non-null-but-invalid value the guard exists for (the existing
+    //     suite tested null/absent keys, which @NotNull+pre-pass catch upstream) and asserts the guard's
+    //     OWN message, so neutering the guard turns the test red. ---
+
+    @Test
+    @DisplayName("SEC-059: reverse with a blank SMSC host -> refuse (bites the host.isBlank guard)")
+    void sec059_blankSmscHostRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir).put("companion.reverse.mode-a.smsc.host", ""),
+                "SEC-059 blank host", "host is required for the reverse role");
+    }
+
+    @Test
+    @DisplayName("SEC-058/AD-29: a blank routing-entry host -> refuse (bites the entry.host.isBlank guard)")
+    void sec058_blankRoutingHostRefuses() {
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.forward.mode-a.routing[0].host", ""),
+                "SEC-058 blank routing host", "host is required (AD-29)");
+    }
+
+    @Test
+    @DisplayName("SEC-054: forward with a blank OIDC provider-url -> refuse (bites the providerUrl.isBlank guard)")
+    void sec054_blankOidcProviderUrlRefuses() {
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.forward.mode-a.oidc.provider-url", ""),
+                "SEC-054 blank provider-url", "provider-url is required for the forward role");
+    }
+
+    @Test
+    @DisplayName("SEC-060: a blank secret path -> refuse (bites the requireReadableFile path.isBlank guard)")
+    void sec060_blankSecretPathRefuses() {
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.forward.mode-a.server-cert.cert-path", ""),
+                "SEC-060 blank cert path", "server certificate file path");
+    }
+
+    @Test
+    @DisplayName("SEC-050: a blank trust-store path -> refuse (bites the trustStore.path.isBlank guard)")
+    void sec050_blankTrustStorePathRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir).put("companion.reverse.mode-a.trust-store.path", ""),
+                "SEC-050 blank trust-store path", "never falls back to cacerts");
+    }
+
+    @Test
+    @DisplayName("SEC-060: a secret path pointing at a missing file -> refuse (bites the !Files.exists guard)")
+    void sec060_missingSecretFileRefuses() {
+        assertRefused(TestCompanionConfigs.forwardA(dir)
+                        .put("companion.forward.mode-a.server-cert.cert-path", "/no/such/secret/file"),
+                "SEC-060 missing file", "does not exist");
+    }
+
+    @Test
+    @DisplayName("SEC-050: a trust store pointing at a missing file -> refuse (bites the !Files.exists guard)")
+    void sec050_missingTrustStoreFileRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.trust-store.path", "/no/such/truststore.p12"),
+                "SEC-050 missing trust store", "does not exist");
+    }
+
+    @Test
+    @DisplayName("SEC-050: an unreadable trust store (chmod 000, non-root, POSIX) -> refuse (bites !Files.isReadable)")
+    void sec050_unreadableTrustStoreRefuses() throws IOException {
+        Assumptions.assumeTrue(
+                java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"),
+                "unreadable-permission case requires a POSIX filesystem (skipped on Windows/non-POSIX CI)");
+        Assumptions.assumeFalse("root".equals(System.getProperty("user.name")),
+                "unreadable-permission case is non-deterministic as root (CI runs non-root)");
+        TestCompanionConfigs config = TestCompanionConfigs.reverseA(dir);
+        Path unreadable = dir.resolve("unreadable.p12");
+        Files.createFile(unreadable);
+        Files.setPosixFilePermissions(unreadable, PosixFilePermissions.fromString("---------"));
+        config.put("companion.reverse.mode-a.trust-store.path", unreadable.toString());
+        assertRefused(config, "SEC-050 unreadable trust store", "is not readable");
+    }
+
+    @Test
+    @DisplayName("SEC-058/AD-29: a null element in the routing list -> refuse (bites the entry==null guard)")
+    void sec058_nullRoutingElementRefuses() {
+        // @Valid skips null list elements (BV spec), so only the imperative entry==null guard rejects
+        // this. Unreachable via Spring binding (it never injects a null list element) -> pure-HV path,
+        // like sec058_emptyRoutingListRefuses.
+        List<ProxyCompanionProperties.RoutingEntry> routingWithNull = new ArrayList<>();
+        routingWithNull.add(null);
+        var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
+        var violations = validator.validate(forwardAProps("/run/secrets/server.crt", routingWithNull));
+        assertThat(violations)
+                .as("a null routing element must be refused (AD-29 entry==null guard)")
+                .anyMatch(v -> v.getMessage().contains("is null (AD-29)"));
+    }
+
+    @Test
+    @DisplayName("SEC-060: a syntactically invalid secret path (NUL) -> refuse (bites the InvalidPath guard)")
+    void sec060_invalidSecretPathRefuses() {
+        // A NUL char is the one string Path.of rejects on Linux as InvalidPathException. Spring binding
+        // of a NUL is fragile, so validate directly (pure-HV) — the guard fires before any file check.
+        var validRouting = List.of(
+                new ProxyCompanionProperties.RoutingEntry("carrierOne", "reverse.internal", 2776, null));
+        var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
+        var violations = validator.validate(forwardAProps("\0bad-path", validRouting));
+        assertThat(violations)
+                .as("an invalid secret path must be refused (SEC-060 InvalidPath guard)")
+                .anyMatch(v -> v.getMessage().contains("not a valid path"));
+    }
+
+    @Test
+    @DisplayName("SEC-050: a syntactically invalid trust-store path (NUL) -> refuse (bites the InvalidPath guard)")
+    void sec050_invalidTrustStorePathRefuses() {
+        var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
+        var violations = validator.validate(reverseAProps("\0bad-path"));
+        assertThat(violations)
+                .as("an invalid trust-store path must be refused (SEC-050 InvalidPath guard)")
+                .anyMatch(v -> v.getMessage().contains("not a valid path"));
+    }
+
     // --- helpers -----------------------------------------------------------------------------
+
+    /** Minimal valid forward-A props for the pure-HV path (paths need not exist — only the targeted guard is asserted). */
+    private static ProxyCompanionProperties forwardAProps(String certPath,
+                                                          List<ProxyCompanionProperties.RoutingEntry> routing) {
+        return new ProxyCompanionProperties(
+                new ProxyCompanionProperties.Bind(2775),
+                new ProxyCompanionProperties.Memory(64, 1024, 1.5),
+                new ProxyCompanionProperties.Tls(
+                        List.of("TLSv1.3", "TLSv1.2"),
+                        List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"),
+                        List.of("TLS_AES_256_GCM_SHA384")),
+                new ProxyCompanionProperties.Forward(
+                        new ProxyCompanionProperties.ForwardModeA(
+                                new ProxyCompanionProperties.ServerCert(certPath, "/run/secrets/server.key"),
+                                routing,
+                                new ProxyCompanionProperties.Oidc("https://idp.example.com", "/run/secrets/oidc")),
+                        null),
+                null);
+    }
+
+    /** Minimal valid reverse-A props for the pure-HV path. */
+    private static ProxyCompanionProperties reverseAProps(String trustStorePath) {
+        return new ProxyCompanionProperties(
+                new ProxyCompanionProperties.Bind(2775),
+                new ProxyCompanionProperties.Memory(64, 1024, 1.5),
+                new ProxyCompanionProperties.Tls(
+                        List.of("TLSv1.3", "TLSv1.2"),
+                        List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"),
+                        List.of("TLS_AES_256_GCM_SHA384")),
+                null,
+                new ProxyCompanionProperties.Reverse(
+                        new ProxyCompanionProperties.ReverseModeA(
+                                new ProxyCompanionProperties.Smsc("smsc.carrier.example", 2775),
+                                new ProxyCompanionProperties.TrustStore(trustStorePath, null)),
+                        null, null));
+    }
 
     private static List<String> chainMessages(Throwable t) {
         List<String> messages = new ArrayList<>();

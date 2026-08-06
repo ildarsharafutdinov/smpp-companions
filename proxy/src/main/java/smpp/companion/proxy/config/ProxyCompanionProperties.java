@@ -5,7 +5,9 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+
 import java.util.List;
+
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
@@ -116,7 +118,9 @@ public record ProxyCompanionProperties(
         }
     }
 
-    /** forward × A: server cert+key + routing + OIDC (SMSC NOT required, SEC-097). */
+    /**
+     * forward × A: server cert+key + routing + OIDC (SMSC NOT required, SEC-097).
+     */
     public record ForwardModeA(
             @NotNull(message = "companion.forward.mode-a.server-cert is required (forward A/C, SEC-056) — refusing to start.")
             @Valid ServerCert serverCert,
@@ -127,7 +131,9 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** forward × C: forward-A material + trust store (mTLS to the reverse proxy). */
+    /**
+     * forward × C: forward-A material + trust store (mTLS to the reverse proxy).
+     */
     public record ForwardModeC(
             @NotNull(message = "companion.forward.mode-c.server-cert is required (forward A/C, SEC-056) — refusing to start.")
             @Valid ServerCert serverCert,
@@ -140,7 +146,9 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** reverse × A: SMSC endpoint + client trust store (forward/SMSC server-cert anchor, SEC-096). */
+    /**
+     * reverse × A: SMSC endpoint + client trust store (forward/SMSC server-cert anchor, SEC-096).
+     */
     public record ReverseModeA(
             @NotNull(message = "companion.reverse.mode-a.smsc is required (reverse, SEC-059) — refusing to start.")
             @Valid Smsc smsc,
@@ -149,7 +157,9 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** reverse × B: plaintext. {@code acknowledged} MUST be true to start (SEC-052 warn+ack+start). */
+    /**
+     * reverse × B: plaintext. {@code acknowledged} MUST be true to start (SEC-052 warn+ack+start).
+     */
     public record ReverseModeB(
             @NotNull(message = "companion.reverse.mode-b.smsc is required (reverse, SEC-059) — refusing to start.")
             @Valid Smsc smsc,
@@ -157,7 +167,9 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** reverse × C: SMSC + client cert+key (mTLS, SEC-057) + trust store. */
+    /**
+     * reverse × C: SMSC + client cert+key (mTLS, SEC-057) + trust store.
+     */
     public record ReverseModeC(
             @NotNull(message = "companion.reverse.mode-c.smsc is required (reverse, SEC-059) — refusing to start.")
             @Valid Smsc smsc,
@@ -170,7 +182,9 @@ public record ProxyCompanionProperties(
 
     // --- leaf value records (reused across branches) -------------------------------------
 
-    /** AD-34 pinned TLS defaults; the floor (TLS 1.2 min) + cipher intersection are validated at bind time. */
+    /**
+     * AD-34 pinned TLS defaults; the floor (TLS 1.2 min) + cipher intersection are validated at bind time.
+     */
     public record Tls(
             List<String> protocols,          // companion.tls.protocols
             List<String> tls12CipherSuites,  // companion.tls.tls12-cipher-suites (relaxed binding)
@@ -178,16 +192,20 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** OIDC provider (the forward role performs OIDC, AD-12). */
+    /**
+     * OIDC provider (the forward role performs OIDC, AD-12).
+     */
     public record Oidc(
-            @NotNull(message = "OIDC provider-url is required (forward performs OIDC, AD-12) — refusing to start.")
+            @NotNull(message = "OIDC provider-url is required (forward performs OIDC, AD-12, SEC-054) — refusing to start.")
             String providerUrl,                   // .provider-url (https required, SEC-053/054)
-            @NotNull(message = "OIDC client-credential-path is required (forward, AD-18) — refusing to start.")
+            @NotNull(message = "OIDC client-credential-path is required (forward, AD-18, SEC-060) — refusing to start.")
             String clientCredentialPath           // .client-credential-path (file path, SEC-060)
     ) {
     }
 
-    /** SMSC endpoint. Required for the reverse role (SEC-059). */
+    /**
+     * SMSC endpoint. Required for the reverse role (SEC-059).
+     */
     public record Smsc(
             @NotNull(message = "smsc.host is required for the reverse role (SEC-059) — refusing to start.")
             String host,                          // .host
@@ -197,7 +215,9 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** SMPP bind port (the proxy's own listener; always required, SEC-055). */
+    /**
+     * SMPP bind port (the proxy's own listener; always required, SEC-055).
+     */
     public record Bind(
             @Min(value = 1, message = "companion.bind.port must be in [1,65535] — refusing to start (SEC-055).")
             @Max(value = 65535, message = "companion.bind.port must be in [1,65535] — refusing to start (SEC-055).")
@@ -205,25 +225,31 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** Internet-leg server cert+key (forward A/C). FILE PATHS (AD-18). */
+    /**
+     * Internet-leg server cert+key (forward A/C). FILE PATHS (AD-18).
+     */
     public record ServerCert(
-            @NotNull(message = "server-cert.cert-path is required (forward A/C, AD-18) — refusing to start.")
+            @NotNull(message = "server-cert.cert-path is required (forward A/C, AD-18, SEC-060) — refusing to start.")
             String certPath,                      // .cert-path
-            @NotNull(message = "server-cert.key-path is required (forward A/C, AD-18) — refusing to start.")
+            @NotNull(message = "server-cert.key-path is required (forward A/C, AD-18, SEC-060) — refusing to start.")
             String keyPath                        // .key-path
     ) {
     }
 
-    /** Mode C client cert+key (reverse C). FILE PATHS (AD-18). */
+    /**
+     * Mode C client cert+key (reverse C). FILE PATHS (AD-18).
+     */
     public record ClientCert(
-            @NotNull(message = "client-cert.cert-path is required (reverse C mTLS, AD-18) — refusing to start.")
+            @NotNull(message = "client-cert.cert-path is required (reverse C mTLS, AD-18, SEC-060) — refusing to start.")
             String certPath,                      // .cert-path
-            @NotNull(message = "client-cert.key-path is required (reverse C mTLS, AD-18) — refusing to start.")
+            @NotNull(message = "client-cert.key-path is required (reverse C mTLS, AD-18, SEC-060) — refusing to start.")
             String keyPath                        // .key-path
     ) {
     }
 
-    /** Operator trust store. NEVER falls back to JDK cacerts (AD-13/AD-26). */
+    /**
+     * Operator trust store. NEVER falls back to JDK cacerts (AD-13/AD-26).
+     */
     public record TrustStore(
             @NotNull(message = "trust-store.path is required (AD-13/AD-26) — refusing to start.")
             String path,                          // .path
@@ -231,7 +257,9 @@ public record ProxyCompanionProperties(
     ) {
     }
 
-    /** AD-29 1:1 routing entry: a permitted system_id → the single egress target. */
+    /**
+     * AD-29 1:1 routing entry: a permitted system_id → the single egress target.
+     */
     public record RoutingEntry(
             @NotNull(message = "routing[].system-id is required (AD-29) — refusing to start.")
             String systemId,                      // [].system-id
@@ -254,7 +282,7 @@ public record ProxyCompanionProperties(
             int maxInboundDepth,                  // companion.memory.max-inbound-depth
             @Min(value = 1, message = "companion.memory.concurrent-pairs must be >= 1 — refusing to start (AD-30).")
             int concurrentPairs,                  // companion.memory.concurrent-pairs
-            @DecimalMin(value = "1.0", message = "companion.memory.safety-factor must be >= 1.0 — refusing to start (AD-30).")
+            @DecimalMin(value = "1.0", message = "companion.memory.safety-factor must be a finite number (>= 1.0) — refusing to start (AD-30).")
             double safetyFactor                   // companion.memory.safety-factor
     ) {
     }

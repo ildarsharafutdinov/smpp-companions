@@ -2,6 +2,10 @@ package smpp.companion.proxy.config;
 
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -19,7 +23,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Stream;
 import javax.net.ssl.SSLContext;
+
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -33,21 +40,41 @@ import org.jspecify.annotations.Nullable;
  * guard. forward&times;B is enforced structurally (no forward.mode-b node) &mdash; SEC-051 is retired
  * from the runtime matrix.
  *
- * <p><b>Why the defensive null checks cannot be deleted.</b> This is a Bean Validation class-level
- * constraint, so {@code isValid} runs DURING validation &mdash; before the field-level {@code @NotNull}
- * guarantees hold. A value the type system calls non-null (jspecify {@code @NullMarked}) may still be
- * {@code null} here: binding produces {@code null} for an omitted property, and only the separately
- * evaluated {@code @NotNull} constraint then reports it. Several SEC tests rely on this &mdash; e.g.
- * SEC-059 omits {@code smsc.host}, so the bound value is {@code null} when {@code requireSmsc} runs, and
- * deleting the guard would NPE, replacing the clean SEC-059 refusal message with a stack trace. IntelliJ
- * flags these guards "always false" ({@code DataFlowIssue}); that is a false positive the analyzer cannot
- * model. The checks are kept &mdash; and IDE-warning-free &mdash; by giving each deep-check helper a
- * {@code @Nullable} parameter and guarding it inside, where the check is real rather than redundant.
+ * <p><b>Pre-pass and why most defensive null guards were deleted.</b> {@link #isValid} first validates
+ * each non-null nested record (bind/forward/memory/reverse/tls) with a cached {@link Validator}, which
+ * cascades {@code @Valid} and surfaces every NESTED {@code @NotNull}/{@code @Min}/{@code @Max} violation.
+ * It registers those violations and bails, so every deep-check helper below receives only fully
+ * conformant nested records &mdash; the per-object null guards that previously shadowed field-level
+ * {@code @NotNull} (the {@code if (smsc == null) return;} / {@code if (oidc == null) return;} / etc.)
+ * and their {@code @Nullable} parameters were removed. That also clears IntelliJ's {@code DataFlowIssue}
+ * "always true" warnings on the surviving guards: under the package's {@code @NullMarked}, dropping the
+ * annotation makes the parameter definitely non-null.
+ *
+ * <p>Two categories of null guard <em>remain</em>, because the pre-pass cannot cover them:
+ * <ol>
+ *   <li><b>Root-level {@code @NotNull} blind spot.</b> The pre-pass validates each nested record IN
+ *       ISOLATION (never the root &mdash; validating the root would recurse into this class-level
+ *       constraint). {@code ProxyCompanionProperties.tls} and {@code .memory} carry root-component
+ *       {@code @NotNull}, so an entirely omitted {@code companion.tls.*} / {@code companion.memory.*}
+ *       block reaches {@code validateTls} / {@code validateMemoryInputs} as {@code null}; the guards
+ *       there emit the clean AD-34/AD-30 "is required" message rather than an NPE (covered by
+ *       {@code omittedTlsBlockRefusesCleanly} / {@code omittedMemoryBlockRefusesCleanly}).</li>
+ *   <li><b>Content invariants no annotation expresses.</b> Blank-but-non-null strings (no field is
+ *       {@code @NotBlank}, only {@code @NotNull}), {@code List.isEmpty()} (an empty list passes
+ *       {@code @NotNull}), a null element inside a routing list ({@code @Valid} skips null list elements
+ *       per the BV spec), a duplicate {@code system_id} (AD-29 allow-list), a non-HTTPS OIDC URL
+ *       (SEC-053), a non-finite {@code safetyFactor} (+Infinity slips {@code @DecimalMin}; NaN is rejected by it), plus the
+ *       unconditional TLS floor (SEC-061) and the AD-34 cipher/protocol intersection. The {@code Tls}
+ *       record carries NO field annotations, so its list fields can bind {@code null} &mdash; those null
+ *       guards stay too.</li>
+ * </ol>
  *
  * <p>Field-level {@code @NotNull}/{@code @Min}/{@code @Max} (cascaded via {@code @Valid}) handle
- * per-field presence/range; the compact constructors handle single-branch selection; this constraint
- * handles what neither can express (filesystem/content checks + TLS/cipher/finite guards). Fired by
- * {@code @Validated} at bind time &rarr; non-zero startup exit on any violation.
+ * per-field presence/range &mdash; and, surfaced by the pre-pass, now authoritatively carry the SEC id
+ * for the absent/out-of-range case (SEC-054 OIDC url, SEC-055 ports, SEC-059 smsc host, SEC-060 secret
+ * paths). The compact constructors handle single-branch selection; this constraint handles what neither
+ * can express (filesystem/content checks + TLS/cipher/finite guards). Fired by {@code @Validated} at bind
+ * time &rarr; non-zero startup exit on any violation.
  *
  * <p>Mode B reverse+ack is the single non-refuse insecure posture: the validator returns valid for it,
  * and the loud plaintext startup warning is emitted <em>after</em> successful refresh by
@@ -61,21 +88,57 @@ import org.jspecify.annotations.Nullable;
 public final class CompanionConfigValidator
         implements ConstraintValidator<ValidCompanionConfig, ProxyCompanionProperties> {
 
-    /** Protocols below the AD-34 TLS 1.2 floor (SEC-061), upper-cased for case-insensitive matching. */
+    /**
+     * Protocols below the AD-34 TLS 1.2 floor (SEC-061), upper-cased for case-insensitive matching.
+     */
     private static final Set<String> BELOW_TLS_1_2 = Set.of("SSLV3", "TLSV1", "TLSV1.0", "TLSV1.1");
+
+    /**
+     * Cached, thread-safe {@link Validator} used by the pre-pass. Built once per class-loader: the BV
+     * spec (&sect;5.6) requires {@link Validator} be thread-safe, and building a
+     * {@link jakarta.validation.ValidatorFactory} is expensive (classpath scan). The pure-HV
+     * direct-validate test path ({@code sec058_emptyRoutingListRefuses}) builds its own factory and lets
+     * Hibernate Validator reflect this class &mdash; class-load initializes {@code VALIDATOR} before
+     * {@link #isValid} runs, and the pre-pass never recurses (nested records do not carry
+     * {@code @ValidCompanionConfig}).
+     */
+    private static final Validator VALIDATOR =
+            Validation.buildDefaultValidatorFactory().getValidator();
 
     @Override
     public boolean isValid(ProxyCompanionProperties props, ConstraintValidatorContext context) {
-        List<String> violations = new ArrayList<>();
-        validateBranch(props, violations);
-        validateTls(props.tls(), violations);
-        validateMemoryInputs(props.memory(), violations);
-
-        if (violations.isEmpty()) {
+        // Pre-pass: validate each non-null nested record IN ISOLATION (never the root — that would recurse
+        // into this class constraint). ofNullable drops the absent forward/reverse branch (genuinely
+        // optional at the type level). Root-level @NotNull on bind/memory/tls is NOT covered here → those
+        // guards live on as the deep-check null guards in validateTls/validateMemoryInputs.
+        List<ConstraintViolation<Object>> prePassViolations = Stream.of(
+                        Stream.<Object>ofNullable(props.bind()),
+                        Stream.<Object>ofNullable(props.forward()),
+                        Stream.<Object>ofNullable(props.memory()),
+                        Stream.<Object>ofNullable(props.reverse()),
+                        Stream.<Object>ofNullable(props.tls()))
+                .flatMap(Function.identity())
+                .flatMap(bean -> VALIDATOR.validate(bean).stream())
+                .toList();
+        if (!prePassViolations.isEmpty()) {
+            // Bail with the specific field messages (not the generic default). The deep checks are skipped:
+            // they would be NPE-prone / noisy on a partially-bound config. The outer Spring validate(props)
+            // pass also surfaces these via @Valid cascade, so a message may appear twice — cosmetic only.
+            context.disableDefaultConstraintViolation();
+            for (ConstraintViolation<Object> cv : prePassViolations) {
+                context.buildConstraintViolationWithTemplate(cv.getMessage()).addConstraintViolation();
+            }
+            return false;
+        }
+        List<String> invariantViolations = new ArrayList<>();
+        validateBranch(props, invariantViolations);
+        validateTls(props.tls(), invariantViolations);
+        validateMemoryInputs(props.memory(), invariantViolations);
+        if (invariantViolations.isEmpty()) {
             return true; // Mode B warning is emitted post-refresh by CompanionModeBWarning (not here).
         }
         context.disableDefaultConstraintViolation();
-        for (String message : violations) {
+        for (String message : invariantViolations) {
             context.buildConstraintViolationWithTemplate(message).addConstraintViolation();
         }
         return false;
@@ -126,15 +189,16 @@ public final class CompanionConfigValidator
         requireTrustStore(mc.trustStore(), prefix + ".trust-store", v);
     }
 
-    /** Shared forward A/C content: server cert+key readability (SEC-056), routing (SEC-058), OIDC (SEC-053/054). */
-    private void validateForwardBase(ProxyCompanionProperties.@Nullable ServerCert serverCert,
-                                     @Nullable List<ProxyCompanionProperties.RoutingEntry> routing,
-                                     ProxyCompanionProperties.@Nullable Oidc oidc,
+    /**
+     * Shared forward A/C content: server cert+key readability (SEC-056), routing (SEC-058), OIDC (SEC-053/054).
+     * All three records are {@code @NotNull} on ForwardModeA/C and thus guaranteed non-null by the pre-pass.
+     */
+    private void validateForwardBase(ProxyCompanionProperties.ServerCert serverCert,
+                                     List<ProxyCompanionProperties.RoutingEntry> routing,
+                                     ProxyCompanionProperties.Oidc oidc,
                                      String prefix, List<String> v) {
-        if (serverCert != null) {
-            requireReadableFile(serverCert.certPath(), "server certificate", prefix + ".server-cert.cert-path", v);
-            requireReadableFile(serverCert.keyPath(), "server key", prefix + ".server-cert.key-path", v);
-        }
+        requireReadableFile(serverCert.certPath(), "server certificate", prefix + ".server-cert.cert-path", v);
+        requireReadableFile(serverCert.keyPath(), "server key", prefix + ".server-cert.key-path", v);
         requireRouting(routing, prefix + ".routing", v);
         requireOidc(oidc, prefix + ".oidc", v);
     }
@@ -163,18 +227,21 @@ public final class CompanionConfigValidator
         requireTrustStore(mc.trustStore(), prefix + ".trust-store", v);
     }
 
-    private void requireSmsc(ProxyCompanionProperties.@Nullable Smsc smsc, String prefix, List<String> v) {
-        if (smsc == null) {
-            return; // field-level @NotNull on smsc reports the absent block.
-        }
-        if (isNullOrBlank(smsc.host())) {
+    /**
+     * {@code smsc} is {@code @NotNull} on every reverse mode → guaranteed non-null by the pre-pass.
+     */
+    private void requireSmsc(ProxyCompanionProperties.Smsc smsc, String prefix, List<String> v) {
+        if (smsc.host().isBlank()) {
             v.add(prefix + ".host is required for the reverse role — refusing to start (SEC-059).");
         }
         // smsc.port range is field-level @Min/@Max (cascaded when smsc is present).
     }
 
-    private void requireRouting(@Nullable List<ProxyCompanionProperties.RoutingEntry> routing, String prefix, List<String> v) {
-        if (routing == null || routing.isEmpty()) {
+    /**
+     * {@code routing} is {@code @NotNull} (but may be empty) on forward A/C → non-null by the pre-pass.
+     */
+    private void requireRouting(List<ProxyCompanionProperties.RoutingEntry> routing, String prefix, List<String> v) {
+        if (routing.isEmpty()) {
             v.add(prefix + " is required and must be non-empty for the forward role (AD-29 1:1; "
                     + "no default route per AD-11) — refusing to start (SEC-058).");
             return;
@@ -189,7 +256,7 @@ public final class CompanionConfigValidator
                 index++;
                 continue;
             }
-            if (isNullOrBlank(entry.systemId())) {
+            if (entry.systemId().isBlank()) {
                 v.add(prefix + "[" + index + "].system-id is required (AD-29) — refusing to start.");
             } else if (!seenSystemIds.add(entry.systemId())) {
                 // AD-29: the routing table is a system_id allow-list → a duplicate id is ambiguous
@@ -197,19 +264,19 @@ public final class CompanionConfigValidator
                 v.add(prefix + "[" + index + "].system-id=" + entry.systemId()
                         + " is duplicated in the routing table (AD-29 allow-list) — refusing to start.");
             }
-            if (isNullOrBlank(entry.host())) {
+            if (entry.host().isBlank()) {
                 v.add(prefix + "[" + index + "].host is required (AD-29) — refusing to start.");
             }
             index++;
         }
     }
 
-    private void requireOidc(ProxyCompanionProperties.@Nullable Oidc oidc, String prefix, List<String> v) {
-        if (oidc == null) {
-            return; // field-level @NotNull on oidc reports the absent block.
-        }
+    /**
+     * {@code oidc} is {@code @NotNull} on forward A/C → guaranteed non-null by the pre-pass.
+     */
+    private void requireOidc(ProxyCompanionProperties.Oidc oidc, String prefix, List<String> v) {
         String providerUrl = oidc.providerUrl();
-        if (isNullOrBlank(providerUrl)) {
+        if (providerUrl.isBlank()) {
             v.add(prefix + ".provider-url is required for the forward role (AD-12) — refusing to start (SEC-054).");
         } else if (!isHttps(providerUrl)) {
             v.add(prefix + ".provider-url must use the https scheme (AD-12/SEC-3) — refusing to start (SEC-053).");
@@ -217,16 +284,21 @@ public final class CompanionConfigValidator
         requireReadableFile(oidc.clientCredentialPath(), "OIDC client credential", prefix + ".client-credential-path", v);
     }
 
-    private void requireClientCert(ProxyCompanionProperties.@Nullable ClientCert clientCert, String prefix, List<String> v) {
-        if (clientCert == null) {
-            return; // field-level @NotNull on client-cert reports the absent block.
-        }
+    /**
+     * {@code clientCert} is {@code @NotNull} on reverse C → guaranteed non-null by the pre-pass.
+     */
+    private void requireClientCert(ProxyCompanionProperties.ClientCert clientCert, String prefix, List<String> v) {
         requireReadableFile(clientCert.certPath(), "client certificate", prefix + ".cert-path", v);
         requireReadableFile(clientCert.keyPath(), "client key", prefix + ".key-path", v);
     }
 
-    private void requireReadableFile(@Nullable String path, String label, String key, List<String> v) {
-        if (isNullOrBlank(path)) {
+    /**
+     * All callers pass a {@code @NotNull} path (server/client cert+key, OIDC credential) → non-null by the
+     * pre-pass. The blank / not-a-path / missing / directory / unreadable states are content checks the
+     * annotations cannot express.
+     */
+    private void requireReadableFile(String path, String label, String key, List<String> v) {
+        if (path.isBlank()) {
             v.add(key + " is required (" + label + " file path, AD-18) — refusing to start (SEC-060).");
             return;
         }
@@ -250,9 +322,12 @@ public final class CompanionConfigValidator
 
     // --- SEC-050 trust-store 5-state (decision D5: real KeyStore.load PKIX validation) ---------
 
-    private void requireTrustStore(ProxyCompanionProperties.@Nullable TrustStore trustStore, String prefix, List<String> v) {
+    /**
+     * {@code trustStore} is {@code @NotNull} on the mode records → guaranteed non-null by the pre-pass.
+     */
+    private void requireTrustStore(ProxyCompanionProperties.TrustStore trustStore, String prefix, List<String> v) {
         String key = prefix + ".path";
-        if (trustStore == null || isNullOrBlank(trustStore.path())) {
+        if (trustStore.path().isBlank()) {
             v.add(key + " is required (trust store never falls back to cacerts, AD-13/AD-26) — refusing to start (SEC-050).");
             return;
         }
@@ -272,17 +347,16 @@ public final class CompanionConfigValidator
             v.add(key + "=" + trustStore.path() + " is not readable — refusing to start (SEC-060/SEC-050).");
             return;
         }
+        char[] password = (trustStore.password() == null) ? null : trustStore.password().toCharArray();
         try {
+            // Empty-file guard first (SEC-050). Files.size declares a checked IOException; rather than a
+            // separate untestable catch, it is handled by THIS try's load-failure handler below — a size
+            // IO error on a file that already passed exists+isReadable is an extreme edge and is refused
+            // cleanly either way (the dedicated "could not be sized" branch was removed as dead-in-practice).
             if (Files.size(resolved) == 0L) {
                 v.add(key + "=" + trustStore.path() + " is empty (zero bytes) — refusing to start (SEC-050).");
                 return;
             }
-        } catch (IOException e) {
-            v.add(key + "=" + trustStore.path() + " could not be sized (IO error) — refusing to start (SEC-050).");
-            return;
-        }
-        char[] password = (trustStore.password() == null) ? null : trustStore.password().toCharArray();
-        try {
             KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
             try (InputStream in = Files.newInputStream(resolved)) {
                 keyStore.load(in, password); // wrong-format / wrong-password throw here.
@@ -310,14 +384,17 @@ public final class CompanionConfigValidator
     // --- AC2 TLS floor (SEC-061) + cipher intersection (AD-34, decision D2) -------------------
 
     private void validateTls(ProxyCompanionProperties.@Nullable Tls tls, List<String> v) {
-        // Class-level constraint runs before the field-level @NotNull on `tls` holds (see class javadoc),
-        // so a missing companion.tls.* block reaches here as null — guard it (AD-17 clear-message contract).
+        // ROOT-LEVEL @NotNull blind spot: the pre-pass skips a null tls (ofNullable drops it, and the
+        // @NotNull on ProxyCompanionProperties.tls is a root-component constraint the isolated-record
+        // pre-pass cannot see). An omitted companion.tls.* block reaches here as null — guard it
+        // (AD-17 clear-message contract; dropping would NPE on tls.protocols()).
         if (tls == null) {
             v.add("companion.tls.* is required (AD-34) — refusing to start.");
             return;
         }
         // The list accessors are typed non-null (jspecify @NullMarked) but binding can produce null for an
-        // omitted list; pass them through @Nullable params so the guards below are real, not redundant.
+        // omitted list; the Tls record carries NO field annotations, so the pre-pass cannot guarantee
+        // them — pass through @Nullable params so the guards below are real, not redundant.
         validateTlsContent(tls.protocols(), tls.tls12CipherSuites(), tls.tls13CipherSuites(), v);
     }
 
@@ -349,10 +426,9 @@ public final class CompanionConfigValidator
         if (tls13CipherSuites != null) {
             configured.addAll(tls13CipherSuites);
         }
-        if (configured.isEmpty()) {
-            v.add("companion.tls cipher suites are empty — refusing to start (AD-34).");
-            return;
-        }
+        // An empty configured set is caught by the intersection check below (empty ∩ JDK-supported =
+        // empty → fail-fast). The dedicated empty-ciphers early-return was removed as redundant — it was
+        // shadowed by this intersection guard and could not be made mutation-resistant on its own.
         try {
             SSLContext sslContext = SSLContext.getInstance("TLS");
             sslContext.init(null, null, null); // the JDK-default context (proves the set is JDK-supported).
@@ -375,6 +451,11 @@ public final class CompanionConfigValidator
                 }
             }
         } catch (Exception e) {
+            // Compiler-required: SSLContext.getInstance/init declare checked exceptions, so this catch
+            // cannot be removed. On JDK 25 (no SecurityManager) those calls do not throw in practice,
+            // which makes the catch impractical to mutation-test in isolation — the load-bearing
+            // intersection enforcement above IS covered by the AD-34 cipher/protocol refusal tests.
+            // Fail-closed: any unexpected exception here still refuses startup with an AD-34 message.
             v.add("companion.tls cipher intersection check failed (" + e.getClass().getSimpleName()
                     + ") — refusing to start (AD-34).");
         }
@@ -383,16 +464,17 @@ public final class CompanionConfigValidator
     // --- AC5 AD-30 memory inputs (RELAY-026 constant is by construction; live self-check deferred, D1) ---
 
     private void validateMemoryInputs(ProxyCompanionProperties.@Nullable Memory memory, List<String> v) {
-        // Same class-constraint-runs-before-@NotNull caveat as validateTls (see class javadoc): a missing
-        // companion.memory.* block reaches here as null — guard it (AD-17 clear-message contract, AD-30).
+        // ROOT-LEVEL @NotNull blind spot (same as validateTls): the pre-pass skips a null memory block, so
+        // an omitted companion.memory.* reaches here as null — guard it (AD-17 clear-message, AD-30).
         if (memory == null) {
             v.add("companion.memory.* is required (AD-30) — refusing to start.");
             return;
         }
         // max-frame / max-command-length ARE SmppFrame.MAX_COMMAND_LENGTH by construction (referenced
         // directly, not config keys — RELAY-026), so there is nothing to drift-check here. Only the
-        // operator-tunable memory inputs need a guard: @DecimalMin("1.0") on safetyFactor does not reject
-        // NaN (Hibernate Validator's Double.compare ranks NaN as large) — reject non-finite explicitly.
+        // operator-tunable memory inputs need a guard beyond @Min/@DecimalMin: @DecimalMin("1.0") rejects
+        // NaN and values < 1.0 but passes +Infinity (HV ranks +Infinity as >= 1.0) — reject Infinity
+        // explicitly via isFinite. (NaN is already caught by @DecimalMin and surfaced via the pre-pass.)
         if (!Double.isFinite(memory.safetyFactor())) {
             v.add("companion.memory.safety-factor=" + memory.safetyFactor()
                     + " must be a finite number (>= 1.0) — refusing to start (AD-30).");
@@ -400,10 +482,6 @@ public final class CompanionConfigValidator
     }
 
     // --- helpers ---------------------------------------------------------------------------
-
-    private static boolean isNullOrBlank(@Nullable String s) {
-        return s == null || s.isBlank();
-    }
 
     private static boolean isHttps(String url) {
         try {

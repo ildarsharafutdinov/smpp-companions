@@ -272,7 +272,7 @@ discipline) — and one HIGH NPE the deferred-work ledger falsely claims is fixe
 
 - [x] [Review][Patch] **[LOW] TLS protocol floor check is case-sensitive (`"sslv3"` slips past SEC-061)** [`CompanionConfigValidator.java:63,288`] — `BELOW_TLS_1_2` uses exact case; `companion.tls.protocols=[sslv3]` passes the config-time check (caught later at TLS init). The shipped `application.yml` uses canonical case, so the default is safe. Normalize with `toUpperCase(Locale.ROOT)`.
 
-- [x] [Review][Patch] **[LOW] NaN/Infinity `safety-factor` guard exists but has no biting test** [`CompanionConfigValidator.java:328-331`] — the `Double.isFinite` guard is load-bearing (`@DecimalMin` ranks NaN as large), but no test binds `companion.memory.safety-factor=NaN`/`Infinity`. Delete the guard → no test goes red. Add the test.
+- [x] [Review][Patch] **[LOW] NaN/Infinity `safety-factor` guard exists but has no biting test** [`CompanionConfigValidator.java:328-331`] — the `Double.isFinite` guard is load-bearing (`@DecimalMin` rejects NaN (it does not rank it as large) but passes +Infinity — so `Double.isFinite` is load-bearing for +Infinity, not NaN), but no test binds `companion.memory.safety-factor=NaN`/`Infinity`. Delete the guard → no test goes red. Add the test.
 
 - [x] [Review][Patch] **[LOW] Within-role multi-mode selection (e.g. `forward.mode-a` + `forward.mode-c`) is untested** [`ProxyCompanionProperties.java:81-90,102-116`; `CompanionConfigMatrixTest.java:88-96`] — `twoBranchesConfiguredRefuses` crosses roles only; the `Forward`/`Reverse` compact-constructor exclusivity guards have no biting test.
 
@@ -489,7 +489,7 @@ glm-5.2[1m] (dev-story), with a 4-lens adversarial self-review workflow (bite / 
 - **D1 (split AD-30 self-check):** static RELAY-026 scan + formula shipped NOW; live `ByteBufAllocatorMetric` self-check DEFERRED to Epic 2 (logged).
 - **D6 (key names, kebab-case):** `companion.{mode,oidc.*,smsc.*,bind.*,server-cert.*,client-cert.*,trust-store.*,routing[],mode-b-acknowledged,memory.*,max-command-length}`. The green build (AC6) is the mutual-compat proof.
 - **RELAY-026 (single-source — AC5 amended per dev-review):** `max-frame`/`max-command-length` are NOT config keys — they ARE `SmppFrame.MAX_COMMAND_LENGTH`, referenced directly by `MemoryBudget`. (The values could only ever be the codec constant — the validator refused any other — so holding them as configurable fields was redundant; the drift check + effective accessors are removed. AC5's literal "wire max_frame / max-command-length as companion.* keys" is simplified to "reference the one constant directly" — RELAY-026's purest form.) `Relay026ConstantContractTest` guards (AST scan) that proxy main references the constant with no magic `65536` literal. Codec stub is the constant-side anchor; codec SOURCE untouched (AD-7 inward-only).
-- **Adversarial self-review fixes (before review):** (a) **forward×C trust store** routed through the deep `requireTrustStore` (was shallow `requireReadableFile` — 3 lenses converged) + a forward+C wrong-password test; (b) **Mode B warning leak** fixed by moving emission to a `@PostConstruct` `CompanionModeBWarning` bean (fires only after successful refresh) + a leak-prevention test (reverse+B+ack+bad-port refuses WITHOUT the banner); (c) per-entry routing-field bite test; (d) TLS null/blank protocol entry rejection; (e) NaN/Infinity `safety-factor` rejection (`@DecimalMin` ranks NaN as large); (f) SEC-050 empty-case per-branch token. Deferred (noted): JKS trust-store type support (PKCS12 is the JDK-25 default).
+- **Adversarial self-review fixes (before review):** (a) **forward×C trust store** routed through the deep `requireTrustStore` (was shallow `requireReadableFile` — 3 lenses converged) + a forward+C wrong-password test; (b) **Mode B warning leak** fixed by moving emission to a `@PostConstruct` `CompanionModeBWarning` bean (fires only after successful refresh) + a leak-prevention test (reverse+B+ack+bad-port refuses WITHOUT the banner); (c) per-entry routing-field bite test; (d) TLS null/blank protocol entry rejection; (e) NaN/Infinity `safety-factor` rejection (`@DecimalMin` rejects NaN (it does not rank it as large) but passes +Infinity — so `Double.isFinite` is load-bearing for +Infinity, not NaN); (f) SEC-050 empty-case per-branch token. Deferred (noted): JKS trust-store type support (PKCS12 is the JDK-25 default).
 - **Lockstep seed tests (T6):** `BootstrapLifecycleTest`, `CompanionRoleFailFastTest.recordAcceptsValidRole`, `CompanionTlsBindingTest` updated for the new record shape + `mode`; the 1.1 role smoke + the AD-34 TLS-binding `containsExactly` pin stay green.
 - **Opportunistic:** corrected the CODEC-026/029 `0x0F→0x09` planning-doc literal (`test-coverage-scenarios.md`).
 - **Out of scope (held):** relay splice (Epic 2), TLS/OIDC/JWKS runtime (Epic 3), AD-22 shutdown body (Epic 4), docs runbook (Epic 6). No codec source change, no third module, no web server.
@@ -552,3 +552,26 @@ glm-5.2[1m] (dev-story), with a 4-lens adversarial self-review workflow (bite / 
   check; magic-literal regex broadened to `0x10000`/`65_536`) — a lighter-weight mechanism than ArchUnit;
   deviation noted here per the fail-closed+simplicity default. **Duplicate `system_id` (decision):** added a
   seen-`Set` check in 1.3 (fail-closed) rather than deferring to Epic 2.
+- 2026-08-06 — **Post-merge hardening (pre-pass) + test-efficacy audit.** After the 08-04 review/merge,
+  the validator was re-architected around a **cached Hibernate-Validator pre-pass**: `isValid` validates
+  each non-null nested record (bind/forward/memory/reverse/tls) in isolation via a static `Validator`,
+  cascading `@Valid` to surface every nested `@NotNull`/`@Min`/`@Max`/`@DecimalMin` violation and bail —
+  so the per-helper defensive null guards were deleted as dead weight (the pre-pass guarantees non-null).
+  The root-level `@NotNull` blind spot (an omitted `companion.tls.*`/`companion.memory.*` block is invisible
+  to the isolated-record pre-pass) is retained as the deep-check null guards in `validateTls`/
+  `validateMemoryInputs` (both mutation-verified LIVE). A full **fault-injection audit of all 33 fail-fast
+  guards** then ran: first pass found 16 LIVE + 3 NullAway-compile-guarded + **14 silently-dead (no biting
+  test)**. All 14 closed: **11 gained biting tests** (blank host/provider-url/path, missing / unreadable /
+  NUL-invalid file, null routing element — each binds the specific non-null-but-invalid value the guard
+  exists for and asserts the guard's own message; re-verified RED-on-neuter for all 11);
+  `tls-ciphers-empty` early-return **deleted** (redundant — the AD-34 intersection guard already rejects an
+  empty configured set, proven by `ad34_emptyCipherSuitesRefuseStartup`); `truststore-size-io-error`
+  try/catch **merged** into the adjacent load-failure handler (dead-in-practice); `tls-intersect-exception`
+  catch **documented** as a compiler-required defensive catch (SSLContext checked exceptions; impractical to
+  mutation-test on JDK 25 — the intersection enforcement IS tested). **Final: 30 guards bite / are
+  compile-guarded, 2 eliminated as redundant, 1 documented defensive — zero silently-dead.** Rationale
+  correction: the `Double.isFinite` guard is load-bearing for **+Infinity** (`@DecimalMin` rejects NaN — it
+  does not "rank it as large" — but passes +Infinity); the two inverted story notes + the class javadoc are
+  corrected. Proxy suite GREEN (`CompanionConfigMatrixTest` 41→52, `CompanionTlsBindingTest` 6→7, 0
+  failures/skipped). `deferred-work.md` annotated: the "RESOLVED 2026-08-03 (T1)" tls-null-guard marker was
+  false at the 78e4ff6 merge (re-added 08-04, retained through this refactor).
