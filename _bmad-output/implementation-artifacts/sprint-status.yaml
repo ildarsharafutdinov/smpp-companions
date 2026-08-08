@@ -106,7 +106,12 @@ action_items:
     action: "Run Story 3.1 ROPC viability probe against Keycloak 26.x (Direct Access Grants explicitly enabled); write the fallback DECISION (non-OIDC password-check service / Mode-C-only / Mode B plaintext-only / cancel auth scope) into the AD-12 accepted-risk register before the opener is sliced."
     owner: "Winston (System Architect)"
     lane: "technical / critical-now"
-    status: open
+    status: done   # was open — probe executed 2026-08-08; viability MET (Keycloak 26.7.0 ships DAG,
+                   # no removal/deprecation in 26.x, not removable before KC 27). DAG off-by-default.
+                   # No fallback DECISION invoked (gate failure/removal-notice trigger not met, epics.md §Epic 3);
+                   # dated verdict + removal/version watch (pin ≥26.7.0, re-validate each minor) written into
+                   # the AD-12 register (ARCHITECTURE-SPINE.md §Accepted-Risk Register, line 285).
+                   # 4-path AD-12 validation handed off to Epic 2 opener + Epic 3.
   - epic: 1
     action: "Provision a Keycloak 26.x local Docker test fixture — test user + confidential client (mTLS RFC 8705 or client_secret) + reachable realm JWKS URI + DAG explicitly enabled. Shared gating infra for Story 3.1 and the opener."
     owner: "Winston (System Architect)"
