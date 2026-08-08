@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-08-04
+last_updated: 2026-08-08
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -69,12 +69,12 @@ story_location: _bmad-output/implementation-artifacts
 
 development_status:
   # --- Epic 1: Foundation — build substrate, pure SMPP 3.4 codec, and fail-fast configuration ---
-  epic-1: in-progress
+  epic-1: done
   1-1-gradle-two-module-substrate-and-ci-scaffold: done
   1-2-smpp-3-4-codec: done
   1-3-config-matrix: done
   1-4-compile-time-null-safety-enforcement: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   # --- Epic 2: Transit SMPP end-to-end — stateless relay with the A-1 session-affinity smoke test ---
   epic-2: backlog
@@ -95,3 +95,50 @@ development_status:
   # --- Epic 6: Validate all performance and deliver the operator docs surface ---
   epic-6: backlog
   epic-6-retrospective: optional
+
+action_items:
+  - epic: 1
+    action: "RED-on-neuter verification gate — every deferred-work RESOLVED marker re-verified against the codebase at merge; every fail-fast/fail-closed guard backed by a fault-injection test binding the specific invalid value (not a removed key); lint on the deferred-work ledger so no marker closes without a cited biting test. Encoded as a dev-story / code-review checklist item."
+    owner: "Murat (Master Test Architect)"
+    lane: "process / standing gate"
+    status: open
+  - epic: 1
+    action: "Run Story 3.1 ROPC viability probe against Keycloak 26.x (Direct Access Grants explicitly enabled); write the fallback DECISION (non-OIDC password-check service / Mode-C-only / Mode B plaintext-only / cancel auth scope) into the AD-12 accepted-risk register before the opener is sliced."
+    owner: "Winston (System Architect)"
+    lane: "technical / critical-now"
+    status: open
+  - epic: 1
+    action: "Provision a Keycloak 26.x local Docker test fixture — test user + confidential client (mTLS RFC 8705 or client_secret) + reachable realm JWKS URI + DAG explicitly enabled. Shared gating infra for Story 3.1 and the opener."
+    owner: "Winston (System Architect)"
+    lane: "technical / critical-now"
+    status: open
+  - epic: 1
+    action: "Author the proxy/security/ contract types the opener ratifies — BindCredentialVerifier (VerdictRequest verify(BindCredential, ScopedValue<RequestContext>)), sealed Verdict permits Allow/DenyInvalid/DenyIndeterminate, record BindCredential(SystemId, char[]), VerdictRequest (CompletableFuture<Verdict> future() + void cancelHttp()), RequestContext."
+    owner: "Winston (System Architect)"
+    lane: "technical / critical"
+    status: open
+  - epic: 1
+    action: "Resolve the password AsciiString->char[] conversion seam and ship CODEC-024 P2 (override SmppBindRequest.toString() to redact + no-String-from-password bytecode scan); ratify a no-toString conversion into a zeroizable char[] and prove zeroization on completion/teardown/shutdown/exception per AD-12. Must land before Epic 2 relay logging."
+    owner: "Amelia (Developer)"
+    lane: "technical / critical"
+    status: open
+  - epic: 1
+    action: "Mount the AD-30 live ByteBufAllocatorMetric startup self-check on the shared PooledByteBufAllocator when relay wiring lands — fail-fast if live MaxDirectMemorySize < computed MemoryBudget."
+    owner: "Amelia (Developer)"
+    lane: "technical / with-relay"
+    status: open
+  - epic: 1
+    action: "Codify four traps into the test-design playbook so Epic 2 authors apply them by default — (a) null-vs-blank binding pattern; (b) RecordingAllocator-bypass (chunk input / route through ctx.alloc()); (c) gate-must-run-in-check (runner check buildAndFail per gate); (d) jqwik-no-Jupiter-annotations-on-@Property rule."
+    owner: "Murat (Master Test Architect)"
+    lane: "documentation / ongoing"
+    status: open
+  - epic: 1
+    action: "Pin the JDK 25 vendor (or define an explicit CI image/setup-step) and add a runtime assertion that --enable-preview is present on COMPILE and RUN (not just the test-JVM path) before Epic 2 relay code lands."
+    owner: "Winston (System Architect)"
+    lane: "technical / with-relay"
+    status: open
+  - epic: 1
+    action: "Correct the surviving bind_transceiver=0x0F literal at test-coverage-scenarios.md CODEC-017:169 (correct is 0x09) and sweep all planning docs for the same wrong literal; verify catalog literals against the SMPP 3.4 PDF + an independent oracle before coding."
+    owner: "John (Product Manager)"
+    lane: "documentation / ongoing"
+    status: open
