@@ -3,12 +3,12 @@ baseline_commit: c771a0e
 epic: 2
 story: 1
 story_key: 2-1-security-port-contract-validation-slice
-status: ready-for-dev
+status: in-progress
 ---
 
 # Story 2.1: Security Port Contract-Shape Validation Slice (BindCredentialVerifier ratification)
 
-Status: ready-for-dev
+Status: in-progress
 
 > **The Epic 2 opener — the gating slice.** Before `relay/` finalizes against the seeded `BindCredentialVerifier` port
 > (epics.md:366–367), this story (a) authors the AD-12 `proxy/security/` port contract and (b) **ratifies its shape
@@ -149,16 +149,16 @@ contract revision is proposed while the change is still cheap.
 ## Tasks / Subtasks
 
 **0. Keycloak ≥26.7.0 fixture (retro AI-3) — provision OR verify.** (AC2)
-- [ ] If not yet provisioned: stand up a local Docker Keycloak **≥26.7.0** (note: no upstream LTS; pin the patch),
+- [x] If not yet provisioned: stand up a local Docker Keycloak **≥26.7.0** (note: no upstream LTS; pin the patch),
   a realm, a test user, and clients:
   - Client A: **confidential**, **Direct Access Grants Enabled = true** (off by default since KC 26.2, #30226), used
     for paths (1) JWT + (2) opaque-token issuance + RFC 7662 introspection.
   - Client B: **`tls_client_auth`** (RFC 8705) with the X.509 subject DN mapped to the client + a generated client
     cert/trust, used for path (3) mTLS provider auth (NO `client_secret`).
   - Realm JWKS/certs endpoint reachable from the test JVM.
-- [ ] If Winston already provisioned AI-3, verify it meets the above (esp. DAG enabled + the `tls_client_auth` client +
+- [x] If Winston already provisioned AI-3, verify it meets the above (esp. DAG enabled + the `tls_client_auth` client +
   opaque-token setup) before relying on it.
-- [ ] Location: a fixture directory under `proxy/src/test/resources/keycloak/` (compose + realm import JSON + certs) —
+- [x] Location: a fixture directory under `proxy/src/test/resources/keycloak/` (compose + realm import JSON + certs) —
   confirm placement with the existing test layout; do not pollute main resources.
 
 **1. Author the port types in `proxy/security/`.** (AC1)
@@ -274,16 +274,53 @@ contract revision is proposed while the change is still cheap.
 
 ### Agent Model Used
 
-_(filled by dev agent)_
+Claude Code — `bmad-dev-story` workflow (model: glm-5.2).
 
 ### Debug Log References
 
-_(filled by dev agent)_
+- `verify-fixture.sh` output (2026-08-08, against `quay.io/keycloak/keycloak:26.7.0`) — captured all 4 AD-12 paths.
+- Keycloak `docker logs smpp-keycloak` DEBUG (`org.keycloak.authentication.authenticators.client`):
+  `X509ClientCertificateAuthenticator` — `Checked Subject DN: CN=smpp-mtls-client`; `CA Subject DN: O=…, CN=smpp-test-ca`
+  (RDN reordering); `x509.subjectdn is null or empty` (when legacy `x509cert` attr was used).
+- `docker exec … kc.sh show-config` — confirmed `kc.https-client-auth` / `kc.truststore-paths` applied.
+- `openssl s_client` — confirmed Keycloak requests + accepts the client cert at TLS (`Verify return code: 0 (ok)`).
+- `kc.sh start --help` — `--https-client-auth` values `none|request|required`; `--hostname-strict-https` removed in 26.7.
 
 ### Completion Notes List
 
-_(filled by dev agent)_
+- **Task 0 DONE — Keycloak ≥26.7.0 fixture provisioned AND verified against the running instance** (retro AI-3 was
+  `open`/unprovisioned; sprint-status AI-3 still open — Winston had not provisioned it, so this task provisioned it).
+  Pinned `quay.io/keycloak/keycloak:26.7.0` (the ≥26.7.0 floor; 26.7.1 also available). Ephemeral FS → fresh realm
+  re-import on every `up`. Placed under `proxy/src/test/resources/keycloak/` (compose + realm JSON + certs + README +
+  `verify-fixture.sh`); main resources untouched.
+- **All 4 AD-12 paths verified at the fixture level:** Path 1 ROPC JWT (RS256, kid in JWKS); Path 2 introspection
+  `active:true`; **Path 3 ROPC+mTLS (RFC 8705 `tls_client_auth`, no client_secret) → 200 JWT** — the "most likely to
+  fail" path WORKS, so the AD-12 port shape can express all four paths (strong signal for AC8); Path 4 bad-client-secret
+  → 401 `invalid_client`, bad-user-password → 400 `invalid_grant`; JWKS reachable (2 keys).
+- **Six real-fixture findings baked into the fixture README for Task 2 / AC8** (retro discovery #4 — verify against the
+  real fixture, not assumptions): (1) `--hostname-strict-https` removed in 26.7; (2) `https-client-auth=required` is
+  mandatory — `request`/WANT does NOT expose the peer cert to the `client-x509` authenticator (design-consistent with
+  AD-12/AD-29: the proxy presents its cert on every IdP call); (3) KC 26 `client-x509` uses `x509.subjectdn` +
+  `x509.casubjectdn` (NOT legacy `x509cert`), checks CA/issuer DN first, reorders RDNs → CA cert kept CN-only; (4) KC 26
+  User Profile requires email/firstName/lastName or ROPC fails "Account is not fully set up"; (5) DAG is per-client
+  (off by default since 26.2); (6) **AC2 path-4 refinement** — bad user creds → 400 `invalid_grant`, bad client secret →
+  401 `invalid_client`; the slice must map BOTH → `DenyInvalid` (AD-11 "4xx≠200 → DENY" covers both; do not key on 401).
+- **RED-on-neuter relevance (AC9, AI-1):** Task 0 is fixture provisioning (no production guard to neuter); the RED-on-
+  neuter tests attach to Tasks 2/3/4 (cancelHttp abort, DENY branches, zeroization, saturation). The path-4a finding is
+  a preemptive correctness input for those DENY-branch tests.
+- Task 0 does NOT author port types (Task 1), the validation slice (Task 2), or any production code — scope held.
 
 ### File List
 
-_(filled by dev agent)_
+- `proxy/src/test/resources/keycloak/docker-compose.yml` — Keycloak 26.7.0 (HTTPS, `https-client-auth=required`, realm import, mTLS truststore).
+- `proxy/src/test/resources/keycloak/realm-smpp-companions.json` — realm + full-profile user + Client A (confidential/DAG) + Client B (`client-x509`/DAG).
+- `proxy/src/test/resources/keycloak/verify-fixture.sh` — probes all 4 AD-12 paths against the running fixture.
+- `proxy/src/test/resources/keycloak/README.md` — run/verify docs + the 6 real-fixture findings.
+- `proxy/src/test/resources/keycloak/certs/generate.sh` — test-PKI provenance script (CA/server/client certs, truststore.p12, client-keystore.p12).
+- `proxy/src/test/resources/keycloak/certs/ca.pem`, `ca-key.pem`, `server.pem`, `server-key.pem`, `client.pem`, `client-key.pem`, `truststore.p12`, `client-keystore.p12`, `keycloak-truststore.pem` — generated test-only TLS material.
+
+## Change Log
+
+- 2026-08-08 — Task 0: provisioned + verified the Keycloak ≥26.7.0 fixture (retro AI-3). All 4 AD-12 paths verified
+  against `keycloak:26.7.0`, incl. ROPC+mTLS (path 3) → 200. 6 real-fixture findings recorded for Task 2 / AC8.
+  Story status: ready-for-dev → in-progress (T0 complete; Tasks 1–7 remain).

@@ -1,0 +1,54 @@
+# Story 2.1 (retro AI-3) — local Keycloak fixture for the security-port contract-shape validation slice.
+#
+# Pinned to quay.io/keycloak/keycloak:26.7.0 — the AD-12 / Story 3.1 committed floor (≥26.7.0; re-validated
+# each minor; no upstream LTS). 26.7.x ships Direct Access Grants (ROPC, grant_type=password), which are
+# off-by-default per-client since KC 26.2 (#30226) — the realm import re-enables DAG on both test clients.
+#
+# Realm: smpp-companions  (imported from realm-smpp-companions.json via --import-realm)
+#   * testuser / testpass
+#   * Client A smpp-client-confidential — confidential, DAG enabled, secret — paths 1 (JWT), 2 (introspection), 4 (DENY 401)
+#   * Client B smpp-client-mtls         — client-x509 (RFC 8705 tls_client_auth), DAG enabled, NO client_secret — path 3 (mTLS)
+#
+# TLS: test-only self-signed PKI in ./certs (see certs/generate.sh). Keycloak serves HTTPS with server.pem;
+# KC_TRUSTSTORE_PATHS trusts the CA so it can verify mTLS client certs; https-client-auth=request so Client A
+# (secret, no cert) and Client B (cert) coexist on one port. The test JVM trusts server.pem via certs/truststore.p12
+# (AD-13: minimal trust anchor, never JDK cacerts) and presents certs/client-keystore.p12 for path 3.
+#
+# Run:   docker compose -f proxy/src/test/resources/keycloak/docker-compose.yml up -d --wait
+# Stop:  docker compose -f proxy/src/test/resources/keycloak/docker-compose.yml down
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    container_name: smpp-keycloak
+    command:
+      - start
+      - --import-realm
+      - --hostname-strict=false
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "false"          # HTTPS only (AD-12: provider endpoints over TLS, never HTTP)
+      KC_HTTPS_PORT: "8443"
+      KC_HOSTNAME: localhost
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/server.pem
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/server-key.pem
+      KC_HTTPS_CLIENT_AUTH: required     # NEED: Vert.x only exposes the peer cert to the app layer in required mode
+                                        # (WANT/request completes the handshake but doesn't surface the cert, so the
+                                        # client-x509 authenticator sees nothing). Design-consistent with AD-12/AD-29:
+                                        # the proxy presents its per-instance mTLS client cert on EVERY IdP call
+                                        # (secret-auth clients present it for transport only; OAuth-auth still per client).
+      KC_TRUSTSTORE_PATHS: /opt/keycloak/conf/keycloak-truststore.pem   # CA PEM → verify mTLS client certs
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./certs/server.pem:/opt/keycloak/conf/server.pem:ro
+      - ./certs/server-key.pem:/opt/keycloak/conf/server-key.pem:ro
+      - ./certs/keycloak-truststore.pem:/opt/keycloak/conf/keycloak-truststore.pem:ro
+      - ./realm-smpp-companions.json:/opt/keycloak/data/import/realm-smpp-companions.json:ro
+    # Ephemeral container FS (no named data volume) → --import-realm re-imports the realm fresh on every `up`.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8443'"]   # port bound ~ when Undertow finishes startup
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 40s
