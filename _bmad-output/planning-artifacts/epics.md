@@ -283,6 +283,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 #### Accepted Risks (constrain story scope)
 
 - **ROPC hard-dependency** — v1 hard-depends on ROPC (Direct Access Grants), a deprecated grant (RFC 9700 "MUST NOT"; removed in OAuth 2.1). The `BindCredentialVerifier` port LOCALIZES a future rework to one adapter but does NOT eliminate the dependency (no standard replacement grant). Keycloak 26.7 still ships it; if removed, v1 must be reworked. **Single most fragile external dependency in the trust model.**
+  - *Story 3.1 (2026-08-08):* viability MET — Keycloak 26.7.0 ships DAG, no removal/deprecation in 26.x, **no fallback invoked**. Pin ≥26.7.0 (no LTS; re-validate each minor). DAG off-by-default → AI-3 fixture must enable it. 4-path validation (opaque/7662, mTLS/8705, DENY) → Epic 2 opener + Epic 3. Removal-watch live.
 - **Preview-API dependency (StructuredTaskScope)** — STS (JEP 505) preview-only on JDK 25 (still preview JDK 26 via JEP 525; not final until ~JDK 27); ScopedValue final. `--enable-preview` runs process-wide, placing Netty/Nimbus/codec under preview semantics. Mitigations: pin JDK 25 build; confine STS to control plane.
 - **Password-only ingress on the legacy leg** — by design; mitigated by trusted-zone confinement (AD-15).
 - **`system_id` spoofing on the trusted network** — any trusted-net host can claim any permitted `system_id`; sole control = network isolation (A-3).
