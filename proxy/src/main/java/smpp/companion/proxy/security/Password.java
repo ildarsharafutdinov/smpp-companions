@@ -2,6 +2,7 @@ package smpp.companion.proxy.security;
 
 import io.netty.util.AsciiString;
 
+import java.util.Arrays;
 import java.util.Objects;
 
 /**
@@ -23,12 +24,8 @@ import java.util.Objects;
  * not defensive-copy a {@link String}). {@link #value()} returns this same reference — that sharing is load-bearing:
  * because the holder and this record share one backing {@code byte[]} (reachable via {@link AsciiString#array()}),
  * the holder's single wipe covers this record's own copy too, closing the internal-copy zeroization gap a
- * {@code char[]} clone-on-read design could not. Recipe (AC5 / AD-12):
- * <pre>{@code
- * AsciiString pw = password.value();
- * Arrays.fill(pw.array(), pw.arrayOffset(), pw.arrayOffset() + pw.length(), (byte) 0);
- * pw.arrayChanged(); // drop AsciiString's local caches (hash / cached toString)
- * }</pre>
+ * {@code char[]} clone-on-read design could not. Centralized as {@link #zeroize()} (AC5 / AD-12) — the single
+ * canonical wipe; callers must not re-implement the {@code AsciiString} array dance inline.
  *
  * <p><b>The hazard this accepts (CODEC-024 P2 / retro AI-5):</b> {@link AsciiString#toString()} lazily caches an
  * internal {@code String} — a single stray {@code toString()} on the password (a logger, a debugger watch, an
@@ -54,6 +51,18 @@ public record Password(AsciiString value) {
                     "password is " + value.length() + " octets; exceeds the SMPP 3.4 max of " + MAX_LENGTH
                             + " value octets (9 incl. NUL terminator)");
         }
+    }
+
+    /**
+     * Zeroize the backing {@code byte[]} (AC5 / AD-12) — the load-bearing secret-hygiene wipe and the single
+     * canonical recipe (callers must not re-implement the {@link AsciiString} array dance inline). Because this
+     * record shares the holder's backing array (no defensive copy — see class doc), the wipe covers every other
+     * reference to the same {@link AsciiString}; {@link AsciiString#arrayChanged()} then drops its local {@code hash}
+     * / cached-{@code toString} state. Idempotent.
+     */
+    public void zeroize() {
+        Arrays.fill(value.array(), value.arrayOffset(), value.arrayOffset() + value.length(), (byte) 0);
+        value.arrayChanged();
     }
 
     /**
