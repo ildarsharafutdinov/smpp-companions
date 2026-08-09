@@ -5,8 +5,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -75,28 +73,25 @@ class PasswordTest {
                     .doesNotContain(String.valueOf(c));
         }
         assertThat(rendered).contains("Password[***]");
-        // AC5 hygiene discipline — wipe the backing array; safe because toString() was our redacting override.
-        Arrays.fill(raw.array(), raw.arrayOffset(), raw.arrayOffset() + raw.length(), (byte) 0);
-        raw.arrayChanged();
+        // AC5 hygiene discipline — zeroize the secret; safe because toString() was our redacting override.
+        password.zeroize();
     }
 
     @Test
-    @DisplayName("a single backing-array wipe covers the Password's own value (zeroization coverage)")
-    void zeroizingBackingArrayWipesPasswordValue() {
+    @DisplayName("zeroize() wipes the shared backing array — every reference to the value (AC5 / AD-12)")
+    void zeroizeWipesValue() {
         AsciiString raw = new AsciiString("s3cret");
         Password password = new Password(raw);
-        AsciiString held = password.value();
-        // The zeroization recipe the adapter runs (AC5 / AD-12):
-        Arrays.fill(held.array(), held.arrayOffset(), held.arrayOffset() + held.length(), (byte) 0);
-        held.arrayChanged();
-        // Because Password shares the backing array (no copy), the Password's own value is now all-zero — the
-        // internal-copy gap a char[]-clone-on-read design could not close.
+        password.zeroize();
+        // zeroize() fills the backing byte[] and drops AsciiString's caches. Because Password shares the holder's
+        // backing array (no copy), raw — and every other reference to the same AsciiString — is wiped by this one
+        // call. RED-on-neuter: if zeroize() were a no-op, the assertion below fails.
         AsciiString after = password.value();
         byte[] arr = after.array();
         int off = after.arrayOffset();
         for (int i = 0; i < after.length(); i++) {
             assertThat(arr[off + i])
-                    .as("Password's own value must be wiped by the holder's single wipe")
+                    .as("zeroize() must wipe every value octet")
                     .isZero();
         }
     }

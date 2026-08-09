@@ -168,10 +168,10 @@ contract revision is proposed while the change is still cheap.
 - [x] Verify `@NullMarked` on `security/package-info.java` (present from Story 1.4 — confirmed surviving; AD-35 holds).
 
 **2. Validation slice — real ROPC adapter (test-tier).** (AC2, AC4, AC5, AC6)
-- [ ] A test `BindCredentialVerifier` impl using `java.net.http.HttpClient` (mTLS-capable `SSLContext`) + Nimbus JWKS verify,
+- [x] A test `BindCredentialVerifier` impl using `java.net.http.HttpClient` (mTLS-capable `SSLContext`) + Nimbus JWKS verify,
   exercising all 4 paths on `StructuredTaskScope` (JEP 505 Joiner API) + `ScopedValue`-bound `RequestContext`, on the
   bounded VT executor, `char[]`/zeroize.
-- [ ] Per-path assertions: Allow (JWT), Allow (introspection active:true), Allow (mTLS, no secret), DenyInvalid (401),
+- [x] Per-path assertions: Allow (JWT), Allow (introspection active:true), Allow (mTLS, no secret), DenyInvalid (401),
   DenyIndeterminate (timeout/network/kid-miss).
 
 **3. `cancelHttp()` abort test.** (AC3)
@@ -327,6 +327,52 @@ and all three `RequestContext` fields — removing those → no NPE at all → t
 `BindCredential.password` moved from message-clarity to load-bearing when the defensive copy was removed for the typed
 `Password`.)
 
+### Implementation Plan (Task 2 — validation slice)
+
+Design decisions for the test-tier ROPC adapter that ratifies the AD-12 port shape across all four paths (AC2/AC4/AC5/AC6).
+The slice lives under `proxy/src/test` (NOT the production adapter — Epic 3); it proves the `BindCredentialVerifier` port
+can *express* every path before `relay/` commits against it.
+
+- **`RopcSlice implements BindCredentialVerifier` (test-tier).** A per-path `SliceConfig` record selects the OAuth
+  mode: `clientId` + `clientSecret` (paths 1/2/4), `useMtlsClientAuth` + no secret (path 3, RFC 8705 — the transport
+  cert authenticates the client), `introspect` (path 2, RFC 7662). The `username` for ROPC is the `BindCredential`
+  `SystemId`; `client_id` is the configured client (see the bug-fix note below — these were conflated on first cut).
+- **Concurrency (AC4/AD-5):** each adjudication runs on one bounded hand-managed virtual-thread `ExecutorService`
+  owned by the slice (AD-28(4)) with a `Semaphore` admission gate that is **fail-closed on saturation** (AC6 — a
+  saturated pool returns `DenyIndeterminate` without starting work). The adjudication fans the ROPC token call and the
+  JWKS fetch out on a `StructuredTaskScope` (JEP 505 preview) and `join`s them; the `RequestContext` is re-bound on the
+  pool thread via the **same `ScopedValue` handle** the caller used (JEP 506 final — `ScopedValue.where(ctx, rc).call(...)`),
+  so the STS subtasks inherit it (never `ThreadLocal`). `StructuredTaskScope.open(Joiner)` + `Joiner.awaitAllSuccessfulOrThrow()`
+  + `Subtask.get()` were verified against the live JDK 25 (the JEP 505 shape — the AC4 guardrail).
+- **Verdict mapping (AD-11):** 4xx → `DenyInvalid` (covers fixture finding #6: 400 `invalid_grant` for a bad user AND
+  401 `invalid_client` for a bad secret — "4xx≠200 → DENY", do not key off 401 alone); 5xx / non-200-non-4xx / timeout /
+  network error / scope cancellation / malformed response / JWKS `kid`-miss / signature-or-claim failure →
+  `DenyIndeterminate` (fail-closed); DENY always wins. JWKS cached only; verdicts never cached; kid-miss triggers a
+  background refresh with no foreground retry.
+- **Secret hygiene (AC5):** the `Password` octets are taken **raw from the `AsciiString` backing array** — never
+  `AsciiString.toString()`'d (the CODEC-024 P2 / AI-5 cache hazard) — form-encoded at the byte level into the POST body;
+  zeroized (`Arrays.fill` + `arrayChanged()`) on adjudication completion (success and failure). The access token is held
+  as a transient `char[]` working copy, zeroized after verify/introspect (full token byte-array hygiene is the Epic 3
+  production adapter's concern; the test tier's AC5 focus is the password).
+- **Cancellation (AC3/AD-32, wired now; the wire-abort test is Task 3):** `cancelHttp()` drives
+  `HttpClient.sendAsync(...).cancel(true)` (aborts the underlying exchange, not only the `CompletableFuture`) and
+  completes the verdict `DenyIndeterminate`; the STS tears its subtasks down with the scope.
+- **Live-fixture gating (Testcontainers, 2026-08-09):** the Keycloak &ge;26.7.0 fixture is now a
+  Testcontainers-managed container (`KeycloakContainer`) — the test JVM owns its lifecycle, bound **fixed** to
+  `localhost:8443` (parity with the original compose's `8443:8443`); the external `docker-compose.yml` + `verify-fixture.sh`
+  + the `KeycloakLiveCondition` TCP-probe gate were removed. `RopcSliceLiveTest` declares `@Container static KeycloakContainer`
+  + `@Testcontainers(disabledWithoutDocker = true)`: the container starts (and reaches OIDC-discovery readiness) before the
+  5 per-path assertions, which use the `KeycloakFixture` `:8443` coordinates; the class is **skipped with an explicit reason
+  when Docker is absent (CI)** — an environment gate, NOT a "disable-to-make-the-build-pass" dodge (AC9). Two always-on tests
+  in `RopcSliceUnitTest` enforce the fail-closed mapping (unreachable endpoint → `DenyIndeterminate`; JWKS kid-miss →
+  `DenyIndeterminate`, matching kid → `Allow`) **without** the container, so the slice's AD-11 collapse is never silently
+  unverified (retro: no false-RESOLVED).
+- **Real bugs found + fixed during the live run (the value of ratifying against the real fixture, retro discovery #4):**
+  (1) the ROPC form body set `client_id` to the `SystemId` (the username `testuser`) instead of `cfg.clientId()` — every
+  valid-creds request returned 4xx → `DenyInvalid` (path 4b "passed" for the wrong reason: a wrong client_id 401s
+  regardless); (2) the path-4a wrong-password literal `"WRONG-PASS"` exceeded `Password`'s 8-octet cap. Both fixed;
+  all 5 paths then went green against the running `keycloak:26.7.0`.
+
 ### Completion Notes List
 
 - **Task 0 DONE — Keycloak ≥26.7.0 fixture provisioned AND verified against the running instance** (retro AI-3 was
@@ -377,11 +423,37 @@ and all three `RequestContext` fields — removing those → no NPE at all → t
 - Task 1 does NOT build the validation slice (Task 2), `cancelHttp` wire-abort (Task 3), the production ROPC adapter
   (Epic 3), or `relay/` wiring — scope held. The port types are ready for Task 2 to ratify against the real fixture.
 
+- **Task 2 DONE — the test-tier ROPC validation slice ratifies the AD-12 port shape across all four paths against the
+  real `keycloak:26.7.0`** (AC2/AC4/AC5/AC6). `RopcSlice implements BindCredentialVerifier` (under `proxy/src/test`)
+  drives the actual `verify(cred, ScopedValue<RequestContext>)` port, fanning the token call + the JWKS fetch out on a
+  `StructuredTaskScope` (JEP 505) with the `RequestContext` re-bound via `ScopedValue` (JEP 506), on a bounded VT
+  executor with fail-closed-on-saturation admission. Verdict mapping per AD-11: 4xx → `DenyInvalid`, else →
+  `DenyIndeterminate`. Password octets taken raw from the `AsciiString` (never `toString()`'d) + zeroized on completion.
+- **All 4 AD-12 paths GREEN through the real port** (fixture now Testcontainers-managed — `:proxy:test` starts `KeycloakContainer` on fixed `:8443`; was `docker compose … up -d --wait` at the original T2 time):
+  path 1 ROPC JWT + local JWKS defense-in-depth verify → **Allow**; path 2 RFC 7662 introspection `active:true` →
+  **Allow**; path 3 RFC 8705 mTLS provider auth (client cert, **no `client_secret`**) → **Allow** (the most-likely-to-
+  fail path works end-to-end — the port shape expresses all four paths, a strong signal for AC8); path 4a bad user →
+  400 `invalid_grant` → **DenyInvalid**; path 4b bad client secret → 401 `invalid_client` → **DenyInvalid** (finding #6).
+  Plus 2 always-on fail-closed tests (unreachable endpoint → `DenyIndeterminate`; JWKS kid-miss → `DenyIndeterminate`,
+  matching kid → `Allow`) that run without the fixture.
+- **JEP 505 API verified against the live JDK 25** (AC4 guardrail) before coding: `StructuredTaskScope` is now generic
+  `<T,R>`; `static open(Joiner)`, `R join()`, `Subtask<U> fork(Callable)`, `close()`, `isCancelled()`; `Joiner.awaitAllSuccessfulOrThrow()`
+  (→ `Void`) / `allSuccessfulOrThrow()` / `anySuccessfulResultOrThrow()` / `awaitAll()` / `allUntil(Predicate)`;
+  `ScopedValue` is JEP 506 **final** (`newInstance`, `get`, `where(k,v)`→`Carrier.call`). No JDK-21/22 deprecated
+  `ShutdownOnFailure` subclass pattern (the AC4 guardrail held).
+- **AC9 build:** `./gradlew clean build :buildSrc:test` GREEN on JDK 25 + `--enable-preview` (Jazzer/JNI warnings are
+  pre-existing codec-fuzz noise, unrelated). The 5 live tests **skip cleanly (explicit reason) when the fixture is down
+  (CI)** and **run + pass when it is up** — an environment gate, not a disable-to-pass dodge; the always-on unit tests
+  keep the fail-closed mapping verified in every build. No test removed or `@Disabled`.
+- **Out of scope, deferred to later tasks (scope held):** Task 3 — the `cancelHttp()` wire-abort test (the adapter
+  already binds `cancelHttp` to `HttpClient.sendAsync.cancel(true)` + STS teardown; T3 adds the slow-ROPC RED-on-neuter
+  assertion); Task 4 — the dedicated zeroization assertion, saturation/fail-closed test, and the full RED-on-neuter
+  mutation pass across all guards; Task 5 — the `NoRolledCryptoArchitectureTest` extension; Task 6 — the AC8
+  immutable-henceforth DECISION; Task 7 — final green build. The slice implements every guard those tasks will test.
+
 ### File List
 
-- `proxy/src/test/resources/keycloak/docker-compose.yml` — Keycloak 26.7.0 (HTTPS, `https-client-auth=required`, realm import, mTLS truststore).
-- `proxy/src/test/resources/keycloak/realm-smpp-companions.json` — realm + full-profile user + Client A (confidential/DAG) + Client B (`client-x509`/DAG).
-- `proxy/src/test/resources/keycloak/verify-fixture.sh` — probes all 4 AD-12 paths against the running fixture.
+- `proxy/src/test/resources/keycloak/realm-smpp-companions.json` — realm + full-profile user + Client A (confidential/DAG) + Client B (`client-x509`/DAG). (Imported by `KeycloakContainer` — the former `docker-compose.yml` + `verify-fixture.sh` were removed when the fixture moved to Testcontainers.)
 - `proxy/src/test/resources/keycloak/README.md` — run/verify docs + the 6 real-fixture findings.
 - `proxy/src/test/resources/keycloak/certs/generate.sh` — test-PKI provenance script (CA/server/client certs, truststore.p12, client-keystore.p12).
 - `proxy/src/test/resources/keycloak/certs/ca.pem`, `ca-key.pem`, `server.pem`, `server-key.pem`, `client.pem`, `client-key.pem`, `truststore.p12`, `client-keystore.p12`, `keycloak-truststore.pem` — generated test-only TLS material.
@@ -396,8 +468,39 @@ and all three `RequestContext` fields — removing those → no NPE at all → t
 - `proxy/src/test/java/smpp/companion/proxy/security/VerdictShapeTest.java` — ratifies the sealed 3-permit shape (reflection).
 - `proxy/src/test/java/smpp/companion/proxy/security/SecurityPortShapeTest.java` — ratifies the `verify`/`future`/`cancelHttp` signatures (reflection).
 - `proxy/src/test/java/smpp/companion/proxy/security/SystemIdTest.java`, `PasswordTest.java`, `BindCredentialTest.java`, `RequestContextTest.java`, `AlwaysAllowBindCredentialVerifierTest.java` — behavior + fail-fast guard tests (RED-on-neuter biting).
+- **Task 2 files (NEW):**
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcSlice.java` — the test-tier ROPC adapter (`BindCredentialVerifier`): `java.net.http.HttpClient` (mTLS `SSLContext`) + Nimbus JWKS verify; `StructuredTaskScope.open(Joiner)` fan-out; `ScopedValue`-rebound `RequestContext`; bounded VT executor + fail-closed admission; raw-password-byte form body + zeroize; AD-11 verdict mapping; `VerdictRequest` with `cancelHttp()` bound to the `HttpClient` exchange abort (AC2/AC4/AC5/AC6).
+- `proxy/src/test/java/smpp/companion/proxy/security/KeycloakFixture.java` — immutable fixture coordinates (realm endpoints on the fixed `:8443`, client ids/secrets, test user) + the mTLS `SSLContext` (truststore.p12 + client-keystore.p12) + the shared `HttpClient` (AD-12/AD-13).
+- `proxy/src/test/java/smpp/companion/proxy/security/KeycloakContainer.java` — Testcontainers-managed Keycloak 26.7.0 (replaces `docker-compose.yml`): replicates the HTTPS/mTLS/realm-import config, binds the port **fixed** `8443:8443` (parity with the compose), and waits for OIDC-discovery readiness over mTLS. Gating moved here from the removed `KeycloakLiveCondition`.
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceLiveTest.java` — the 5 per-path integration assertions through the real port: Allow (JWT), Allow (introspection), Allow (mTLS), DenyInvalid (bad user), DenyInvalid (bad client) — `@Container static KeycloakContainer` + `@Testcontainers(disabledWithoutDocker = true)` (AC2/AC9).
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceUnitTest.java` — 2 always-on fail-closed tests (no fixture): unreachable endpoint → `DenyIndeterminate`; JWKS kid-miss → `DenyIndeterminate`, matching kid → `Allow` (AD-11).
 
 ## Change Log
+
+- 2026-08-09 — Fixture migration: replaced the external `docker-compose.yml` Keycloak fixture with a
+  Testcontainers-managed `KeycloakContainer` (the test JVM owns the lifecycle; the compose file, `verify-fixture.sh`, and
+  the `KeycloakLiveCondition` TCP-probe gate were removed). The container binds the port **fixed** `8443:8443` (parity
+  with the original compose) and waits for OIDC-discovery readiness over mTLS. `RopcSliceLiveTest` uses `@Container static
+  KeycloakContainer` + `@Testcontainers(disabledWithoutDocker = true)` — live tests run + bite when Docker is present
+  (container starts ~17s) and skip with an explicit reason when it's absent (AC9); the slice keeps using the
+  `KeycloakFixture` `:8443` coordinates. All 4 AD-12 paths re-verified through the container; `./gradlew clean build
+  :buildSrc:test` GREEN. Version note: Testcontainers 2.x (versionless, managed by Spring Boot 4.1's imported
+  `testcontainers-bom`; the `junit-jupiter` module was renamed `testcontainers-junit-jupiter` in 2.x). Finding #7 in the
+  fixture README: fixed port + bare `KC_HOSTNAME=localhost` → a deterministic `:8443` issuer (sidesteps the
+  dynamic-port `iss`-reflection concern, [#49967](https://github.com/keycloak/keycloak/issues/49967)).
+
+- 2026-08-09 — Task 2: authored the test-tier ROPC validation slice (`RopcSlice implements BindCredentialVerifier`,
+  `proxy/src/test`) + `KeycloakFixture` (mTLS `SSLContext`/endpoints) + `KeycloakLiveCondition` + the 5 per-path live
+  tests + 2 always-on fail-closed tests. Ratified all four AD-12 paths through the real `keycloak:26.7.0` (path 1 JWT +
+  JWKS verify → Allow; path 2 introspection `active:true` → Allow; path 3 RFC 8705 mTLS, no secret → Allow; path 4a/4b
+  → `DenyInvalid`). STS fan-out (JEP 505 `open(Joiner.awaitAllSuccessfulOrThrow)` + `fork` + `join`, verified live) +
+  `ScopedValue`-rebound `RequestContext` (JEP 506 final); bounded VT executor + fail-closed admission; raw-password-byte
+  form body + zeroize; AD-11 mapping (4xx→`DenyInvalid`, else→`DenyIndeterminate`). Two real bugs caught by ratifying
+  against the live fixture (retro #4): form `client_id` was the `SystemId`/username not `cfg.clientId()` (all valid
+  paths → 4xx); path-4a wrong-password exceeded `Password`'s 8-octet cap — both fixed. `./gradlew clean build
+  :buildSrc:test` GREEN; live tests skip cleanly without the fixture (CI). Story status: in-progress (T2 complete;
+  Tasks 3–7 remain — `cancelHttp` wire-abort test, zeroization/saturation + RED-on-neuter mutation pass,
+  NoRolledCrypto extension, the AC8 immutable-henceforth DECISION, final green build).
 
 - 2026-08-09 — Password type switched to a typed `Password` record over a Netty `AsciiString` (AD-12 contract revision,
   user-directed, pre-AC8-ratification; supersedes the `char[]` in AC1 / the Implementation Plan / retro discovery #3).

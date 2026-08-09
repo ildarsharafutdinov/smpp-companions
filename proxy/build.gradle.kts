@@ -30,6 +30,14 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2") // SEC-090 scaffold
+    // Story 2.1 fixture: Keycloak managed by the test JVM via Testcontainers (replaces docker-compose).
+    // Versions come from Spring Boot 4.1's imported testcontainers-bom:2.0.5 (testcontainers.version). NOTE:
+    // Testcontainers 2.x renamed the JUnit-Jupiter module junit-jupiter -> testcontainers-junit-jupiter (the
+    // old coordinate has no 2.0.x release). Verified Docker-Engine-29 + JDK-25 --enable-preview compatible
+    // (smoke run). Test-only -> not on runtimeClasspath, so OBS-013 (runtime purity) / SEC-099 (CVE floors)
+    // are unaffected.
+    testImplementation("org.testcontainers:testcontainers")
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // T7-c (AC8): let the proxy ArchUnit jmh-isolation test analyze the compiled JMH benchmark classes.
     // Pulls ONLY the jmh source-set output (compiled by `compileJmhJava` — plain javac, no JMH bytecode-
