@@ -162,10 +162,10 @@ contract revision is proposed while the change is still cheap.
   confirm placement with the existing test layout; do not pollute main resources.
 
 **1. Author the port types in `proxy/security/`.** (AC1)
-- [ ] `BindCredentialVerifier.java`, `Verdict.java` (sealed) + `Allow`/`DenyInvalid`/`DenyIndeterminate`, `BindCredential.java`
+- [x] `BindCredentialVerifier.java`, `Verdict.java` (sealed) + `Allow`/`DenyInvalid`/`DenyIndeterminate`, `BindCredential.java`
   (`char[]`, defensive copy), `VerdictRequest.java` (`future()` + `cancelHttp()`), `RequestContext.java`, `SystemId.java`.
-- [ ] `AlwaysAllowBindCredentialVerifier.java` (`@Component`, no-op `cancelHttp`, completed-`Allow` future).
-- [ ] Verify `@NullMarked` on `security/package-info.java`.
+- [x] `AlwaysAllowBindCredentialVerifier.java` (`@Component`, no-op `cancelHttp`, completed-`Allow` future).
+- [x] Verify `@NullMarked` on `security/package-info.java` (present from Story 1.4 — confirmed surviving; AD-35 holds).
 
 **2. Validation slice — real ROPC adapter (test-tier).** (AC2, AC4, AC5, AC6)
 - [ ] A test `BindCredentialVerifier` impl using `java.net.http.HttpClient` (mTLS-capable `SSLContext`) + Nimbus JWKS verify,
@@ -286,6 +286,47 @@ Claude Code — `bmad-dev-story` workflow (model: glm-5.2).
 - `openssl s_client` — confirmed Keycloak requests + accepts the client cert at TLS (`Verify return code: 0 (ok)`).
 - `kc.sh start --help` — `--https-client-auth` values `none|request|required`; `--hostname-strict-https` removed in 26.7.
 
+### Implementation Plan (Task 1 — port types)
+
+Design decisions for the AD-12 port contract authored in `proxy/security/` (AC1):
+
+- **`SystemId` wraps the codec's `AsciiString`** (reinvention guardrail — no C-octet re-parse at the port; the relay
+  seam will be `new SystemId(bindRequest.systemId())`). Enforces **≤15 value octets** (SMPP 3.4 §3.2 caps `system_id`
+  at 16 octets, §3.1 counts the NUL terminator → 15 value octets). The codec does NOT cap per-field length, so this is
+  the typed-boundary fail-fast. `SystemId` is NOT secret (ROPC username / forwarded identity, AD-14) — no defensive copy.
+- **`BindCredential(SystemId, Password)`** — composes the two typed records; no defensive copy of its own (both
+  components are immutable). `toString()` overridden to `password=***` (self-contained boundary hygiene; the primary
+  secrecy boundary is `Password.toString()`). **Revised 2026-08-09 (see Change Log):** the password is the typed
+  `Password` over a Netty `AsciiString` (was `char[]`) — CODEC-024/PRIV-1 type-uniformity with the codec; the
+  `AsciiString→char[]` relay-seam conversion is eliminated. No more `@SuppressWarnings("ArrayRecordComponent")` (no
+  array component).
+- **`Password`** — the typed SMPP secret, the typed counterpart to `SystemId`: `AsciiString`-backed (wraps the codec's
+  same backing — `new Password(bindRequest.password())`), ≤8 value octets (SMPP 3.4 §3.2 max-9-incl-NUL). No defensive
+  copy (mirrors `SystemId`); the shared backing array means the holder's single `AsciiString.array()` wipe covers the
+  record's own copy — closing the internal-copy zeroization gap a `char[]` clone-on-read design could not (AC5 / AD-12).
+  `toString()` overridden to `Password[***]` — the load-bearing secret-hygiene guard: without it the record's auto-
+  `toString` calls `AsciiString.toString()`, rendering the cleartext AND caching an immortal `String` the wipe cannot
+  reach (CODEC-024 P2 / AI-5).
+- **`Verdict`** — `sealed interface` over three **nested payload-less record permits** (`Allow`/`DenyInvalid`/`DenyIndeterminate`);
+  nesting owns the closed hierarchy (no external subtype can extend it) and guarantees no `Throwable`/reason/Nimbus type
+  crosses the port. The two DENY permits are informative; both deny (AD-11).
+- **`VerdictRequest`** — interface `CompletableFuture<Verdict> future()` + `void cancelHttp()` (AD-32 — aborts the
+  underlying HTTP call, not only the future). The test-tier adapter (Task 2) implements it.
+- **`RequestContext`** — `SystemId` + Netty `ChannelId` (AD-8 ingress-keyed registry) + `Instant deadline` (AD-5, NTP A-4);
+  `ScopedValue`-bound, never `ThreadLocal`.
+- **`BindCredentialVerifier`** — `VerdictRequest verify(BindCredential, ScopedValue<RequestContext>)`.
+- **`AlwaysAllowBindCredentialVerifier`** — `@Component`, a stateless `VerdictRequest` (completed-`Allow` future, no-op
+  `cancelHttp`); the stand-in `relay/` wires against until Epic 3.
+
+**Redundant-null-guard finding (RED-on-neuter nuance):** `SystemId.value` and `Password.value` `requireNonNull` are
+message-clarity only — the `.length()` deref in their length checks (+ JDK 25 helpful-NPE) still fails fast on null
+without the guard, so their null tests bite-by-NPE rather than by-guard. The **load-bearing** null guards are the
+no-downstream-deref fields — `BindCredential.systemId`, **`BindCredential.password`** (its compact ctor no longer
+clones, so null is stored silently without the guard — verified by mutation: removing it → `rejectsNullPassword` RED),
+and all three `RequestContext` fields — removing those → no NPE at all → test goes RED. (Revised 2026-08-09:
+`BindCredential.password` moved from message-clarity to load-bearing when the defensive copy was removed for the typed
+`Password`.)
+
 ### Completion Notes List
 
 - **Task 0 DONE — Keycloak ≥26.7.0 fixture provisioned AND verified against the running instance** (retro AI-3 was
@@ -309,6 +350,32 @@ Claude Code — `bmad-dev-story` workflow (model: glm-5.2).
   neuter tests attach to Tasks 2/3/4 (cancelHttp abort, DENY branches, zeroization, saturation). The path-4a finding is
   a preemptive correctness input for those DENY-branch tests.
 - Task 0 does NOT author port types (Task 1), the validation slice (Task 2), or any production code — scope held.
+- **Task 1 DONE — all 7 AD-12 port types + `AlwaysAllowBindCredentialVerifier` authored in
+  `proxy/src/main/java/smpp/companion/proxy/security/`** (AC1), matching AD-12/AD-32 verbatim. See the Implementation
+  Plan above for the per-type decisions. `@NullMarked` confirmed present on `security/package-info.java` (Story 1.4;
+  survived — AD-35 holds); `SystemId` is the only NEW public type surface, no new sub-package, so no additional
+  `package-info.java` needed.
+- **6 new tests (26 security-test methods total) ratify the port SHAPE + behavior:**
+  `VerdictShapeTest` (sealed, exactly 3 payload-less permits), `SecurityPortShapeTest` (reflection: `verify` signature,
+  `future()`/`cancelHttp()`), `SystemIdTest`, `BindCredentialTest` (defensive copy construct+read, `toString` non-leak,
+  null guards, `char[]` component), `RequestContextTest`, `AlwaysAllowBindCredentialVerifierTest` (`@Component`,
+  completed-`Allow`, no-op `cancelHttp`, `ScopedValue`-bound call). All green.
+- **RED-on-neuter mutation pass run (AC9 / AI-1) on the Task-1 guards** — every load-bearing guard neutered → its test
+  went RED, then reverted → GREEN (verified no `MUTATION` markers leaked, full `:proxy:test` green):
+  (1) BindCredential defensive-copy-on-construct → `defensiveCopyOnConstruct` RED;
+  (2) defensive-copy-on-read → `defensiveCopyOnRead` RED;
+  (3) `toString` redaction removed → `toStringDoesNotLeakPassword` RED (auto record-`toString` renders the cleartext password);
+  (4) SystemId ≤15-octet bound removed → `rejectsOverlongSystemId` RED;
+  (5) AlwaysAllow `Allow`→`DenyInvalid` → 4 verdict tests RED;
+  (6) Verdict 4th permit added → `permitsExactlyTheThreeVerdicts` RED;
+  (7) load-bearing null guards removed (`BindCredential.systemId`, `RequestContext.channelId`) → `rejectsNull*` RED.
+  Reflection-shape tests (`SecurityPortShapeTest`) bite by construction (assert exact signatures). The redundant
+  null guards (SystemId.value / BindCredential.password) are message-clarity, not load-bearing — documented above.
+- **Build: `./gradlew clean build :buildSrc:test` GREEN** on JDK 25 + `--enable-preview` (one non-fatal
+  `ArrayRecordComponent` ErrorProne warning, suppressed with justification on `BindCredential` — AD-12 mandates the
+  `char[]`; concern fully addressed). No test removed or `@Disabled`.
+- Task 1 does NOT build the validation slice (Task 2), `cancelHttp` wire-abort (Task 3), the production ROPC adapter
+  (Epic 3), or `relay/` wiring — scope held. The port types are ready for Task 2 to ratify against the real fixture.
 
 ### File List
 
@@ -318,9 +385,38 @@ Claude Code — `bmad-dev-story` workflow (model: glm-5.2).
 - `proxy/src/test/resources/keycloak/README.md` — run/verify docs + the 6 real-fixture findings.
 - `proxy/src/test/resources/keycloak/certs/generate.sh` — test-PKI provenance script (CA/server/client certs, truststore.p12, client-keystore.p12).
 - `proxy/src/test/resources/keycloak/certs/ca.pem`, `ca-key.pem`, `server.pem`, `server-key.pem`, `client.pem`, `client-key.pem`, `truststore.p12`, `client-keystore.p12`, `keycloak-truststore.pem` — generated test-only TLS material.
+- `proxy/src/main/java/smpp/companion/proxy/security/BindCredentialVerifier.java` — the port interface: `VerdictRequest verify(BindCredential, ScopedValue<RequestContext>)` (AD-12).
+- `proxy/src/main/java/smpp/companion/proxy/security/Verdict.java` — sealed interface + nested `Allow`/`DenyInvalid`/`DenyIndeterminate` payload-less record permits (AD-12).
+- `proxy/src/main/java/smpp/companion/proxy/security/BindCredential.java` — composes `(SystemId, Password)`; both immutable records (no defensive copy); redacting `toString` (CODEC-024 P2 boundary).
+- `proxy/src/main/java/smpp/companion/proxy/security/VerdictRequest.java` — interface `future()` + `cancelHttp()` (AD-32).
+- `proxy/src/main/java/smpp/companion/proxy/security/RequestContext.java` — `(SystemId, ChannelId, Instant deadline)` (AD-5).
+- `proxy/src/main/java/smpp/companion/proxy/security/SystemId.java` — `AsciiString`-backed SMPP system_id, ≤15 value octets (SMPP 3.4 §3.2).
+- `proxy/src/main/java/smpp/companion/proxy/security/Password.java` — `AsciiString`-backed SMPP password (the typed secret), ≤8 value octets; no defensive copy (shared backing array → zeroization coverage); redacting `toString` (CODEC-024/PRIV-1).
+- `proxy/src/main/java/smpp/companion/proxy/security/AlwaysAllowBindCredentialVerifier.java` — `@Component` stand-in (completed-`Allow`, no-op `cancelHttp`).
+- `proxy/src/test/java/smpp/companion/proxy/security/VerdictShapeTest.java` — ratifies the sealed 3-permit shape (reflection).
+- `proxy/src/test/java/smpp/companion/proxy/security/SecurityPortShapeTest.java` — ratifies the `verify`/`future`/`cancelHttp` signatures (reflection).
+- `proxy/src/test/java/smpp/companion/proxy/security/SystemIdTest.java`, `PasswordTest.java`, `BindCredentialTest.java`, `RequestContextTest.java`, `AlwaysAllowBindCredentialVerifierTest.java` — behavior + fail-fast guard tests (RED-on-neuter biting).
 
 ## Change Log
+
+- 2026-08-09 — Password type switched to a typed `Password` record over a Netty `AsciiString` (AD-12 contract revision,
+  user-directed, pre-AC8-ratification; supersedes the `char[]` in AC1 / the Implementation Plan / retro discovery #3).
+  `BindCredential(SystemId, Password password)` now mirrors the codec's CODEC-024/PRIV-1 2026-07-28 override (full
+  type-uniformity); the fragile `AsciiString→char[]` relay-seam conversion is eliminated. `Password` is the typed
+  counterpart to `SystemId`: `AsciiString`-backed, ≤8 value octets (SMPP 3.4 §3.2 max-9-incl-NUL), no defensive copy
+  (the shared backing array means a single `AsciiString.array()` wipe covers the record's own copy — closing the
+  internal-copy zeroization gap a `char[]` clone-on-read design could not), redacting `toString()`. Accepted hazard
+  (CODEC-024 P2 / AI-5): `AsciiString.toString()` lazily caches an immortal `String`; the `Password`/`BindCredential`
+  `toString()` overrides redact, and the standing AI-5 bytecode scan must forbid `toString()` on the password across
+  codec + port. New `Password.java` + `PasswordTest.java` (6 tests; RED-on-neuter verified on the length bound + the
+  `toString` redaction + the now-load-bearing `BindCredential.password` null guard); `BindCredentialTest` slimmed to 4
+  (composition + component-type reflection + redaction + nulls); `AlwaysAllowBindCredentialVerifierTest` construction
+  updated. Spine AD-12 (§138 secret hygiene, §139 port-contract literal + revision note) + §Consistency-Conventions §297
+  updated. `:proxy:test` GREEN (30 security tests). Story status: in-progress (Task 1 port-type revision; Tasks 2–7 remain).
 
 - 2026-08-08 — Task 0: provisioned + verified the Keycloak ≥26.7.0 fixture (retro AI-3). All 4 AD-12 paths verified
   against `keycloak:26.7.0`, incl. ROPC+mTLS (path 3) → 200. 6 real-fixture findings recorded for Task 2 / AC8.
   Story status: ready-for-dev → in-progress (T0 complete; Tasks 1–7 remain).
+- 2026-08-08 — Task 1: authored the 7 AD-12 port types + `AlwaysAllowBindCredentialVerifier` in `proxy/security/`
+  (AC1); added 6 shape/behavior tests (26 security-test methods). RED-on-neuter mutation pass run on every load-bearing
+  guard (all bite). `./gradlew clean build :buildSrc:test` GREEN. Story status: in-progress (T1 complete; Tasks 2–7 remain).
