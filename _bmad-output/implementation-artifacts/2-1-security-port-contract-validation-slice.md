@@ -175,7 +175,7 @@ contract revision is proposed while the change is still cheap.
   DenyIndeterminate (timeout/network/kid-miss).
 
 **3. `cancelHttp()` abort test.** (AC3)
-- [ ] Slow-ROPC fixture; invoke `cancelHttp()` mid-flight; assert wire abort + scope teardown. RED-on-neuter.
+- [x] Slow-ROPC fixture; invoke `cancelHttp()` mid-flight; assert wire abort + scope teardown. RED-on-neuter.
 
 **4. Fail-closed + secret-hygiene tests + mutation/RED-on-neuter pass.** (AC2 path4, AC5, AC6, AC9)
 - [ ] DENY-branch tests; zeroization test; saturation/fail-closed test. Run a neuter pass on each guard — assert RED.
@@ -451,7 +451,42 @@ can *express* every path before `relay/` commits against it.
   mutation pass across all guards; Task 5 — the `NoRolledCryptoArchitectureTest` extension; Task 6 — the AC8
   immutable-henceforth DECISION; Task 7 — final green build. The slice implements every guard those tasks will test.
 
-### File List
+- **Task 3 DONE — `cancelHttp()` wire-abort test ratifies AC3 / AD-32** (the load-bearing slice: a mid-flight abort
+  that actually tears the wire call down, sparing the IdP the abandoned ROPC). New always-on
+  `RopcSliceCancelTest` drives the real `verify` port against a slow in-process `com.sun.net.httpserver.HttpServer`
+  stand-in IdP, invokes `cancelHttp()` while the token call is in flight, and asserts (a) the underlying exchange was
+  aborted and (b) the verdict collapses to `DenyIndeterminate`. RED-on-neuter verified (see below).
+- **JDK-25 `HttpClient` cancel mechanism verified against the source (the "verify on impl" caveat in AC3 — resolved
+  IN FAVOR of the slice's binding, no AC8 contract revision needed for AC3):** `cancel(true)` on the `sendAsync`
+  future is a `MinimalFuture` whose override delegates to `MultiExchange.cancel(true)` → `exchange.cancel()` →
+  `connection.close()` — **but only when `mayInterruptIfRunning == true`** (the slice calls `cancel(true)`, correct).
+  The aborted exchange completes the response future EXCEPTIONALLY with a `CancellationException` ("Request cancelled",
+  via `MultiExchange.wrapIfCancelled`); `reportGet` surfaces it as `ExecutionException → CancellationException → IOException`.
+  Two false starts the test caught and corrected: (1) `isCancelled()` is **false** by design (the future was completed
+  exceptionally, not via `Future.cancel`'s path) — not a usable signal; (2) a small IdP-side token write is **not** a
+  reliable abort signal (TCP half-close lets the server's write succeed into the kernel buffer; the RST surfaces only on a
+  subsequent blocked write). The test therefore asserts a `CancellationException` **anywhere in the cause chain**
+  (`tokenExchange.get()` throws one) — deterministic and race-free.
+- **Test shape:** (PRIMARY, deterministic) after `cancelHttp()`, `tokenExchange.get(5s)` throws a throwable whose cause
+  chain contains a `CancellationException` — proves the exchange aborted instead of delivering a token. Plus a
+  precondition (the call was in flight when cancel fired) + the verdict → `DenyIndeterminate` (evidences the STS `join`
+  threw on the cancelled exchange → scope closed — AD-32 case-3 teardown, the scope is local so observed via the verdict).
+  Plus CORROBORATION (genuine "IdP spared"): the slow IdP streams a 1 MiB body that exceeds the socket send buffer, so
+  its write blocks; after `cancelHttp()` tore the wire down that write fails with `IOException` (no token consumed).
+  A delegating `RecordingHttpClient` (returns the JDK's `MinimalFuture` unwrapped) lets the test observe the real
+  exchange future the slice stored.
+- **RED-on-neuter mutation pass (AC9 / AI-1) — the bite:** neutered `cancelHttp()` (commented out
+  `tokenExchange.cancel(true)`, leaving only `pin.complete(DenyIndeterminate)`) → PRIMARY went RED ("Expecting code to
+  raise a throwable" — the server responded normally and delivered the token) and the corroboration (`clientAborted`/
+  `wroteToken`) RED; reverted → GREEN. The verdict-only path would NOT bite (the pin still completes), which is exactly
+  why the exchange-future assertion is load-bearing. Confirmed reliable (6/6 green runs post-revert) and no `MUTATION`
+  markers leaked.
+- **Build:** `./gradlew :proxy:test` GREEN (incl. the 5 live Keycloak Testcontainers tests — Docker up) +
+  `./gradlew clean build :buildSrc:test` GREEN (Jazzer/JNI warnings pre-existing codec-fuzz noise). No test removed
+  or `@Disabled`.
+- Task 3 adds only a test + a test-only recording client; it touches no production code (the `cancelHttp` binding was
+  wired in T2 and confirmed correct here) — scope held. Tasks 4–7 remain (zeroization/saturation + full mutation pass,
+  NoRolledCrypto extension, the AC8 immutable-henceforth DECISION, final green build).
 
 - `proxy/src/test/resources/keycloak/realm-smpp-companions.json` — realm + full-profile user + Client A (confidential/DAG) + Client B (`client-x509`/DAG). (Imported by `KeycloakContainer` — the former `docker-compose.yml` + `verify-fixture.sh` were removed when the fixture moved to Testcontainers.)
 - `proxy/src/test/resources/keycloak/README.md` — run/verify docs + the 6 real-fixture findings.
@@ -474,8 +509,23 @@ can *express* every path before `relay/` commits against it.
 - `proxy/src/test/java/smpp/companion/proxy/security/KeycloakContainer.java` — Testcontainers-managed Keycloak 26.7.0 (replaces `docker-compose.yml`): replicates the HTTPS/mTLS/realm-import config, binds the port **fixed** `8443:8443` (parity with the compose), and waits for OIDC-discovery readiness over mTLS. Gating moved here from the removed `KeycloakLiveCondition`.
 - `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceLiveTest.java` — the 5 per-path integration assertions through the real port: Allow (JWT), Allow (introspection), Allow (mTLS), DenyInvalid (bad user), DenyInvalid (bad client) — `@Container static KeycloakContainer` + `@Testcontainers(disabledWithoutDocker = true)` (AC2/AC9).
 - `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceUnitTest.java` — 2 always-on fail-closed tests (no fixture): unreachable endpoint → `DenyIndeterminate`; JWKS kid-miss → `DenyIndeterminate`, matching kid → `Allow` (AD-11).
+- **Task 3 files (NEW):**
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceCancelTest.java` — the AC3 / AD-32 `cancelHttp()` wire-abort test: slow in-process `HttpServer` stand-in IdP + a delegating `RecordingHttpClient` that exposes the real `sendAsync` future; invokes `cancelHttp()` mid-flight and asserts the exchange aborts (a `CancellationException` in the cause chain — the JDK-verified `cancel(true)` → `exchange.cancel()` → `connection.close()` path) + the verdict → `DenyIndeterminate`, corroborated by the IdP's blocked write failing (no token consumed). RED-on-neuter.
 
 ## Change Log
+
+- 2026-08-09 — Task 3: authored `RopcSliceCancelTest` — the AC3 / AD-32 `cancelHttp()` wire-abort test. Drives the real
+  `verify` port against a slow in-process `HttpServer` stand-in IdP, invokes `cancelHttp()` mid-flight, and asserts the
+  underlying exchange aborts (a `CancellationException` in `tokenExchange.get()`'s cause chain) + the verdict →
+  `DenyIndeterminate`, corroborated by the IdP's blocked 1 MiB write failing (no token consumed). A delegating
+  `RecordingHttpClient` exposes the real `sendAsync` future. Verified the JDK-25 cancel mechanism against the source
+  (`MinimalFuture.cancel(true)` → `MultiExchange.cancel(true)` → `exchange.cancel()` → `connection.close()`, only when
+  `mayInterruptIfRunning==true`) — the slice's binding is correct; **no AC8 contract revision needed for AC3**. Caught two
+  false starts via the test: `isCancelled()` is false by design (the future completes exceptionally, not via
+  `Future.cancel`'s path), and a small IdP-side write is not a reliable abort signal (TCP half-close buffering). RED-on-
+  neuter: neutering `tokenExchange.cancel(true)` → PRIMARY RED ("Expecting code to raise a throwable") + corroboration
+  RED; reverted → GREEN (6/6 reliable). `./gradlew :proxy:test` + `clean build :buildSrc:test` GREEN. Story status:
+  in-progress (T3 complete; Tasks 4–7 remain).
 
 - 2026-08-09 — Fixture migration: replaced the external `docker-compose.yml` Keycloak fixture with a
   Testcontainers-managed `KeycloakContainer` (the test JVM owns the lifecycle; the compose file, `verify-fixture.sh`, and
