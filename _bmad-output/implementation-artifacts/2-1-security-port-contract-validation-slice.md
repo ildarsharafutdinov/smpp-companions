@@ -3,12 +3,12 @@ baseline_commit: c771a0e
 epic: 2
 story: 1
 story_key: 2-1-security-port-contract-validation-slice
-status: in-progress
+status: review
 ---
 
 # Story 2.1: Security Port Contract-Shape Validation Slice (BindCredentialVerifier ratification)
 
-Status: in-progress
+Status: review
 
 > **The Epic 2 opener — the gating slice.** Before `relay/` finalizes against the seeded `BindCredentialVerifier` port
 > (epics.md:366–367), this story (a) authors the AD-12 `proxy/security/` port contract and (b) **ratifies its shape
@@ -178,16 +178,16 @@ contract revision is proposed while the change is still cheap.
 - [x] Slow-ROPC fixture; invoke `cancelHttp()` mid-flight; assert wire abort + scope teardown. RED-on-neuter.
 
 **4. Fail-closed + secret-hygiene tests + mutation/RED-on-neuter pass.** (AC2 path4, AC5, AC6, AC9)
-- [ ] DENY-branch tests; zeroization test; saturation/fail-closed test. Run a neuter pass on each guard — assert RED.
+- [x] DENY-branch tests; zeroization test; saturation/fail-closed test. Run a neuter pass on each guard — assert RED.
 
 **5. NoRolledCrypto extension.** (AC7)
-- [ ] Extend `NoRolledCryptoArchitectureTest` to assert `java.net.http.HttpClient` + Nimbus in `security/`.
+- [x] Extend `NoRolledCryptoArchitectureTest` to assert `java.net.http.HttpClient` + Nimbus in `security/`.
 
 **6. Record the immutable-henceforth decision (AC8).**
-- [ ] Update ARCHITECTURE-SPINE.md AD-12: dated ratification note (immutable henceforth) OR contract-revision finding.
+- [x] Update ARCHITECTURE-SPINE.md AD-12: dated ratification note (immutable henceforth) OR contract-revision finding.
 
 **7. Green build + final mutation sweep.** (AC9)
-- [ ] `./gradlew clean build :buildSrc:test` green; confirm no test removed/`@Disabled`.
+- [x] `./gradlew clean build :buildSrc:test` green; confirm no test removed/`@Disabled`.
 
 ## Dev Notes
 
@@ -488,6 +488,60 @@ can *express* every path before `relay/` commits against it.
   wired in T2 and confirmed correct here) — scope held. Tasks 4–7 remain (zeroization/saturation + full mutation pass,
   NoRolledCrypto extension, the AC8 immutable-henceforth DECISION, final green build).
 
+- **Task 4 DONE — the always-on fail-closed test battery + the standing RED-on-neuter mutation pass (AC2 path4 / AC5 / AC6 / AC9).**
+  - **DENY-branch tests (AC2 path4, AD-11):** 8 new always-on forged-JWT deny tests in `RopcSliceUnitTest` bite the six
+    `verifyWithJwks` guards the kid-miss test did not cover — unverifiable signature (kid present, signed by a different
+    key), issuer mismatch, audience mismatch, missing-exp, expired, nbf-future — plus behavior tests for the no-kid-header
+    and malformed-JWT cases. New `RopcSliceFailClosedTest` (always-on, in-process `com.sun.net.httpserver.HttpServer`
+    stand-in IdP — no Docker) drives the real `verify` port for the 4xx→`DenyInvalid` and 5xx→`DenyIndeterminate`
+    `mapNon200` collapse (previously only live-tested), the RFC 7662 introspection `active:false` + non-200 deny branches,
+    password zeroization on adjudication completion, the bounded-pool saturation fail-closed deny + saturation-path
+    zeroize, and the `maxInflight < 1` admission-capacity fail-fast. The 4xx/5xx/introspection tests serve a fixed
+    parseable JWKS on `/certs` so the STS fan-out's JWKS subtask always succeeds and the token status is what decides.
+  - **RED-on-neuter mutation pass (AC9 / AI-1):** a scripted pass neutered each load-bearing guard and confirmed the
+    matching test goes RED (then reverted → GREEN). **All 13 bite** (mapNon200 4xx/else, introspection active:false +
+    non-200, JWKS sig/iss/aud/exp/nbf, malformed-JWT catch, password-zeroize-on-completion, saturation-tryAcquire,
+    saturation-path-zeroize, `maxInflight<1` fail-fast). The pass caught + fixed a real test-harness flaw: the saturation
+    test's `holdPermit` release wasn't exception-safe, so a mutation that made the 2nd `verify` time out stranded the
+    in-process IdP handlers and hung the test JVM — fixed by moving `holdPermit.countDown()` into a `finally`. The
+    malformed-JWT catch bites harder than first claimed (the test calls `verifyWithJwks` directly, so removing the catch
+    propagates `ParseException` → RED — not merely defense-in-depth).
+  - **Scope residues (transparently documented, NOT silently closed — retro discipline):** (a) access-token `char[]`
+    zeroize (line 168) — a bearer-secret wipe with no direct test; the story explicitly scopes the test-tier AC5 focus to
+    the PASSWORD, with full token byte-array hygiene owned by the Epic 3 production adapter. (b) saturation-path
+    `tokenExchange.cancel(true)` (line 118) — the AD-32 IdP-sparing cancel on the saturation path; low-severity (the
+    orphaned call is bounded by `callTimeout`) and the identical `cancel(true)`→exchange-abort mechanism is proven biting
+    by T3's `cancelHttp` wire-abort test (line 348); a dedicated saturation-path biting test would duplicate T3's
+    `RecordingHttpClient` for a secondary path — deferred. Both surfaced by the independent audit (below).
+  - Build: `./gradlew :proxy:test` GREEN (incl. 5 live Keycloak Testcontainers tests, Docker up) + `./gradlew clean build
+    :buildSrc:test` GREEN. No test removed or `@Disabled`.
+
+- **Task 5 DONE — `NoRolledCryptoArchitectureTest` extended (AC7).** The scaffold rule (forbid `sun.security..`) is
+  strengthened to also forbid `javax.crypto..` + `java.security.MessageDigest` (hand-rolled ciphers/MACs/digests;
+  `java.security.KeyStore`/PKCS12 loading stays allowed), a new rule forbids third-party HTTP/JWT stacks into `security/`
+  (Apache/OkHttp/Spring-web/auth0/jose4j/jsonwebtoken — vacuous today, a future-regression guard per AD-36), and two
+  positive AC7 rules assert `RopcSlice` depends on `java.net.http..` (JDK `HttpClient` — the `cancelHttp` abort + AC5
+  zeroization depend on it) and `com.nimbusds..` (Nimbus — no hand-rolled JWT). 4 ArchUnit rules, all green; ArchUnit
+  sees the test-tier `RopcSlice` (the positive rules are non-vacuous).
+
+- **Task 6 DONE — AC8 immutable-henceforth DECISION recorded.** ARCHITECTURE-SPINE.md AD-12 gains a dated (2026-08-10)
+  **Ratification (AC8)** bullet: the `BindCredentialVerifier` port contract is ratified and **immutable henceforth** —
+  all four AD-12 paths validated against Keycloak ≥26.7.0 (JWT happy / RFC 7662 introspection / RFC 8705 mTLS no-secret —
+  the "most likely to fail" path works / ≥1 DENY branch incl. `cancelHttp` per AD-32), **no contract-revision finding**
+  (the shape expresses every path unchanged, incl. the 2026-08-09 `Password`-over-`AsciiString` revision; the AC3
+  `cancelHttp` binding, verified against the JDK 25 source, needs no revision). The Accepted-Risk Register ROPC entry's
+  scope-residue is updated: Epic 2's opener validated all four paths; Epic 3 ships the production adapter behind the
+  unchanged port. No silent closure (mirrors the Story 3.1 fallback-decision discipline).
+
+- **Task 7 DONE — final green build + adversarial verification.** `./gradlew clean build :buildSrc:test` GREEN on JDK 25
+  + `--enable-preview` (Jazzer/JNI warnings are pre-existing codec-fuzz noise). No test removed or `@Disabled`; the only
+  gating is `@Testcontainers(disabledWithoutDocker = true)` on `RopcSliceLiveTest` (an environment gate, not a disable-
+  to-pass dodge). Security tests: 27 total (`RopcSliceUnitTest` 10 + `RopcSliceFailClosedTest` 7 + `RopcSliceCancelTest`
+  1 + `NoRolledCryptoArchitectureTest` 4 + `RopcSliceLiveTest` 5), all green. An independent read-only adversarial audit
+  (2 agents: a fail-closed guard gap-finder + an AC-coverage mapper) confirmed all 12 then-known load-bearing guards
+  bite, mapped every T4-relevant AC (AC2-path4/AC5/AC6/AC7/AC9 → satisfied), and surfaced the `maxInflight` admission gap
+  (fixed + bite-verified) plus the two documented scope residues above. Story status: in-progress → review.
+
 - `proxy/src/test/resources/keycloak/realm-smpp-companions.json` — realm + full-profile user + Client A (confidential/DAG) + Client B (`client-x509`/DAG). (Imported by `KeycloakContainer` — the former `docker-compose.yml` + `verify-fixture.sh` were removed when the fixture moved to Testcontainers.)
 - `proxy/src/test/resources/keycloak/README.md` — run/verify docs + the 6 real-fixture findings.
 - `proxy/src/test/resources/keycloak/certs/generate.sh` — test-PKI provenance script (CA/server/client certs, truststore.p12, client-keystore.p12).
@@ -511,8 +565,25 @@ can *express* every path before `relay/` commits against it.
 - `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceUnitTest.java` — 2 always-on fail-closed tests (no fixture): unreachable endpoint → `DenyIndeterminate`; JWKS kid-miss → `DenyIndeterminate`, matching kid → `Allow` (AD-11).
 - **Task 3 files (NEW):**
 - `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceCancelTest.java` — the AC3 / AD-32 `cancelHttp()` wire-abort test: slow in-process `HttpServer` stand-in IdP + a delegating `RecordingHttpClient` that exposes the real `sendAsync` future; invokes `cancelHttp()` mid-flight and asserts the exchange aborts (a `CancellationException` in the cause chain — the JDK-verified `cancel(true)` → `exchange.cancel()` → `connection.close()` path) + the verdict → `DenyIndeterminate`, corroborated by the IdP's blocked write failing (no token consumed). RED-on-neuter.
+- **Task 4–7 files (NEW/MODIFIED):**
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceUnitTest.java` — MODIFIED (Task 4): +8 forged-JWT JWKS-claim deny tests (unverifiable signature / issuer / audience / missing-exp / expired / nbf-future / no-kid-header / malformed) biting the `verifyWithJwks` guards (AC2 path4 / AC9).
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcSliceFailClosedTest.java` — NEW (Task 4): 7 always-on tests via an in-process `HttpServer` stand-in IdP (4xx/5xx `mapNon200`, introspection `active:false`/non-200, password zeroize-on-completion, saturation fail-closed + saturation-path zeroize, `maxInflight<1` admission fail-fast) (AC2/AC5/AC6/AC9).
+- `proxy/src/test/java/smpp/companion/proxy/security/NoRolledCryptoArchitectureTest.java` — MODIFIED (Task 5): 4 ArchUnit rules — forbid `javax.crypto`/`MessageDigest`/`sun.security` + third-party HTTP/JWT stacks; positive `RopcSlice`→`java.net.http`+Nimbus (AC7).
+- `_bmad-output/planning-artifacts/architecture/architecture-smpp-companions-2026-07-19/ARCHITECTURE-SPINE.md` — MODIFIED (Task 6): AD-12 **Ratification (AC8)** bullet + Accepted-Risk Register ROPC scope-residue update (all four paths validated; immutable henceforth).
 
 ## Change Log
+
+- 2026-08-10 — Tasks 4–7: closed the Epic 2 opener's test-hardening tail. T4: 8 forged-JWT JWKS-claim deny tests in
+  `RopcSliceUnitTest` + new `RopcSliceFailClosedTest` (7 always-on, in-process-IdP tests: 4xx/5xx `mapNon200`,
+  introspection `active:false`/non-200, password zeroize-on-completion, saturation fail-closed + saturation-zeroize,
+  `maxInflight<1` admission fail-fast) + a scripted RED-on-neuter mutation pass (**13 load-bearing guards bite**); the
+  pass caught + fixed a saturation-test exception-safety hang (moved `holdPermit.countDown()` into `finally`). T5:
+  `NoRolledCryptoArchitectureTest` → 4 ArchUnit rules (forbid `javax.crypto`/`MessageDigest`/`sun.security` + 3rd-party
+  HTTP/JWT; positive `RopcSlice`→HttpClient+Nimbus). T6: AC8 immutable-henceforth ratification recorded in AD-12 + the
+  ROPC register (no contract revision — all 4 paths expressible). T7: `clean build :buildSrc:test` GREEN; 27 security
+  tests, 0 `@Disabled`; an independent adversarial audit (gap-finder + AC-mapper) confirmed every guard bites + every AC
+  satisfied, surfaced+fixed the `maxInflight` gap, documented 2 scope residues (token zeroize = Epic 3; saturation-path
+  cancel = callTimeout-bounded, mechanism covered by T3). Story status: in-progress → review.
 
 - 2026-08-09 — Task 3: authored `RopcSliceCancelTest` — the AC3 / AD-32 `cancelHttp()` wire-abort test. Drives the real
   `verify` port against a slow in-process `HttpServer` stand-in IdP, invokes `cancelHttp()` mid-flight, and asserts the
