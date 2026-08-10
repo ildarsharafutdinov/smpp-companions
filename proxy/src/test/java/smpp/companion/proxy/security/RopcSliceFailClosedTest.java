@@ -23,6 +23,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -218,11 +219,13 @@ class RopcSliceFailClosedTest {
     // ── AC6 / AD-28(4): bounded-pool saturation fails closed ───────────────────────────────────────────────────
 
     @Test
-    @DisplayName("saturation: a pool at capacity denies a 2nd bind DenyIndeterminate immediately + zeroizes (AC6)")
+    @DisplayName("saturation: a pool at capacity denies a 2nd bind DenyIndeterminate, no wire call, + zeroizes (AC6)")
     void saturation_deniesWithoutWork_andZeroizes() throws Exception {
         CountDownLatch requestReceived = new CountDownLatch(1);
         CountDownLatch holdPermit = new CountDownLatch(1);   // keeps verify#1 in-flight → the lone permit stays held
+        AtomicInteger tokenHits = new AtomicInteger(0);      // F2 bite: a denied/saturated bind must NOT reach the IdP
         HttpServer server = newServer(ex -> {
+            tokenHits.incrementAndGet();
             try {
                 requestReceived.countDown();
                 drainBody(ex);
@@ -231,7 +234,7 @@ class RopcSliceFailClosedTest {
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
             } catch (IOException ioe) {
-                // verify#2 cancels its exchange; the late write after release may fail — expected.
+                // best-effort: a late write after holdPermit release may fail — not a verdict signal.
             }
         }, null);
 
@@ -245,15 +248,20 @@ class RopcSliceFailClosedTest {
             // mutation makes second.future() time out (a stranded handler thread would otherwise hang the test JVM).
             try {
                 long start = System.nanoTime();
-                VerdictRequest second = verify(slice, cred(pw2));   // permit exhausted → fail-closed deny, no work
+                VerdictRequest second = verify(slice, cred(pw2));   // permit exhausted → fail-closed deny, NO wire call
                 Verdict v2 = second.future().get(2, TimeUnit.SECONDS);
                 long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
                 assertThat(v2).as("a saturated pool denies a 2nd bind DenyIndeterminate (AD-11/AD-28(4))")
                         .isInstanceOf(Verdict.DenyIndeterminate.class);
                 assertThat(elapsedMs).as("saturation must DENY without starting work (AC6)").isLessThan(1_000L);
-                // Saturation-path zeroize (RopcSlice.verify line 120) runs on the caller thread before verify returns —
-                // race-free: pw2 is already wiped the instant verify(slice, cred(pw2)) completed.
+                // F2 RED-on-neuter: the denied bind's token call must never reach the IdP. If sendAsync were fired
+                // before admission.tryAcquire (the pre-fix shape), verify#2 would hit this handler → tokenHits == 2.
+                assertThat(tokenHits.get())
+                        .as("a saturated/denied bind must not transmit the ROPC request to the IdP (AC6 'without work')")
+                        .isEqualTo(1);
+                // Saturation-path zeroize runs on the caller thread before verify returns — race-free: pw2 is already
+                // wiped the instant verify(slice, cred(pw2)) completed.
                 assertThat(isAllZero(pw2)).as("the saturated/denied bind's password is zeroized (AC5)").isTrue();
             } finally {
                 holdPermit.countDown();   // ALWAYS release the in-flight IdP handlers so the test unwinds cleanly

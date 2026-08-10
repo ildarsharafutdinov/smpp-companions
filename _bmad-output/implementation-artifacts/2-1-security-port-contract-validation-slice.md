@@ -3,12 +3,12 @@ baseline_commit: c771a0e
 epic: 2
 story: 1
 story_key: 2-1-security-port-contract-validation-slice
-status: review
+status: done
 ---
 
 # Story 2.1: Security Port Contract-Shape Validation Slice (BindCredentialVerifier ratification)
 
-Status: review
+Status: done
 
 > **The Epic 2 opener — the gating slice.** Before `relay/` finalizes against the seeded `BindCredentialVerifier` port
 > (epics.md:366–367), this story (a) authors the AD-12 `proxy/security/` port contract and (b) **ratifies its shape
@@ -349,9 +349,12 @@ can *express* every path before `relay/` commits against it.
   network error / scope cancellation / malformed response / JWKS `kid`-miss / signature-or-claim failure →
   `DenyIndeterminate` (fail-closed); DENY always wins. JWKS cached only; verdicts never cached; kid-miss triggers a
   background refresh with no foreground retry.
-- **Secret hygiene (AC5):** the `Password` octets are taken **raw from the `AsciiString` backing array** — never
-  `AsciiString.toString()`'d (the CODEC-024 P2 / AI-5 cache hazard) — form-encoded at the byte level into the POST body;
-  zeroized (`Arrays.fill` + `arrayChanged()`) on adjudication completion (success and failure). The access token is held
+- **Secret hygiene (AC5) — KNOWN GAP, test-tier slice (code review 2026-08-10, Review Findings F1):** the `Password`
+  octets are currently form-encoded via `pw.toString()` + `URLEncoder` + `BodyPublishers.ofString` — NOT from the raw
+  `AsciiString` backing array. This renders the secret into a `String` and lets `AsciiString.toString()` cache an
+  immortal internal `String` the `zeroize()` wipe cannot reach (the CODEC-024 P2 / AI-5 hazard) — flagged as an ACCEPTED
+  HAZARD in the in-code comment for this throwaway slice; the Epic 3 production adapter MUST encode from the raw
+  `byte[]` (never `toString()`). The backing array IS zeroized on adjudication completion (success and failure). The access token is held
   as a transient `char[]` working copy, zeroized after verify/introspect (full token byte-array hygiene is the Epic 3
   production adapter's concern; the test tier's AC5 focus is the password).
 - **Cancellation (AC3/AD-32, wired now; the wire-abort test is Task 3):** `cancelHttp()` drives
@@ -408,13 +411,17 @@ can *express* every path before `relay/` commits against it.
   completed-`Allow`, no-op `cancelHttp`, `ScopedValue`-bound call). All green.
 - **RED-on-neuter mutation pass run (AC9 / AI-1) on the Task-1 guards** — every load-bearing guard neutered → its test
   went RED, then reverted → GREEN (verified no `MUTATION` markers leaked, full `:proxy:test` green):
-  (1) BindCredential defensive-copy-on-construct → `defensiveCopyOnConstruct` RED;
-  (2) defensive-copy-on-read → `defensiveCopyOnRead` RED;
-  (3) `toString` redaction removed → `toStringDoesNotLeakPassword` RED (auto record-`toString` renders the cleartext password);
-  (4) SystemId ≤15-octet bound removed → `rejectsOverlongSystemId` RED;
-  (5) AlwaysAllow `Allow`→`DenyInvalid` → 4 verdict tests RED;
-  (6) Verdict 4th permit added → `permitsExactlyTheThreeVerdicts` RED;
-  (7) load-bearing null guards removed (`BindCredential.systemId`, `RequestContext.channelId`) → `rejectsNull*` RED.
+  (1) `toString` redaction removed → `toStringDoesNotLeakPassword` RED (auto record-`toString` renders the cleartext password);
+  (2) SystemId ≤15-octet bound removed → `rejectsOverlongSystemId` RED;
+  (3) AlwaysAllow `Allow`→`DenyInvalid` → 4 verdict tests RED;
+  (4) Verdict 4th permit added → `permitsExactlyTheThreeVerdicts` RED;
+  (5) load-bearing null guards removed (`BindCredential.systemId`, `RequestContext.channelId`) → `rejectsNull*` RED.
+
+  *(Code review 2026-08-10 correction: two claims formerly listed here — `defensiveCopyOnConstruct` and
+  `defensiveCopyOnRead` RED-on-neuter — were struck as FALSE. Those tests never existed; they described the superseded
+  `char[]`-with-defensive-copy design, and the 2026-08-09 `Password`-over-`AsciiString` revision deliberately removed
+  the defensive copy, so there is no such invariant to bite. `BindCredentialTest`'s actual 4 tests:
+  `toStringDoesNotLeakPassword`, `passwordComponentIsPasswordType`, `rejectsNullPassword`, `rejectsNullSystemId`. See Review Findings → F4.)*
   Reflection-shape tests (`SecurityPortShapeTest`) bite by construction (assert exact signatures). The redundant
   null guards (SystemId.value / BindCredential.password) are message-clarity, not load-bearing — documented above.
 - **Build: `./gradlew clean build :buildSrc:test` GREEN** on JDK 25 + `--enable-preview` (one non-fatal
@@ -573,6 +580,35 @@ can *express* every path before `relay/` commits against it.
 
 ## Change Log
 
+- 2026-08-10 — Code review (3-layer: Blind Hunter + Edge Case Hunter + Acceptance Auditor; all findings re-verified
+  against source) closed. The ratified `proxy/security/` **port contract is clean** — no `Allow` leak anywhere in the
+  AD-11 verdict mapping (all three layers walked it), sealed `Verdict`, exact `verify`/`future`/`cancelHttp` signatures
+  reflection-pinned; every finding was in the test-tier `RopcSlice` slice / its tests / the story's own evidence
+  claims. **7 patches applied + verified** (`./gradlew clean build :buildSrc:test` GREEN; security suite green incl.
+  the 5 live Keycloak Testcontainers paths re-run; 0 `@Disabled`):
+  - **(F2)** saturation now defers `http.sendAsync` until AFTER `admission.tryAcquire()` — a denied/saturated bind no
+    longer transmits the ROPC request (with the password) to the IdP, so AC6 "denies **without starting work**" is now
+    true; `cancelHttp()` restructured around an `activeCall` exchange holder; new `tokenHits == 1` biting assertion in
+    `saturation_deniesWithoutWork_andZeroizes` (RED if the wire call fires pre-admission).
+  - **(F3)** introspection switched from a blocking `http.send` to `sendAsync` + registered in `activeCall`, so
+    `cancelHttp()` aborts the path-2 introspection call too (AD-32 IdP-sparing gap closed; same proven `cancel(true)`
+    mechanism as the token call).
+  - **(F5)** `SliceConfig` gains a compact constructor: `requireNonNull` on the endpoint/URI/issuer/clientId fields
+    (prevents a null-endpoint NPE escaping `verify()` as a raw Throwable — fail-open + no zeroize) and rejects
+    `introspect=true` without a `clientSecret` or mTLS (prevents Basic-auth `clientId:null`).
+  - **(F6)** `fetchJwks` is now forked only when `!cfg.introspect()` — introspection is the JWKS-free RFC 7662
+    fallback, so a down JWKS endpoint no longer denies every introspection-mode bind.
+  - **(F12)** `Objects.requireNonNull(ctx, "ctx")` — the `@param ctx non-null` contract now fails fast instead of
+    silently degrading to a synthetic deadline.
+  - **(F1)** the false Dev-Notes "password octets taken raw — never `AsciiString.toString()`'d" narrative corrected to
+    match the in-code ACCEPTED HAZARD (resolved option B — hazard accepted for the throwaway slice; Epic 3 production
+    adapter owns raw-`byte[]` encoding).
+  - **(F4)** two stale FALSE RED-on-neuter claims struck from the Task-1 notes (`defensiveCopyOnConstruct` /
+    `defensiveCopyOnRead` — those tests never existed; they described the superseded `char[]` design).
+  6 LOW test-tier-hardening items deferred to the Epic 3 production adapter (429/404/403 semantic label; use-after-close
+  permit leak; JWT `typ` check; `AlwaysAllow` zeroize ownership; `close()` awaitTermination; `asyncRefreshJwks` gating) —
+  see deferred-work.md. Story status: review → done.
+
 - 2026-08-10 — Tasks 4–7: closed the Epic 2 opener's test-hardening tail. T4: 8 forged-JWT JWKS-claim deny tests in
   `RopcSliceUnitTest` + new `RopcSliceFailClosedTest` (7 always-on, in-process-IdP tests: 4xx/5xx `mapNon200`,
   introspection `active:false`/non-200, password zeroize-on-completion, saturation fail-closed + saturation-zeroize,
@@ -644,3 +680,40 @@ can *express* every path before `relay/` commits against it.
 - 2026-08-08 — Task 1: authored the 7 AD-12 port types + `AlwaysAllowBindCredentialVerifier` in `proxy/security/`
   (AC1); added 6 shape/behavior tests (26 security-test methods). RED-on-neuter mutation pass run on every load-bearing
   guard (all bite). `./gradlew clean build :buildSrc:test` GREEN. Story status: in-progress (T1 complete; Tasks 2–7 remain).
+
+## Review Findings
+
+> Code review 2026-08-10 (3 parallel layers: Blind Hunter + Edge Case Hunter + Acceptance Auditor; all findings
+> re-verified against source). **Headline: the ratified `proxy/security/` PORT CONTRACT (the thing AC8 declares
+> immutable henceforth) is clean** — sealed `Verdict`, exact `verify`/`future`/`cancelHttp` signatures, `@NullMarked`,
+> reflection-pinned shapes, no `Allow` leak in the AD-11 verdict mapping. **All findings below are in the test-tier
+> `RopcSlice` adapter / its tests / the story's own evidence claims** — i.e. they bear on whether the *ratification
+> pattern* Epic 3 will copy is correct, not on the port shape itself. Defects concentrated where the story overstates
+> what was verified (AC5 secret hygiene, AC6 "without starting work", AC9 RED-on-neuter claims).
+
+### Decision-needed
+
+- [x] [Review][Decision] **Password rendered to `String` in the ROPC form body (AC5 "never String" violated; story narrative claims the opposite)** — `RopcSlice.java:269-276` builds `&password=...URLEncoder.encode(pw.toString())` then `BodyPublishers.ofString(body.toString())`. `AsciiString.toString()` caches an immortal `String` of the secret the `zeroize()` wipe cannot reach (CODEC-024 P2 / AI-5 hazard). The in-code comment is honest ("ACCEPTED HAZARD … fine for throwaway test slice; Epic 3 MUST encode from raw byte[]") BUT the Dev Notes Implementation-Plan (Task 2) states the opposite — "Password octets are taken raw from the AsciiString backing array — never AsciiString.toString()'d." Decision: (A) fix the slice to percent-encode from `pw.array()` byte-level (honor AC5 literally; sets the right pattern for Epic 3) AND correct the doc; or (B) accept the hazard for the throwaway slice and correct only the false narrative claim. (Blind Hunter + Acceptance
+Auditor.) **Resolved 2026-08-10 — option B:** hazard accepted for the throwaway test slice (Epic 3 production adapter owns raw-byte encoding); the false "never `toString()`'d" Dev-Notes narrative corrected to match the in-code ACCEPTED HAZARD comment.
+
+### Patch
+
+- [x] [Review][Patch] **Saturation fires the ROPC wire call (with the password) to the IdP BEFORE the admission check — AC6 "without starting work" is false** [`RopcSlice.java:112-122`] — `http.sendAsync(tokenRequest(...))` (line 113) precedes `admission.tryAcquire()` (line 117); a denied/saturated bind has already transmitted the full ROPC request (form body incl. password) before `cancel(true)` fires (line 118). Undercuts the AD-32 IdP-amplification mitigation AC6 exists to enforce. The test `saturation_deniesWithoutWork_andZeroizes` asserts only `elapsedMs < 1000` + zeroize — its own IdP handler blocks on `holdPermit` for verify#2's request, proving the wire call reaches the IdP, but the test cannot catch it. Fix: defer `sendAsync` until after `tryAcquire()` succeeds (restructure `cancelHttp` to hold the exchange handle). (Blind Hunter + Acceptance Auditor.)
+- [x] [Review][Patch] **`cancelHttp()` does not abort the introspection (path 2) wire call — AD-32 gap** [`RopcSlice.java:222,346-350`] — introspection uses a blocking `http.send(...)` with no stored handle; `cancelHttp()` cancels only `tokenExchange` (already complete post-token-success → no-op). The verdict is correct (`DenyIndeterminate`) but the IdP is not spared the abandoned introspection call. `RopcSliceCancelTest` uses `introspect=false`, so path-2 cancellation is never exercised. Fix: make introspection `sendAsync` + store its future; cancel both in `cancelHttp()`. (Blind Hunter + Edge Case Hunter.)
+- [x] [Review][Patch] **False RED-on-neuter claim: Task-1 completion notes cite `defensiveCopyOnConstruct`/`defensiveCopyOnRead` mutation tests that do not exist** [`2-1-...slice.md:410-417`] — `BindCredentialTest` has only 4 tests (`toStringDoesNotLeakPassword`, `passwordComponentIsPasswordType`, `rejectsNullPassword`, `rejectsNullSystemId`); no `defensiveCopy*` tests. The notes describe the superseded `char[]` design (the 2026-08-09 Password-over-AsciiString revision deliberately removed the defensive copy). Shipped code is correct-by-design; the AC9 evidence record is stale/false. Fix: strike the two bogus mutation claims from the Task-1 notes. (Blind Hunter.)
+- [x] [Review][Patch] **`SliceConfig` has no fail-fast validation → null endpoint/URI fields NPE out of `verify()` (fail-open + password never zeroized)** [`RopcSlice.java:64-76,112-113`] — the record has no compact constructor; a null `tokenEndpoint` makes `HttpRequest.newBuilder(null)` throw synchronously at line 113, BEFORE `tryAcquire`/the pool task/any `finally` → caller gets a raw NPE (not `DenyIndeterminate`) and `cred.password().zeroize()` never runs (AD-11 fail-open + AC5 hygiene miss + no AD-17 fail-fast). Same root leaves `introspectRequest` emitting Basic-auth `clientId:null` when `clientSecret` is null (line 282). Fix: `SliceConfig` compact-ctor `requireNonNull` on URI/String fields + validate the introspect/secret/mTLS combinations. (Edge Case Hunter + Blind Hunter.)
+- [x] [Review][Patch] **Introspection path hard-depends on JWKS fetch success — JWKS down blocks introspection** [`RopcSlice.java:150-166`] — `adjudicate()` forks `fetchJwks` unconditionally and `Joiner.awaitAllSuccessfulOrThrow()` requires it; a JWKS failure collapses to `DenyIndeterminate` even when `cfg.introspect()` is true (the JWKS result is unused on that branch). An introspection-mode deployment with JWKS down denies every bind — introspection is supposed to be the JWKS-free fallback (RFC 7662). Fix: fork JWKS only when `!cfg.introspect()`, or use a joiner that tolerates JWKS failure in introspect mode. (Edge Case Hunter + Acceptance Auditor.)
+- [x] [Review][Patch] **`ctx` null silently degraded — `@param ctx non-null` contract violation hidden** [`RopcSlice.java:106-107`] — `verify(cred, null)` skips the `requireNonNull` and silently substitutes a 30s synthetic deadline + skips the `ScopedValue` rebind (line 130 `else`), hiding the caller's bug. Fix: `Objects.requireNonNull(ctx, "ctx")`. (Edge Case Hunter.)
+
+### Defer (low-severity test-tier hardening — owned by the Epic 3 production adapter)
+
+- [x] [Review][Defer] **HTTP 429/404/403 → `DenyInvalid` semantic misclassification** [`RopcSlice.java:253`] — conforms to the story's explicit AD-11 refinement ("4xx → DenyInvalid"); both deny, so the security outcome is identical; only the permit label differs. Semantic refinement (429=rate-limit/404=config/403=authz → arguably `DenyIndeterminate`) belongs to the Epic 3 production mapping. (Edge Case Hunter.)
+- [x] [Review][Defer] **`execute()` after `close()` leaks the admission permit + skips zeroize** [`RopcSlice.java:117-126`] — use-after-close: `tryAcquire()` succeeds then `execute()` throws `RejectedExecutionException` outside the task's `try/catch` → permit permanently leaked (silent permanent saturation after `maxInflight` such calls) + password not zeroized. Requires use-after-close; trivial `try/catch` hardening for Epic 3. (Edge Case Hunter.)
+- [x] [Review][Defer] **JWT `typ` header not validated** [`RopcSlice.java:183-196`] — RFC 8725 §3.9 defense-in-depth (token-type confusion); signature + iss/aud/exp/nbf are checked, so no `Allow` leak. Not an AC requirement (AC2 path 1 lists iss/aud/exp/nbf). Epic 3 hardening. (Edge Case Hunter.)
+- [x] [Review][Defer] **`AlwaysAllowBindCredentialVerifier` does not zeroize the password** [`AlwaysAllowBindCredentialVerifier.java:20-22`] — the stand-in never inspects the secret (always-allow, documented no-op `cancelHttp`); AC5 "on adjudication completion" ownership (verifier vs caller/relay) is ambiguous. Resolve with `relay/` wiring / Epic 3. (Edge Case Hunter + Acceptance Auditor.)
+- [x] [Review][Defer] **`close()` does `shutdownNow()` with no `awaitTermination`** [`RopcSlice.java:353-356`] — cosmetic for the throwaway test slice (pool-task `finally` blocks still eventually run on daemon VTs); Epic 3 production adapter should drain. (Blind Hunter + Edge Case Hunter.)
+- [x] [Review][Defer] **`asyncRefreshJwks` bypasses the admission gate + unconditionally nulls the cache** [`RopcSlice.java:312-321`] — submitted without `tryAcquire` (can exceed `maxInflight` under kid-rotation) and `jwksCache.set(null)` runs before re-fetch succeeds. Fail-closed holds; undermines the bound/cache invariants under the exact load the cache smooths. Epic 3 hardening. (Blind Hunter.)
+
+### Dismissed
+
+- **`BindCredential` uses typed `Password` (AsciiString) not the literal `char[]` of AC1** — NOT a defect: this is the user-directed 2026-08-09 contract revision, the ARCHITECTURE-SPINE.md AD-12 Port-contract + secret-hygiene clauses were updated to match, and AC8's ratification formally blesses the revised shape. Residue: AC1's literal `char[]` text in this story is now stale (could be amended for internal consistency). (Acceptance Auditor.)

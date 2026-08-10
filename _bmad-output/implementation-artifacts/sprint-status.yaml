@@ -78,7 +78,7 @@ development_status:
 
   # --- Epic 2: Transit SMPP end-to-end — stateless relay with the A-1 session-affinity smoke test ---
   epic-2: in-progress
-  2-1-security-port-contract-validation-slice: review
+  2-1-security-port-contract-validation-slice: done
   epic-2-retrospective: optional
 
   # --- Epic 3: Secure the transit — TLS modes A/B/C and OIDC ROPC password-grant adjudication ---

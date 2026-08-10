@@ -30,6 +30,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.StructuredTaskScope;
 import java.util.concurrent.StructuredTaskScope.Joiner;
 import java.util.concurrent.StructuredTaskScope.Subtask;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Story 2.1 Task 2 — the <b>test-tier</b> ROPC validation slice that ratifies the AD-12 {@code proxy/security/}
@@ -73,6 +74,22 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
             boolean useMtlsClientAuth,
             /* Path 2: introspect the issued token (RFC 7662) instead of local JWKS defense-in-depth verify. */
             boolean introspect) {
+        public SliceConfig {
+            // Compact constructor — fail-fast (AD-17): a null endpoint/URI field would otherwise NPE deep inside
+            // tokenRequest()/verify() — escaping verify() as a raw Throwable (fail-open) with the password never zeroized.
+            Objects.requireNonNull(tokenEndpoint, "tokenEndpoint");
+            Objects.requireNonNull(introspectionEndpoint, "introspectionEndpoint");
+            Objects.requireNonNull(jwksUri, "jwksUri");
+            Objects.requireNonNull(issuer, "issuer");
+            Objects.requireNonNull(clientId, "clientId");
+            // RFC 7662 introspection needs client auth: a client_secret OR mTLS provider auth (RFC 8705). Otherwise
+            // the slice would silently emit Basic auth "clientId:null" and Keycloak would reject it (fail-closed but
+            // misconfigured). clientSecret is legitimately null ONLY for the mTLS path (introspect=false / path 3).
+            if (introspect && clientSecret == null && !useMtlsClientAuth) {
+                throw new IllegalArgumentException(
+                        "introspect=true requires clientSecret or useMtlsClientAuth (RFC 7662 client auth)");
+            }
+        }
     }
 
     /** Clock-skew tolerance for JWT {@code exp}/{@code nbf} claim checks (AD-11). */
@@ -104,30 +121,42 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
     @Override
     public VerdictRequest verify(BindCredential cred, ScopedValue<RequestContext> ctx) {
         Objects.requireNonNull(cred, "cred");
-        RequestContext rc = ctx != null && ctx.isBound() ? ctx.get() : null;
+        Objects.requireNonNull(ctx, "ctx");   // F12: @param ctx non-null contract — fail fast, don't silently degrade
+        RequestContext rc = ctx.isBound() ? ctx.get() : null;
         Instant now = Instant.now();
         Instant deadline = rc != null ? rc.deadline() : now.plusSeconds(30);
         Duration callTimeout = clamp(Duration.between(now, deadline), Duration.ofSeconds(1), Duration.ofSeconds(30));
 
-        CompletableFuture<HttpResponse<String>> tokenExchange =
-                http.sendAsync(tokenRequest(cred, callTimeout), HttpResponse.BodyHandlers.ofString());
         CompletableFuture<Verdict> pin = new CompletableFuture<>();
+        // The in-flight HTTP call cancelHttp() can abort (AD-32): the token exchange, then the introspection call if
+        // path 2 is taken. Null on the saturation/denied path — no wire call is started there.
+        AtomicReference<CompletableFuture<HttpResponse<String>>> activeCall = new AtomicReference<>();
 
-        // Fail-closed admission (AC6): a saturated pool denies indeterminate without starting work.
+        // Fail-closed admission (AC6): a saturated pool denies indeterminate WITHOUT starting work — the wire call is
+        // fired only AFTER admission is granted (below), so a denied bind never transmits the ROPC request (F2: the
+        // pre-fix shape fired sendAsync before tryAcquire, leaking the password-bearing request to the IdP).
         if (!admission.tryAcquire()) {
-            tokenExchange.cancel(true);
             pin.complete(new Verdict.DenyIndeterminate());
             cred.password().zeroize();
-            return new RopcVerdictRequest(pin, tokenExchange);
+            return new RopcVerdictRequest(pin, activeCall);
         }
 
-        // The adjudication runs on the bounded VT pool. The RequestContext is re-bound on the pool thread via the
-        // SAME ScopedValue handle the caller used, so the STS fan-out inside adjudicate() inherits it (AD-5).
+        // Admission granted — fire the ROPC token call now (after the admission decision) on the caller thread and
+        // publish its handle to activeCall before returning, so cancelHttp() can abort it race-free. The adjudication
+        // itself runs on the bounded VT pool; the RequestContext is re-bound on the pool thread via the SAME
+        // ScopedValue handle the caller used, so the STS fan-out inside adjudicate() inherits it (AD-5).
+        CompletableFuture<HttpResponse<String>> tokenExchange =
+                http.sendAsync(tokenRequest(cred, callTimeout), HttpResponse.BodyHandlers.ofString());
+        activeCall.set(tokenExchange);
+
         adjudicationPool.execute(() -> {
             try {
+                if (pin.isDone()) {
+                    return;   // cancelHttp() landed before the pool task started — exchange already aborted; bail
+                }
                 Verdict v = (rc != null)
-                        ? ScopedValue.where(ctx, rc).call(() -> adjudicate(tokenExchange))
-                        : adjudicate(tokenExchange);
+                        ? ScopedValue.where(ctx, rc).call(() -> adjudicate(tokenExchange, activeCall))
+                        : adjudicate(tokenExchange, activeCall);
                 pin.complete(v);
             } catch (Throwable t) {
                 pin.complete(new Verdict.DenyIndeterminate());   // fail-closed on any unexpected failure (AD-11)
@@ -137,7 +166,7 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
             }
         });
 
-        return new RopcVerdictRequest(pin, tokenExchange);
+        return new RopcVerdictRequest(pin, activeCall);
     }
 
     /**
@@ -145,12 +174,16 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
      * {@code join} them, then collapse to one {@link Verdict}. A network error / timeout / scope cancellation in
      * either subtask fails the {@code awaitAllSuccessfulOrThrow} join and collapses to {@link Verdict.DenyIndeterminate}.
      */
-    private Verdict adjudicate(CompletableFuture<HttpResponse<String>> tokenExchange) {
+    private Verdict adjudicate(CompletableFuture<HttpResponse<String>> tokenExchange,
+                               AtomicReference<CompletableFuture<HttpResponse<String>>> activeCall) {
         char[] tokenChars = null;
         try (var scope = StructuredTaskScope.open(Joiner.awaitAllSuccessfulOrThrow())) {
             Subtask<HttpResponse<String>> tokenTask = scope.fork(() -> tokenExchange.join());
-            Subtask<JWKSet> jwksTask = scope.fork(this::fetchJwks);
-            scope.join();   // both subtasks succeeded, else throws → catch → DenyIndeterminate
+            // JWKS is only needed for the local-verify path. Introspection (RFC 7662) is the JWKS-free fallback, so it
+            // must NOT fork (or require) a JWKS fetch — a down JWKS endpoint would otherwise deny every introspection
+            // bind (F6). jwksTask is null on the introspect path and only dereferenced on the !introspect branch below.
+            Subtask<JWKSet> jwksTask = cfg.introspect() ? null : scope.fork(this::fetchJwks);
+            scope.join();   // all forked subtasks succeeded, else throws → catch → DenyIndeterminate
 
             HttpResponse<String> tokenResp = tokenTask.get();
             TokenOutcome outcome = mapTokenResponse(tokenResp);
@@ -162,7 +195,7 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
             String accessToken = new String(tokenChars);
             try {
                 return cfg.introspect()
-                        ? adjudicateByIntrospection(accessToken)
+                        ? adjudicateByIntrospection(accessToken, activeCall)
                         : verifyWithJwks(jwksTask.get(), accessToken);
             } finally {
                 Arrays.fill(tokenChars, '\0');   // AC5: zeroize the access-token working copy
@@ -217,9 +250,17 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
     }
 
     /** RFC 7662 introspection (AC2 path 2): {@code active:true} → Allow; any other outcome → fail-closed DENY. */
-    private Verdict adjudicateByIntrospection(String accessToken) {
+    private Verdict adjudicateByIntrospection(String accessToken,
+                                              AtomicReference<CompletableFuture<HttpResponse<String>>> activeCall) {
         try {
-            HttpResponse<String> r = http.send(introspectRequest(accessToken), HttpResponse.BodyHandlers.ofString());
+            // sendAsync (not the blocking send) so cancelHttp() can abort the in-flight introspection call (F3/AD-32)
+            // — the token exchange is already complete by the time introspection runs, so cancelHttp's old single-
+            // future cancel was a no-op here. The request timeout (10s) bounds the exchange; join collapes cancel/IO
+            // failure to DenyIndeterminate via the catch below.
+            CompletableFuture<HttpResponse<String>> intro = http.sendAsync(
+                    introspectRequest(accessToken), HttpResponse.BodyHandlers.ofString());
+            activeCall.set(intro);
+            HttpResponse<String> r = intro.join();
             if (r.statusCode() != 200) {
                 return new Verdict.DenyIndeterminate();
             }
@@ -227,7 +268,7 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
             boolean active = JSONObjectUtils.getBoolean(body, "active");
             return active ? new Verdict.Allow() : new Verdict.DenyIndeterminate();
         } catch (Exception e) {
-            return new Verdict.DenyIndeterminate();   // malformed introspection response → fail-closed (AD-11)
+            return new Verdict.DenyIndeterminate();   // malformed introspection response / cancel → fail-closed (AD-11)
         }
     }
 
@@ -336,7 +377,8 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
 
     /** The {@link VerdictRequest}: exposes the verdict future and binds {@code cancelHttp()} to the exchange abort. */
     private record RopcVerdictRequest(CompletableFuture<Verdict> pin,
-                                      CompletableFuture<HttpResponse<String>> tokenExchange) implements VerdictRequest {
+                                      AtomicReference<CompletableFuture<HttpResponse<String>>> activeCall)
+            implements VerdictRequest {
         @Override
         public CompletableFuture<Verdict> future() {
             return pin;
@@ -344,8 +386,13 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
 
         @Override
         public void cancelHttp() {
-            // AD-32: abort the underlying HTTP ROPC call (not only the future). Idempotent: no-op once settled.
-            tokenExchange.cancel(true);
+            // AD-32: abort the in-flight HTTP call — the token exchange OR the introspection call, whichever activeCall
+            // currently holds (F3). Idempotent: no-op once settled, and a no-op on the saturation/denied path where no
+            // wire call was ever started (activeCall is null — F2/AC6).
+            CompletableFuture<HttpResponse<String>> c = activeCall.get();
+            if (c != null) {
+                c.cancel(true);
+            }
             pin.complete(new Verdict.DenyIndeterminate());
         }
     }
