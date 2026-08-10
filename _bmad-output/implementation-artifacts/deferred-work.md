@@ -138,3 +138,31 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   per-egress-context intersection DEFERRED to Epic 3 when those contexts exist. 1.3 deliberately does
   NOT half-build SSLContexts in config validation (that would pre-empt Epic 3's SEC-087/088/089 runtime
   vectors). (Decision D2 at Story 1.3 dev-story 2026-08-03.) [proxy/src/main/java/.../config/CompanionConfigValidator.java; ARCHITECTURE-SPINE.md AD-34:259–262]
+
+## Deferred from: code review of 2-1-security-port-contract-validation-slice (2026-08-10)
+
+> All six are LOW-severity hardening in the **test-tier `RopcSlice` adapter** (`proxy/src/test`), owned by the **Epic 3
+> production ROPC adapter**. The ratified `proxy/security/` port contract (AC8 immutable henceforth) is clean; these do
+> not affect the port shape. Deferred because Epic 3 replaces this slice behind the unchanged port and should ship the
+> production-grade version of each.
+
+- **HTTP 429/404/403 → `DenyInvalid` semantic misclassification** [`RopcSlice.java:253`] — conforms to the story's
+  explicit AD-11 refinement ("4xx → DenyInvalid"); both deny (identical fail-closed outcome); only the permit label
+  differs. Semantic refinement (429=rate-limit, 404=config error, 403=authz → arguably `DenyIndeterminate`) belongs to
+  the Epic 3 production verdict mapping. (Code review 2026-08-10.)
+- **`execute()` after `close()` leaks the admission permit + skips zeroize** [`RopcSlice.java:117-126`] — use-after-close:
+  `tryAcquire()` succeeds then `execute()` throws `RejectedExecutionException` outside the task's `try/catch` → permit
+  permanently leaked (silent permanent saturation after `maxInflight` such calls) + password not zeroized. Requires
+  use-after-close; trivial `try/catch(RejectedExecutionException){ release(); zeroize(); }` hardening for Epic 3.
+- **JWT `typ` header not validated** [`RopcSlice.java:183-196`] — RFC 8725 §3.9 defense-in-depth against token-type
+  confusion; signature + iss/aud/exp/nbf are already checked (no `Allow` leak). Not an AC2 requirement. Epic 3 hardening.
+- **`AlwaysAllowBindCredentialVerifier` does not zeroize the password** [`AlwaysAllowBindCredentialVerifier.java:20-22`] —
+  the stand-in never inspects the secret (always-allow, documented no-op `cancelHttp`); AC5 "on adjudication completion"
+  ownership (verifier vs caller/relay) is ambiguous. Resolve with `relay/` wiring / Epic 3.
+- **`close()` does `shutdownNow()` with no `awaitTermination`** [`RopcSlice.java:353-356`] — cosmetic for the throwaway
+  test slice (pool-task `finally` blocks still eventually run on daemon VTs); Epic 3 production adapter should drain
+  (`awaitTermination` + fail-closed-log on timeout).
+- **`asyncRefreshJwks` bypasses the admission gate + unconditionally nulls the cache** [`RopcSlice.java:312-321`] —
+  submitted without `tryAcquire` (can exceed `maxInflight` under kid-rotation) and `jwksCache.set(null)` runs before
+  re-fetch succeeds. Fail-closed holds; undermines the bounded-pool/cache invariants under the exact load the cache
+  smooths. Epic 3 hardening.
