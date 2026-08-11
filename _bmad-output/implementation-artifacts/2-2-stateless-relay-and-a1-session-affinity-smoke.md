@@ -100,8 +100,8 @@ behind unchanged interfaces.
    AD-16:159, AD-30:236.)*
 
 5. **[AC5] `SpliceObserver` interface + noop impl seeded in `observability/` (AD-27 — NOT authored by 2.1).** Full
-   5-method shape: `onFramedPdu(Direction)`, `onBindAccept(SystemId)`, `onBindReject(SystemId, Verdict)`,
-   `onByteTransfer(Direction, long)`, `onConnectionClosed(Direction, CloseReason)` — **no PDU type, no content.**
+   4-method shape: `onFramedPdu(Direction)`, `onBindAccept(SystemId)`, `onBindReject(SystemId, Verdict)`,
+   `onConnectionClosed(Direction, CloseReason)` — **no PDU type, no content.** PDU count is observed by counting `onFramedPdu` fires (no byte-volume signal crosses the seam — REVISED 2026-08-11, owner decision; see Dev Record + Change Log).
    Plus `enum Direction { INGRESS, EGRESS }` and **`enum CloseReason` = the 16-value exhaustive set** (final spine
    AD-27:224 + gate-fix .memlog.md:96): `PEER_HALF_CLOSE, PEER_RST, EGRESS_CONNECT_FAILED, OVERSIZED_FRAME,
    UNDERSIZED_FRAME, DECODE_ERROR, UNKNOWN_COMMAND_ID, PRE_COUPLE_NON_BIND_PDU, CLEAN_UNBIND_HANDSHAKE,
@@ -163,13 +163,13 @@ behind unchanged interfaces.
   - [x] If pinning the JDK 25 vendor is in scope here, add the CI/setup step; otherwise flag it (open question Q1). STS stays confined to `security/`+`bootstrap/` (the relay data-plane splice uses NO preview API — AD-5:87).
   - [x] RED-on-neuter: removing the compile-arg wiring turns this test RED.
 
-- [ ] **Task 2 (AC: 5) — `observability/` contract seed: `SpliceObserver` + `Direction` + `CloseReason` + noop impl (AD-27).**
-  - [ ] `SpliceObserver` interface — exactly the 5 methods (no PDU type, no content). `onBindReject(SystemId, Verdict)` imports `proxy.security.Verdict`.
-  - [ ] `enum Direction { INGRESS, EGRESS }`.
-  - [ ] `enum CloseReason` — the 16 values verbatim (AC5 list). Document that this is exhaustive over the spine's close paths (gate-fix .memlog.md:96).
-  - [ ] `NoopSpliceObserver @Component` — every method a no-op; the default injectable bean (Epic 4 swaps the impl only).
-  - [ ] Test: ArchUnit/shape test asserting the 5-method shape + that `CloseReason` is the closed 16-value set + `@NullMarked` present. A capturing-fake `SpliceObserver` for the relay tests lives in `proxy/src/test` (T7/T9 consume it).
-  - [ ] Verify `observability/package-info.java` already carries `@NullMarked` (it does).
+- [x] **Task 2 (AC: 5) — `observability/` contract seed: `SpliceObserver` + `Direction` + `CloseReason` + noop impl (AD-27).**
+  - [x] `SpliceObserver` interface — exactly the 4 methods (no PDU type, no content; PDU count via `onFramedPdu` fires — REVISED 2026-08-11). `onBindReject(SystemId, Verdict)` imports `proxy.security.Verdict`.
+  - [x] `enum Direction { INGRESS, EGRESS }`.
+  - [x] `enum CloseReason` — the 16 values verbatim (AC5 list). Document that this is exhaustive over the spine's close paths (gate-fix .memlog.md:96).
+  - [x] `NoopSpliceObserver @Component` — every method a no-op; the default injectable bean (Epic 4 swaps the impl only).
+  - [x] Test: ArchUnit/shape test asserting the 4-method shape + that `CloseReason` is the closed 16-value set + `@NullMarked` present. A capturing-fake `SpliceObserver` for the relay tests lives in `proxy/src/test` (T7/T9 consume it).
+  - [x] Verify `observability/package-info.java` already carries `@NullMarked` (it does).
 
 - [ ] **Task 3 (AC: 9) — Password hygiene: codec `SmppBindRequest.toString()` redaction + no-String-from-password scan (AI-5 / CODEC-024 P2).**
   - [ ] In `codec`: override `SmppBindRequest.toString()` to redact `password` (mirror `Password.toString()` → `"***"`; never call `AsciiString.toString()` on the password — it caches an immortal `String`). *(deferred-work.md:64–72.)*
@@ -256,7 +256,7 @@ behind unchanged interfaces.
 - **AD-21 (one allocator):** ONE shared `PooledByteBufAllocator` across all channels.
 - **AD-24 (test toolchain):** in-JVM mock SMSC on the production codec (RELAY-011) AND the jSMPP 3.0.2 server-side independent oracle (OBS-038, T10 — test-only). Concurrency proofs (jcstress + race-soak) are nightly/exit-gates, not this story.
 - **AD-25 (bind→splice state machine — THE CORE):** exactly one flipper = `RelayHandler` on decoded `bind_*_resp.isOk()`. `BindInterceptor` forwards `bind_*_resp`; `RelayHandler` reads read-only + flips, never forwards it. First spliced PDU = first PDU AFTER `bind_*_resp`. Race-free re-check at both Allow-flip and Deny-callback.
-- **AD-27 (ownership seams + SpliceObserver):** consume `SmppCommandIds.BIND_FAMILY` (no local redefine); seed `SpliceObserver` (5 methods) + `Direction` + `CloseReason` (16 values) + noop impl. Pinned triggers + exactly-once `onConnectionClosed`. Codec never emits metrics.
+- **AD-27 (ownership seams + SpliceObserver):** consume `SmppCommandIds.BIND_FAMILY` (no local redefine); seed `SpliceObserver` (4 methods) + `Direction` + `CloseReason` (16 values) + noop impl. Pinned triggers + exactly-once `onConnectionClosed`. Codec never emits metrics.
 - **AD-29 (routing v1 = 1:1, FORWARD-ROLE):** one instance fronts one carrier egress; routing table = `system_id` allow-list → the single egress target. **Inapplicable to this reverse.mode-b slice** (no routing table — the egress is the single configured `reverse.mode-b.smsc`, gated by the verifier, not an allow-list); stays binding for production / Epic 3 forward-role.
 - **AD-30 (frame/budget):** `SmppFrameDecoder` enforces max 65536 / min 16; per-channel inbound queue bounded; `MaxDirectMemorySize` formula via ONE constant + live self-check (T5).
 - **AD-32 (pre-couple policy, FINAL):** uniform bare-close — no `_resp` synthesis, no carve-outs (dropped at gate-fix). Race-free teardown: remove+mark-tearing-down → `cancelHttp()` + zeroize → close.
@@ -360,7 +360,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Task 1 only — foundation gate; T2–T11 pending).
+glm-5.2[1m] (Tasks 1–2 — bootstrap gate + observability contract seed; T3–T11 pending).
 
 ### Debug Log References
 
@@ -385,6 +385,31 @@ glm-5.2[1m] (Task 1 only — foundation gate; T2–T11 pending).
   without the flag.)
 - **T1 `join()` checked exception:** `StructuredTaskScope.join()` throws `InterruptedException`; the gate
   test declares `throws InterruptedException` (JUnit permits checked exceptions on `@Test` methods).
+- **T2 ArchUnit rule scoping (design decision).** The first draft of `ObservabilityLayerRulesTest` used
+  `noClasses().that().resideInAPackage("..observability..").should().dependOnClassesThat().resideInAPackage("io.netty..")`
+  — sweeping the WHOLE package. Caught before run: `@AnalyzeClasses(packages = "...observability")` scans
+  the MERGED test classpath, which includes the test helpers (`CapturingSpliceObserver`, the `*Test`
+  classes); those legitimately build a `SystemId` via Netty `AsciiString`, so the broad rule would have
+  false-failed. Scoped the rule by FQN to the 4 seeded MAIN contract types
+  (`SpliceObserver`/`Direction`/`CloseReason`/`NoopSpliceObserver`, referenced via `class.getName()` so a
+  rename refactors both sides) — the precise expression of "no Netty type on the seam" (AD-19/AD-27).
+  Dropped the second tautological "reside in package" rule (things-in-package-are-in-package = noise).
+- **T2 REVISION — `onByteTransfer` dropped; PDU count via `onFramedPdu` (owner decision 2026-08-11).** Owner
+  redirected mid-story: observe PDU count, not bytes. Since `onFramedPdu(Direction)` already fires once per
+  framed PDU, PDU count is derivable from its fires — the dedicated byte-count slot was redundant, so the
+  owner chose to DROP `onByteTransfer(Direction, long)` entirely (4-method seam) over repurposing it. Blast
+  radius: the signature was in the BINDING `ARCHITECTURE-SPINE.md` AD-27:224, `epics.md`:225/388,
+  `test-coverage-scenarios.md` OBS-010, and the readiness-report — owner authorized amending all of them
+  (not code+story only). A 4-finder workflow audit (`wsu4qjy9u`) enumerated every `onByteTransfer` /
+  `5-method` / `byte-count` reference; applied: spine + epics + TEA amended in place; readiness-report
+  finding #2 annotated SUPERSEDED (dated point-in-time report, not rewritten); architecture `.memlog.md`
+  appended as the canonical decision log; `reviews/review-adversarial.md` left verbatim (point-in-time
+  history). Code: `SpliceObserver`/`NoopSpliceObserver` trimmed; `CapturingSpliceObserver` dropped
+  `ByteTransfer` + `byteTransfers` + `totalBytes`; `SpliceObserverShapeTest` `hasSize(5)`→`4` +
+  `onByteTransferSignature` deleted (10→9); `CapturingSpliceObserverTest` `byteTotalAccumulates` deleted
+  (2→1). OBS-010 reworded to `onFramedPdu`-only (kept as a runtime wiring check; the `/metrics`
+  sentinel-scrape-absence stays the load-bearing privacy gate — the `onFramedPdu`-only assertion is
+  near-tautological on content, but still proves the relay wired the observer at runtime).
 
 ### Completion Notes List
 
@@ -423,6 +448,45 @@ glm-5.2[1m] (Task 1 only — foundation gate; T2–T11 pending).
   the control plane (`security/`+`bootstrap/`, where `StructuredTaskScope`/`ScopedValue` live). The relay
   data-plane splice (T6–T8) MUST use NO preview API — pure stable Netty/JDK. Enforced by code review at
   T6–T8; not gated by a T1 test (out of T1 scope).
+- **T2 DONE — AD-27 `observability/` contract seed authored.** Four main types in
+  `proxy/observability/`: (a) `SpliceObserver` interface — EXACTLY the 4 pinned triggers
+  (`onFramedPdu(Direction)`, `onBindAccept(SystemId)`, `onBindReject(SystemId, Verdict)`,
+  `onConnectionClosed(Direction, CloseReason)`); no PDU type, no
+  content (AD-19/AD-27); `onBindReject` imports `proxy.security.Verdict` as specified. (b) `Direction`
+  enum — closed 2-value set `{INGRESS, EGRESS}`. (c) `CloseReason` enum — the 16-value exhaustive set
+  verbatim (AC5 / gate-fix `.memlog.md:96`), javadoc-documenting exhaustiveness over the spine's close
+  paths; the 2 TLS values are present now for set-stability across the Epic-3 boundary (fired only once
+  TLS lands). (d) `NoopSpliceObserver` — `@Component final` default bean, every method a no-op (mirrors
+  `AlwaysAllowBindCredentialVerifier`). `observability/package-info.java` confirmed `@NullMarked` (AD-35).
+- **T2 tests (11, 0 skipped/failed):** `SpliceObserverShapeTest` (9) — reflection shape pin mirroring
+  `VerdictShapeTest`/`SecurityPortShapeTest`: exact 4-method count + per-method signature (param/return
+  types by class), Direction `{INGRESS,EGRESS}`, CloseReason `hasSize(16)` + `containsExactlyInAnyOrder`
+  of all 16 names, package `@NullMarked`, `NoopSpliceObserver` `@Component`+final+implements-seam.
+  `ObservabilityLayerRulesTest` (1 ArchUnit `@ArchTest`) — the 4 seeded main contract types must not
+  depend on `io.netty..` (AD-19/AD-27 seam purity; scoped by FQN, not package — see Debug Log).
+  `CapturingSpliceObserverTest` (1) — smoke-proofs the thread-safe capturing fake records all 4 triggers
+  + `clear()`.
+- **T2 capturing-fake for T7/T9 (`CapturingSpliceObserver`):** thread-safe (lock-free
+  `ConcurrentLinkedQueue` per trigger) because the relay's flip/teardown paths
+  race (AD-25); snapshot accessors return immutable `List.copyOf` so assertions are stable once the relay
+  test has observed quiescence (the relay test owns the await/latch, not the fake). Record subtypes
+  `BindReject`/`ConnectionClose` carry the multi-arg captures.
+- **T2 RED-on-neuter — PROVEN (spot-check; formal consolidated pass is T11):** dropped the `OTHER`
+  `CloseReason` value → `SpliceObserverShapeTest.closeReasonIsClosedSixteenValueSet()` FAILED at the
+  `hasSize(16)` assertion (line 115) → restored → GREEN. The shape test bites by construction (exact
+  counts + named values + compile-coupled class refs); the per-method signature tests add
+  `NoSuchMethodException`-on-rename/drop as a second bite. The full `:proxy:test` suite stays GREEN (no
+  regressions).
+- **T2 "ArchUnit/shape test" subtask — reflection chosen as primary (consistency note).** The subtask
+  says "ArchUnit/shape test"; the codebase's established idiom for pinning a CONTRACT SHAPE is pure
+  reflection + AssertJ (`VerdictShapeTest`, `SecurityPortShapeTest` — the closest analogs). That is the
+  primary guard here; ArchUnit is added for the cross-cutting Netty-free layer rule (its idiomatic use in
+  this repo is dependency rules, per `JmhIsolationArchitectureTest`). Both mechanisms land.
+- **T2 forward note for T8 (exactly-once `onConnectionClosed` enforcement).** AC5 pins
+  `onConnectionClosed` exactly-once-per-channel, CAS-guarded at the `channelInactive` site — that is the
+  RELAY's responsibility (T8), not the seam's. The seam provides the trigger; `CapturingSpliceObserver`
+  records duplicates so T8 can assert "exactly one `ConnectionClose` per channel". No T2 action beyond
+  seeding the capability.
 
 ### File List
 
@@ -435,6 +499,27 @@ glm-5.2[1m] (Task 1 only — foundation gate; T2–T11 pending).
 - *(mutation-pass only, ZERO net change — not listed as modified):*
   `buildSrc/src/main/kotlin/smpp.java-conventions.gradle.kts` — temporarily neutered (COMPILE block, then
   TEST block) during the RED-on-neuter pass, then fully restored to its committed state.
+- `proxy/src/main/java/smpp/companion/proxy/observability/SpliceObserver.java` — **added** (T2): the AD-27
+  observability seam; exactly the 4 pinned triggers (no PDU type, no content); `onBindReject` imports
+  `proxy.security.Verdict`.
+- `proxy/src/main/java/smpp/companion/proxy/observability/Direction.java` — **added** (T2): closed 2-value
+  enum `{INGRESS, EGRESS}`.
+- `proxy/src/main/java/smpp/companion/proxy/observability/CloseReason.java` — **added** (T2): the closed
+  16-value exhaustive set over the spine's close paths (AC5 / gate-fix `.memlog.md:96`).
+- `proxy/src/main/java/smpp/companion/proxy/observability/NoopSpliceObserver.java` — **added** (T2): the
+  `@Component final` seeded default bean (mirrors `AlwaysAllowBindCredentialVerifier`); Epic 4 swaps the
+  impl only.
+- `proxy/src/test/java/smpp/companion/proxy/observability/SpliceObserverShapeTest.java` — **added** (T2):
+  reflection shape pin (9 tests) — 4-method count + per-method signatures + Direction(2) + CloseReason(16)
+  + package `@NullMarked` + `NoopSpliceObserver` `@Component`/final/seam.
+- `proxy/src/test/java/smpp/companion/proxy/observability/ObservabilityLayerRulesTest.java` — **added**
+  (T2): ArchUnit `@ArchTest` — the 4 seeded main contract types must not depend on `io.netty..`
+  (AD-19/AD-27 seam purity).
+- `proxy/src/test/java/smpp/companion/proxy/observability/CapturingSpliceObserver.java` — **added** (T2):
+  thread-safe capturing fake for T7/T9 relay tests (lock-free queues; `List.copyOf`
+  snapshots; `BindReject`/`ConnectionClose` record subtypes).
+- `proxy/src/test/java/smpp/companion/proxy/observability/CapturingSpliceObserverTest.java` — **added**
+  (T2): smoke-proofs the fake records all 4 triggers + `clear()` (1 test).
 
 ## Change Log
 
@@ -445,6 +530,25 @@ glm-5.2[1m] (Task 1 only — foundation gate; T2–T11 pending).
   intentionally dropped (AC9 deviation, flagged for review).** RED-on-neuter proven for COMPILE+TEST; Q1
   (JDK vendor pin) flagged; STS-confinement (AD-5) noted for T6–T8. (T2–T11 remain open — story stays
   in-progress.)
+- 2026-08-11 — **Story 2.2 Task 2:** AD-27 `observability/` contract seed — `SpliceObserver` (4 pinned
+  triggers, no PDU type/content), `Direction{INGRESS,EGRESS}`, `CloseReason` (16-value exhaustive set),
+  `NoopSpliceObserver` (`@Component final` default bean). Tests: reflection shape pin
+  (`SpliceObserverShapeTest`, 9) + ArchUnit Netty-free seam rule (`ObservabilityLayerRulesTest`, 1,
+  scoped by FQN to the 4 main contract types — see Debug Log) + capturing-fake smoke
+  (`CapturingSpliceObserverTest`, 1); thread-safe `CapturingSpliceObserver` seeded for T7/T9. RED-on-neuter
+  spot-check PROVEN (drop `OTHER` → shape test RED at `hasSize(16)` → restore → GREEN); full `:proxy:test`
+  GREEN, no regressions. (T3–T11 remain open — story stays in-progress.)
+- 2026-08-11 — **Story 2.2 Task 2 REVISION (owner decision):** `SpliceObserver` drops
+  `onByteTransfer(Direction, long)` — 5→4 method seam. PDU count now comes from counting
+  `onFramedPdu(Direction)` fires; the seam carries no byte-volume signal. Rationale: the byte-count slot was
+  redundant with `onFramedPdu` for PDU counting; owner prefers observing PDU count over bytes. Propagated to
+  ALL binding artifacts (owner-authorized scope): `ARCHITECTURE-SPINE.md` AD-27:224, `epics.md`:225/388,
+  `test-coverage-scenarios.md` OBS-010 (observer-level assertion rewrote to `onFramedPdu`-only;
+  sentinel-scrape-absence stays load-bearing), `implementation-readiness-report` finding #2 annotated
+  SUPERSEDED, architecture `.memlog.md` amendment appended. Code: `SpliceObserverShapeTest` `hasSize(5)`→`4`
+  (10→9 tests; RED-on-neuter preserved), `CapturingSpliceObserver` trimmed (`ByteTransfer`/`totalBytes`
+  dropped; 2→1 test). `:proxy:test` GREEN, no regressions. See Debug Log for the full audit/propagation
+  trace. (T3–T11 remain open — story stays in-progress.)
 
 ## Review Findings
 
