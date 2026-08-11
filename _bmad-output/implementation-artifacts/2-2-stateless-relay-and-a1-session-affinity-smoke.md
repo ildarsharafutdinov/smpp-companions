@@ -3,12 +3,12 @@ baseline_commit: b7927b2
 epic: 2
 story: 2
 story_key: 2-2-stateless-relay-and-a1-session-affinity-smoke
-status: ready-for-dev
+status: in-progress
 ---
 
 # Story 2.2: Stateless Relay Splice + A-1 Session-Affinity Smoke (plaintext, always-allow adjudication)
 
-Status: ready-for-dev
+Status: in-progress
 
 > **Epic 2's core deliverable — the relay that retires assumption A-1.** Story 2.1 ratified the `proxy/security/`
 > port contract against real ROPC; this story builds the **stateless Netty relay** (`proxy/relay/`) that splices
@@ -158,10 +158,10 @@ behind unchanged interfaces.
 > T4–T6 are runtime infrastructure beans. T7–T8 are the handlers. T9 is the A-1 smoke (in-JVM), T10 is the jSMPP
 > independent A-1 oracle, T11 is the standing gate.
 
-- [ ] **Task 1 (AC: 9) — Bootstrap gate: `--enable-preview` on COMPILE + RUN (AI-8).**
-  - [ ] Extend `proxy/src/test/.../bootstrap/EnablePreviewArgTest.java` (today asserts the test-JVM path only) to also assert `--enable-preview` is present on the `compileJava` task and the `run`/`bootRun` JVM args — a plain JUnit test can't introspect Gradle's resolved task model, so source-scan `smpp.java-conventions.gradle.kts:22–34` for the three `--enable-preview` wirings (`options.compilerArgs.add` on `JavaCompile`, `jvmArgs` on `Test`, `jvmArgs` on `JavaExec`) using the same `Files.walk` + regex + comment-strip pattern `Relay026ConstantContractTest` applies to Java sources. The existing `ManagementFactory.getRuntimeMXBean().getInputArguments()` assertion stays as the live test-JVM proof.
-  - [ ] If pinning the JDK 25 vendor is in scope here, add the CI/setup step; otherwise flag it (open question Q1). STS stays confined to `security/`+`bootstrap/` (the relay data-plane splice uses NO preview API — AD-5:87).
-  - [ ] RED-on-neuter: removing the compile-arg wiring turns this test RED.
+- [x] **Task 1 (AC: 9) — Bootstrap gate: `--enable-preview` on COMPILE + RUN (AI-8).**
+  - [x] Extend `proxy/src/test/.../bootstrap/EnablePreviewArgTest.java` (today asserts the test-JVM path only) to also assert `--enable-preview` is present on the `compileJava` task and the `run`/`bootRun` JVM args — a plain JUnit test can't introspect Gradle's resolved task model, so source-scan `smpp.java-conventions.gradle.kts:22–34` for the three `--enable-preview` wirings (`options.compilerArgs.add` on `JavaCompile`, `jvmArgs` on `Test`, `jvmArgs` on `JavaExec`) using the same `Files.walk` + regex + comment-strip pattern `Relay026ConstantContractTest` applies to Java sources. The existing `ManagementFactory.getRuntimeMXBean().getInputArguments()` assertion stays as the live test-JVM proof.
+  - [x] If pinning the JDK 25 vendor is in scope here, add the CI/setup step; otherwise flag it (open question Q1). STS stays confined to `security/`+`bootstrap/` (the relay data-plane splice uses NO preview API — AD-5:87).
+  - [x] RED-on-neuter: removing the compile-arg wiring turns this test RED.
 
 - [ ] **Task 2 (AC: 5) — `observability/` contract seed: `SpliceObserver` + `Direction` + `CloseReason` + noop impl (AD-27).**
   - [ ] `SpliceObserver` interface — exactly the 5 methods (no PDU type, no content). `onBindReject(SystemId, Verdict)` imports `proxy.security.Verdict`.
@@ -360,17 +360,91 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-_(filled by dev)_
+glm-5.2[1m] (Task 1 only — foundation gate; T2–T11 pending).
 
 ### Debug Log References
 
+- **T1 design REVISION (source-scan → compiler-enforced gate; owner decision 2026-08-11).** T1 was first
+  implemented as a static source-scan of `smpp.java-conventions.gradle.kts` (3 assertions over the
+  `JavaCompile`/`Test`/`JavaExec` blocks, mirroring `Relay026ConstantContractTest`). The owner redirected
+  to a compiler-enforced gate — a test source that USES a JEP 505 preview API, so the compiler/JVM enforce
+  the wiring directly (no source-scan). Rationale: a compile/exec gate is un-maskable (a runtime file read
+  can be Gradle-UP-TO-DATE-skipped on incremental runs) and has no regex to maintain. Trade-off accepted by
+  the owner: the RUN (`bootRun`) wiring is not reachable by any build/test task, so it is intentionally
+  ungated (see the AC9 deviation in Completion Notes). The static source-scan was removed;
+  `EnablePreviewArgTest` was restored to its committed (live-method-only) form.
+- **T1 RED-on-neuter (compiler-enforced gate) — COMPILE neuter:** removed the `JavaCompile`
+  `--enable-preview` arg → `:proxy:compileTestJava` FAILED; errors include
+  `PreviewFeatureCompileGateTest.java:3: error: StructuredTaskScope is a preview API and is disabled by
+  default` (alongside `RpcSlice`'s STS usage) → restored → GREEN. The gate test is an independent biter
+  (it would fail `compileTestJava` even if `RpcSlice` stopped using STS).
+- **T1 RED-on-neuter (compiler-enforced gate) — TEST neuter:** removed the `Test` `jvmArgs("--enable-preview")`
+  → `:proxy:test --tests *EnablePreviewArgTest` FAILED cleanly: `EnablePreviewArgTest >
+  jvmLaunchedWithEnablePreview() FAILED` (line 26 — the test JVM launched without the flag) → restored →
+  GREEN. (TEST is doubly enforced: that live assertion AND the preview-marked gate class refusing to load
+  without the flag.)
+- **T1 `join()` checked exception:** `StructuredTaskScope.join()` throws `InterruptedException`; the gate
+  test declares `throws InterruptedException` (JUnit permits checked exceptions on `@Test` methods).
+
 ### Completion Notes List
+
+- **T1 DONE — AI-8 `--enable-preview` bootstrap gate via compiler enforcement (owner-approved alternative
+  to the subtask-1 source-scan).** NEW `PreviewFeatureCompileGateTest` opens a JEP 505
+  `StructuredTaskScope` and forks/joins a trivial task. It IS the gate: (a) **COMPILE wiring** — the class
+  compiles iff `compileTestJava` carries `--enable-preview` (drop it → `compileTestJava` fails on the
+  preview API); (b) **TEST wiring** — the compiled class is preview-marked, so the test JVM loads it iff
+  launched with `--enable-preview`. `EnablePreviewArgTest` is kept UNCHANGED (its live
+  `jvmLaunchedWithEnablePreview()` remains the explicit TEST-JVM proof). Full `:proxy:test` GREEN, no
+  regressions. (Subtask 1 literally specified a `Files.walk`/regex source-scan; the owner chose this
+  compiler-enforced mechanism instead — recorded here for transparency.)
+- **T1 RED-on-neuter — PROVEN (AC9 standing gate AI-1):** COMPILE neuter → `:proxy:compileTestJava` RED
+  (gate test is a named biter); TEST neuter → `jvmLaunchedWithEnablePreview` RED (clean, line 26). Both
+  restored → GREEN.
+- **T1 AC9 deviation — RUN (`bootRun`) wiring INTENTIONALLY UNGATED (owner-approved, FLAGGED for review).**
+  No `build`/`test` task starts the app, so `bootRun`'s `--enable-preview` is only exercised when an
+  operator runs it; the compiler-enforced gate cannot reach it, and the source-scan that used to cover it
+  was removed per the owner decision. AC9 names "COMPILE **and RUN**" — the RUN half is deliberately
+  dropped. **Revisit if:** an operator hits a `bootRun` preview-API failure, OR a regression shows bootRun
+  needs guarding — at which point re-add a minimal `JavaExec`-block source-scan or a `bootRun` smoke. (The
+  reviewer may wish to lift this to `deferred-work.md` / the AD-12 accepted-risk register.)
+- **T1 STS-preview-dependence (maintenance note).** The gate bites iff `StructuredTaskScope` stays a
+  PREVIEW feature. It is JEP 505 (5th preview) on the pinned JDK 25; if a future JDK graduates STS to a
+  stable API, `PreviewFeatureCompileGateTest` stops requiring `--enable-preview` and the gate goes silently
+  inert — reintroduce a static wiring scan (or pivot to another preview feature the codebase uses) then.
+  (A source-scan does not have this dependence; that is the trade-off the owner accepted.)
+- **T1 Q1 (JDK 25 vendor pin) — FLAGGED, not implemented (per subtask).**
+  `smpp.java-conventions.gradle.kts` header documents the deliberate NO-vendor-pin decision (relaxed
+  2026-07-25 from an Eclipse-Temurin-only pin + foojay auto-provisioning); the JDK is an environment
+  precondition (DEPLOY-014 / SEC-085). No `.github/workflows` exists yet, so there is no CI setup step to
+  amend. **Action for when CI lands:** pin a JDK 25 setup-step IMAGE (e.g. `actions/setup-java` with an
+  explicit vendor/distribution) — the build itself must NOT auto-provision or vendor-pin (kept relaxed by
+  design). Q1 stays open until the CI lane is authored.
+- **T1 STS-confinement (AD-5) — noted as discipline for T6–T8, not a T1 test.** The preview wiring guards
+  the control plane (`security/`+`bootstrap/`, where `StructuredTaskScope`/`ScopedValue` live). The relay
+  data-plane splice (T6–T8) MUST use NO preview API — pure stable Netty/JDK. Enforced by code review at
+  T6–T8; not gated by a T1 test (out of T1 scope).
 
 ### File List
 
+- `proxy/src/test/java/smpp/companion/proxy/bootstrap/PreviewFeatureCompileGateTest.java` — **added**: the
+  compiler-enforced `--enable-preview` gate (uses JEP 505 `StructuredTaskScope` → compile-fail w/o COMPILE
+  flag, load-fail w/o TEST flag); covers the COMPILE and TEST wirings.
+- `proxy/src/test/java/smpp/companion/proxy/bootstrap/EnablePreviewArgTest.java` — **unchanged** (restored
+  to its committed HEAD form: the T1 source-scan was added then removed per the owner-approved compile-gate
+  redesign; the original live `jvmLaunchedWithEnablePreview()` TEST-JVM assertion stays).
+- *(mutation-pass only, ZERO net change — not listed as modified):*
+  `buildSrc/src/main/kotlin/smpp.java-conventions.gradle.kts` — temporarily neutered (COMPILE block, then
+  TEST block) during the RED-on-neuter pass, then fully restored to its committed state.
+
 ## Change Log
 
-_(filled during dev)_
+- 2026-08-11 — **Story 2.2 Task 1:** AI-8 `--enable-preview` bootstrap gate. Initially implemented as a
+  static source-scan of `smpp.java-conventions.gradle.kts` (COMPILE+TEST+RUN); **REVISED per owner decision**
+  to a compiler-enforced gate — NEW `PreviewFeatureCompileGateTest` (JEP 505 `StructuredTaskScope`) covers
+  COMPILE+TEST; `EnablePreviewArgTest` restored to its original live-method form. **RUN/bootRun coverage
+  intentionally dropped (AC9 deviation, flagged for review).** RED-on-neuter proven for COMPILE+TEST; Q1
+  (JDK vendor pin) flagged; STS-confinement (AD-5) noted for T6–T8. (T2–T11 remain open — story stays
+  in-progress.)
 
 ## Review Findings
 
