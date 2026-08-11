@@ -171,11 +171,11 @@ behind unchanged interfaces.
   - [x] Test: ArchUnit/shape test asserting the 4-method shape + that `CloseReason` is the closed 16-value set + `@NullMarked` present. A capturing-fake `SpliceObserver` for the relay tests lives in `proxy/src/test` (T7/T9 consume it).
   - [x] Verify `observability/package-info.java` already carries `@NullMarked` (it does).
 
-- [ ] **Task 3 (AC: 9) — Password hygiene: codec `SmppBindRequest.toString()` redaction + no-String-from-password scan (AI-5 / CODEC-024 P2).**
-  - [ ] In `codec`: override `SmppBindRequest.toString()` to redact `password` (mirror `Password.toString()` → `"***"`; never call `AsciiString.toString()` on the password — it caches an immortal `String`). *(deferred-work.md:64–72.)*
-  - [ ] Static/ArchUnit scan (extend the `Relay026ConstantContractTest` source-scan pattern, or a new gate) forbidding `.toString()` on any password-typed expression across `codec` + `proxy/security` + `proxy/relay`.
-  - [ ] RELAY logging rule (dev note): log `SystemId` only; NEVER log `SmppBindRequest`/`Password`/`BindCredential` objects.
-  - [ ] RED-on-neuter: dropping the codec override → the scan goes RED; the override itself gets a golden-string assertion.
+- [x] **Task 3 (AC: 9) — Password hygiene: codec `SmppBindRequest.toString()` redaction + no-String-from-password scan (AI-5 / CODEC-024 P2).**
+  - [x] In `codec`: override `SmppBindRequest.toString()` to redact `password` (mirror `Password.toString()` → `"***"`; never call `AsciiString.toString()` on the password — it caches an immortal `String`). *(deferred-work.md:64–72.)*
+  - [x] Static/ArchUnit scan (extend the `Relay026ConstantContractTest` source-scan pattern, or a new gate) forbidding `.toString()` on any password-typed expression across `codec` + `proxy/security` + `proxy/relay`.
+  - [x] RELAY logging rule (dev note): log `SystemId` only; NEVER log `SmppBindRequest`/`Password`/`BindCredential` objects.
+  - [x] RED-on-neuter: dropping the codec override → the scan goes RED; the override itself gets a golden-string assertion.
 
 - [ ] **Task 4 (AC: 1) — `ConnectionRegistry` (AD-8).**
   - [ ] Concurrent bean keyed by ingress `ChannelId` (`ConcurrentHashMap`). Entry: `{ peer-egress Channel, splice flip-flag (volatile/AtomicBoolean), session metadata, tearing-down mark }`.
@@ -360,7 +360,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Tasks 1–2 — bootstrap gate + observability contract seed; T3–T11 pending).
+glm-5.2[1m] (Tasks 1–3 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2; T4–T11 pending).
 
 ### Debug Log References
 
@@ -410,6 +410,45 @@ glm-5.2[1m] (Tasks 1–2 — bootstrap gate + observability contract seed; T3–
   (2→1). OBS-010 reworded to `onFramedPdu`-only (kept as a runtime wiring check; the `/metrics`
   sentinel-scrape-absence stays the load-bearing privacy gate — the `onFramedPdu`-only assertion is
   near-tautological on content, but still proves the relay wired the observer at runtime).
+- **T3 scan-design — explicit `.toString()` scope, honest gap.** The source scan mirrors `Relay026ConstantContractTest`
+  (comment-strip then regex over CODE) and forbids an EXPLICIT `.toString()` on a password-typed expression via two
+  rules: Rule 1 — a `.password()` chain (`req.password().toString()`, `cred.password().value().toString()`,
+  `cred.password().toString()`); Rule 2 — a `Password`-typed variable's `.value()` chain (`Password p = …;
+  p.value().toString()`). Rule 1 covers the dominant documented hazard (the codec/port accessors); Rule 2 covers the
+  inner `AsciiString` reached via a `Password` local/param. Both proven to bite (see T3 RED-on-neuter below). The scan
+  does NOT chase IMPLICIT String materialization (string concat, `String.valueOf`, passing the raw `AsciiString`
+  straight to a logger) — `String.valueOf(req.password())` is feasible but the `[^)]*`-across-nested-parens regex is
+  fragile, so the implicit case is left to the relay-logging DISCIPLINE rule (subtask 3: "log `SystemId` only"),
+  recorded on `SmppBindRequest.toString()`. This is the same lighter-weight-than-AST trade-off `Relay026` documents;
+  the override + the redacting `Password`/`BindCredential` toString already kill the auto-toString leak vector, so the
+  scan's job is keeping FUTURE explicit calls honest, not re-proving the override.
+- **T3 scan scoping — three named packages, NOT all of proxy main.** The scan walks `../codec/src/main/java` (sibling
+  module; `:proxy:test` CWD = proxy module) + `src/main/java/smpp/companion/proxy/security` + `…/proxy/relay`.
+  Scoping to these three (not all of proxy main) is load-bearing: `CompanionConfigValidator` (proxy/config) calls
+  `trustStore.password()` — a DIFFERENT password (a Spring `String`, the TLS truststore secret), and a blanket
+  `.password()` ban would false-fire on it. The three roots are asserted to exist so a CWD/path drift fails LOUDLY
+  (a missing root → empty walk → offenders-empty → silent false-green is the failure mode the existence asserts close).
+- **T3 golden-string test — digit-collision fix.** First draft used a digit password `"57013579"` (mirroring
+  `PasswordTest`'s "digits absent from the redacted form" technique). That FAILED: `Password.toString()` is
+  `"Password[***]"` (zero digits, so any digit works), but `SmppBindRequest.toString()` renders numeric fields
+  (`commandId=0x9`, `interfaceVersion=0x34`, `addrTon=0`, …) whose digits collide with the password's — the per-char
+  `doesNotContain("0")` fired on the legit `0x9`/`addrTon=0`. Fix: draw the password from digits the redacted form
+  NEVER renders. The golden uses only `{0,1,2,3,4,9}` (verified from the override output), so the password is
+  restricted to `{5,6,7,8}` (`"56785678"`) — collision-free. (The `isEqualTo` golden is asserted FIRST and is
+  independent of the password value — `password` always renders `***` — so the per-char check only runs once the
+  exact golden matches, guaranteeing no legit digit trips it.)
+- **T3 RED-on-neuter — `:proxy:test --tests '*Class:method'` filter matched ZERO tests.** Mid-mutation, the
+  `--tests '*NoStringFromPasswordTest:noStringFromPassword'` invocation returned `BUILD SUCCESSFUL in 3s` (vacuous —
+  no test ran); the `Class:method` filter form is not how Gradle's `--tests` matches here. Re-ran with the class
+  filter `--tests '*NoStringFromPasswordTest'` → the expected RED. Lesson logged: use the class filter (or
+  `--tests '*ClassName.methodName'` with a dot, not a colon) for single-method source-scan mutations.
+- **T3 RED-on-neuter — all FOUR guards proven (codec override dropped + golden; scan Rule 1; scan Rule 2).** (1) Drop
+  the `SmppBindRequest.toString()` override (record reverts to auto-toString) → `SmppBindRequestTest` RED at the
+  `isEqualTo` (line 48 — auto-toString renders the password) AND `NoStringFromPasswordTest
+  .smppBindRequestDeclaresToStringOverride` RED (no `String toString()` decl in CODE). (2) Throwaway probe
+  `r.password().toString()` in codec main → `noStringFromPassword` RED (Rule 1, offender named). (3) Throwaway probe
+  `Password p; p.value().toString()` in proxy/security → `noStringFromPassword` RED (Rule 2, offender named). All
+  reverted → full `:codec:test :proxy:test` GREEN. Probes deleted; codec/proxy main back to the T3-committed shape.
 
 ### Completion Notes List
 
@@ -487,6 +526,39 @@ glm-5.2[1m] (Tasks 1–2 — bootstrap gate + observability contract seed; T3–
   RELAY's responsibility (T8), not the seam's. The seam provides the trigger; `CapturingSpliceObserver`
   records duplicates so T8 can assert "exactly one `ConnectionClose` per channel". No T2 action beyond
   seeding the capability.
+- **T3 DONE — CODEC-024 P2 / AI-5 password hygiene: codec `SmppBindRequest.toString()` redaction + no-String-from-
+  password static gate.** (a) **Codec override** — `SmppBindRequest` (a record) now declares `toString()`: renders
+  `password=***`, omits the secret-bearing `originalFrame` (its bytes embed the cleartext password — a `ByteBuf`
+  summary carries no content, but the secret is kept off the debug/log surface regardless); renders the non-secret
+  identifying/bind fields (`commandId`/`sequenceNumber`/`systemId`/`systemType`/`interfaceVersion`/`addrTon`/`addrNpi`/
+  `addressRange`); never calls `AsciiString.toString()` on the password. Mirrors `Password.toString()` /
+  `BindCredential.toString()` (both already redacted). Closes the deferred-work finding (1-2 T3 code review,
+  `deferred-work.md:64–72`) that the record's auto-toString would render + cache the password. (b) **RELAY logging
+  rule (subtask 3, dev note)** — recorded ON the override's javadoc: relay/logging code logs `SystemId` ONLY; NEVER
+  logs `SmppBindRequest`/`Password`/`BindCredential` objects nor the raw `password()` `AsciiString` (the override
+  redacts, but a raw `AsciiString` handed to a logger bypasses it and caches the cleartext). This is the human-
+  discipline backstop for the implicit-String-materialization case the scan does not chase (see Debug Log). Forward
+  guidance for T7/T8 (relay logging). (c) **Source-scan gate** — new `NoStringFromPasswordTest` (proxy/security test;
+  mirrors `Relay026ConstantContractTest`'s comment-stripped source-scan): forbids an explicit `.toString()` on a
+  password-typed expression across codec + proxy/security + proxy/relay — Rule 1 (`.password()` chain) + Rule 2
+  (`Password`-var `.value()` chain) + a positive override-existence check on `SmppBindRequest`. Honest scope: explicit
+  `.toString()` only; implicit concat/`valueOf` left to the discipline rule (Debug Log). (d) **Golden-string test** —
+  new `SmppBindRequestTest` (codec bind test): `isEqualTo` the exact redacted golden + per-char `doesNotContain` over a
+  `{5,6,7,8}`-digit password (collision-free vs the redacted form's `{0,1,2,3,4,9}` digits).
+- **T3 RED-on-neuter — PROVEN on all four guards (AC9 standing gate AI-1).** Drop the codec override → golden test
+  RED (`isEqualTo`, line 48) AND scan override-existence RED; inject `r.password().toString()` (codec probe) → scan
+  Rule 1 RED; inject `Password-var.value().toString()` (proxy/security probe) → scan Rule 2 RED. Each reverted →
+  full `:codec:test :proxy:test` GREEN (no regressions). See Debug Log for the full mutation trace + the two design
+  gotchas (digit collision; `--tests Class:method` filter).
+- **T3 regression — full `:codec:test :proxy:test` GREEN.** The `SmppBindRequest` override is the only production
+  change; NullAway (`compileJava`) clean on it; no codec/proxy test depended on the record's auto-toString
+  (`SmppBindEncoderTest` uses recursive-comparison ignoring `originalFrame`, not toString). ArchUnit RELAY-025/026
+  unaffected (no relay code touched).
+- **T3 forward notes for T7/T8.** (1) The RELAY logging rule (log `SystemId` only) is enforced by CODE REVIEW at the
+  relay handlers, NOT by a T3 test (the scan catches explicit `.toString()`; the implicit concat/logger case is
+  discipline — see the override javadoc). (2) The scan covers `proxy/relay` already (today just `package-info.java`);
+  once relay code lands in T6–T8 it is automatically in scope. (3) Caller-owned zeroize (`cred.password().zeroize()`
+  in `finally`) is T7's job, not T3 — T3 only ensures the password is never STRING-materialized.
 
 ### File List
 
@@ -520,6 +592,21 @@ glm-5.2[1m] (Tasks 1–2 — bootstrap gate + observability contract seed; T3–
   snapshots; `BindReject`/`ConnectionClose` record subtypes).
 - `proxy/src/test/java/smpp/companion/proxy/observability/CapturingSpliceObserverTest.java` — **added**
   (T2): smoke-proofs the fake records all 4 triggers + `clear()` (1 test).
+- `codec/src/main/java/smpp/companion/codec/bind/SmppBindRequest.java` — **modified** (T3): adds the
+  `toString()` override (renders `password=***`, omits the secret-bearing `originalFrame`) — closes the CODEC-024 P2
+  record-auto-toString leak (`deferred-work.md:64–72`); the existing class javadoc's "callers must avoid toString()
+  on the password" sentence updated to note it is now statically enforced + redacted by the override. Carries the
+  RELAY-logging-rule dev note (subtask 3).
+- `codec/src/test/java/smpp/companion/codec/bind/SmppBindRequestTest.java` — **added** (T3): golden-string test for
+  the override — `isEqualTo` the exact redacted form + per-char `doesNotContain` over a `{5,6,7,8}`-digit password
+  (RED-on-neuter: drop the override → auto-toString leaks the digits).
+- `proxy/src/test/java/smpp/companion/proxy/security/NoStringFromPasswordTest.java` — **added** (T3): the
+  CODEC-024 P2 / AI-5 static gate — source-scan (mirrors `Relay026ConstantContractTest`) forbidding `.toString()` on
+  a `.password()` chain (Rule 1) or a `Password`-var `.value()` chain (Rule 2) across codec + proxy/security +
+  proxy/relay, plus a positive override-existence check on `SmppBindRequest` (2 tests).
+- *(mutation-pass only, ZERO net change — not listed as modified):* `codec/.../SmppBindRequest.java` (override
+  dropped + restored) and throwaway probes `_T3MutationProbeChain.java` (codec) / `_T3MutationProbeVar.java`
+  (proxy/security) — created + deleted during the T3 RED-on-neuter pass.
 
 ## Change Log
 
@@ -549,6 +636,17 @@ glm-5.2[1m] (Tasks 1–2 — bootstrap gate + observability contract seed; T3–
   (10→9 tests; RED-on-neuter preserved), `CapturingSpliceObserver` trimmed (`ByteTransfer`/`totalBytes`
   dropped; 2→1 test). `:proxy:test` GREEN, no regressions. See Debug Log for the full audit/propagation
   trace. (T3–T11 remain open — story stays in-progress.)
+- 2026-08-11 — **Story 2.2 Task 3:** CODEC-024 P2 / AI-5 password hygiene. (a) Codec `SmppBindRequest.toString()`
+  override — renders `password=***`, omits the secret-bearing `originalFrame`; closes the deferred 1-2 code-review
+  finding (record auto-toString leaking the password `AsciiString`). (b) New `NoStringFromPasswordTest` static gate
+  (proxy/security test; mirrors `Relay026ConstantContractTest`): forbids `.toString()` on a `.password()` chain
+  (Rule 1) or a `Password`-var `.value()` chain (Rule 2) across codec + proxy/security + proxy/relay, + a positive
+  override-existence check. Honest scope: explicit `.toString()` only — implicit concat/`valueOf` left to the relay-
+  logging discipline rule (subtask 3), recorded on the override javadoc. (c) New `SmppBindRequestTest` golden-string
+  test (codec bind). RED-on-neuter PROVEN on all four guards (drop override → golden + scan override-existence RED;
+  inject `.password().toString()` → Rule 1 RED; inject `Password-var.value().toString()` → Rule 2 RED); each reverted.
+  Full `:codec:test :proxy:test` GREEN, no regressions; NullAway clean on the override. (T4–T11 remain open — story
+  stays in-progress.)
 
 ## Review Findings
 
