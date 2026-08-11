@@ -22,7 +22,9 @@ import io.netty.util.AsciiString;
  * ({@code Arrays.fill(password().array(), password().arrayOffset(), password().arrayOffset()+password().length(), (byte)0)}),
  * <b>but</b> {@link AsciiString} lazily caches {@link AsciiString#toString()} — so a {@code toString()} call
  * would leave a {@code String} copy that survives a backing-array wipe. The seam is therefore fragile:
- * callers must avoid {@code toString()} on the password. See the Dev Agent Record (Story 1.2).
+ * callers must avoid {@code toString()} on the password — now statically enforced by the CODEC-024 P2 / AI-5
+ * source scan (forbids {@code .toString()} on the password across {@code codec} + {@code proxy/security} +
+ * {@code proxy/relay}), and this record's own {@link #toString()} redacts it. See the Dev Agent Record (Story 1.2).
  *
  * <p>{@link #originalFrame()} lifecycle is consumer-owned (release after the relay forwards it).
  *
@@ -53,4 +55,32 @@ public record SmppBindRequest(
         byte addrNpi,
         AsciiString addressRange,
         ByteBuf originalFrame) implements SmppBindPdu {
+
+    /**
+     * Identified as a {@code bind_*_req} without rendering — or {@code toString()}-caching — the password. The
+     * record's auto-generated {@code toString} would render every component, invoking {@link AsciiString#toString()}
+     * on the password — rendering the cleartext AND caching an immortal {@code String} that the backing-array
+     * zeroization wipe (CODEC-024) cannot reach (a plausible relay debug/error leak path). This override redacts the
+     * password ({@code ***}) and omits {@code originalFrame} (its bytes embed the cleartext password — a
+     * {@link ByteBuf} summary carries no content, but the secret is kept off this debug/log surface regardless).
+     * Mirrors {@code Password.toString()} and {@code BindCredential.toString()}.
+     *
+     * <p><b>RELAY logging rule (AC9 / AI-5):</b> relay/logging code logs {@code SystemId} ONLY — NEVER the
+     * {@code SmppBindRequest}, {@code Password}, or {@code BindCredential} objects, and never the raw
+     * {@code password()} {@link AsciiString} (this override redacts, but passing that {@link AsciiString} straight to
+     * a logger bypasses it and caches the cleartext). Enforced for future code by the CODEC-024 P2 / AI-5 source scan.
+     */
+    @Override
+    public String toString() {
+        return "SmppBindRequest[commandId=0x" + Integer.toHexString(commandId)
+                + ", sequenceNumber=" + sequenceNumber
+                + ", systemId=" + systemId
+                + ", password=***"
+                + ", systemType=" + systemType
+                + ", interfaceVersion=0x" + Integer.toHexString(interfaceVersion & 0xFF)
+                + ", addrTon=" + (addrTon & 0xFF)
+                + ", addrNpi=" + (addrNpi & 0xFF)
+                + ", addressRange=" + addressRange
+                + "]";
+    }
 }
