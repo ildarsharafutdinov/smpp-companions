@@ -1090,7 +1090,7 @@ Level: integration · Priority: P1 · Risks: R10, R23 · NFR: OBS-1, PRIV-1, SEC
 
 **OBS-010** — Message/PDU body never appears in the /metrics scrape text (PRIV-1)
 Level: integration · Priority: P1 · Risks: R10, R8 · NFR: OBS-1, PRIV-1
-- Technique: negative-by-absence: splice a submit_sm carrying a unique sentinel short_message body through a coupled pair; scrape /metrics; assert the sentinel string is absent from the scrape text; assert the SpliceObserver recorded only onByteTransfer(Direction, long byte-count) — no onFramedPdu carrying content, no body-derived label/counter.
+- Technique: negative-by-absence: splice a submit_sm carrying a unique sentinel short_message body through a coupled pair; scrape /metrics; assert the sentinel string is absent from the scrape text; assert the SpliceObserver recorded only onFramedPdu(Direction) events (PDU count, no byte volume, no content) and that no body-derived label/counter appears — the interface carries neither PDU type nor body by construction (AD-27).
 - Tooling: JUnit5 + in-JVM coupled channel pair on codec; capturing SpliceObserver; AssertJ that scrape text does not contain the sentinel substring.
 - Notes: SpliceObserver interface has NO content/PDU-type method by design (AD-27) — assert both the contract (interface shape) and the runtime absence of the sentinel.
 
