@@ -177,13 +177,13 @@ behind unchanged interfaces.
   - [x] RELAY logging rule (dev note): log `SystemId` only; NEVER log `SmppBindRequest`/`Password`/`BindCredential` objects.
   - [x] RED-on-neuter: dropping the codec override → the scan goes RED; the override itself gets a golden-string assertion.
 
-- [ ] **Task 4 (AC: 1) — `ConnectionRegistry` (AD-8).**
-  - [ ] Concurrent bean keyed by ingress `ChannelId` (`ConcurrentHashMap`). Entry: `{ peer-egress Channel, splice flip-flag (volatile/AtomicBoolean), session metadata, tearing-down mark }`.
-  - [ ] `Channel` attribute (`AttributeKey`) caching the entry for O(1) on the event loop.
-  - [ ] `channelInactive` on either leg removes the entry (idempotent — RELAY-005); egress-connect-failure-after-entry removes it + tears down ingress (RELAY-006).
-  - [ ] **No `message_id`→`system_id` map anywhere** — RELAY-025 ArchUnit scan forbids it (statelessness, REL-4).
-  - [ ] Tests: RELAY-005 (idempotent double-teardown, double-zeroize safe), RELAY-006 (no orphaned entry on egress-connect-fail). jcstress (RELAY-007) is DEFERRED to the nightly hardening story — note in Completion Record.
-  - [ ] RED-on-neuter for the idempotent-teardown guard.
+- [x] **Task 4 (AC: 1) — `ConnectionRegistry` (AD-8).**
+  - [x] Concurrent bean keyed by ingress `ChannelId` (`ConcurrentHashMap`). Entry: `{ peer-egress Channel, splice flip-flag (volatile/AtomicBoolean), session metadata, tearing-down mark }`.
+  - [x] `Channel` attribute (`AttributeKey`) caching the entry for O(1) on the event loop.
+  - [x] `channelInactive` on either leg removes the entry (idempotent — RELAY-005); egress-connect-failure-after-entry removes it + tears down ingress (RELAY-006).
+  - [x] **No `message_id`→`system_id` map anywhere** — RELAY-025 ArchUnit scan forbids it (statelessness, REL-4).
+  - [x] Tests: RELAY-005 (idempotent double-teardown, double-zeroize safe), RELAY-006 (no orphaned entry on egress-connect-fail). jcstress (RELAY-007) is DEFERRED to the nightly hardening story — note in Completion Record.
+  - [x] RED-on-neuter for the idempotent-teardown guard.
 
 - [ ] **Task 5 (AC: 8) — Shared `PooledByteBufAllocator` + AD-30 live self-check (AD-21/AD-30, AI-6).**
   - [ ] `@Bean PooledByteBufAllocator` (ONE shared, wired to every channel ingress+egress — NOT per-channel). `io.netty.allocator.type=pooled`.
@@ -360,7 +360,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Tasks 1–3 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2; T4–T11 pending).
+glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8; T5–T11 pending).
 
 ### Debug Log References
 
@@ -449,6 +449,45 @@ glm-5.2[1m] (Tasks 1–3 — bootstrap gate + observability contract seed + pass
   `r.password().toString()` in codec main → `noStringFromPassword` RED (Rule 1, offender named). (3) Throwaway probe
   `Password p; p.value().toString()` in proxy/security → `noStringFromPassword` RED (Rule 2, offender named). All
   reverted → full `:codec:test :proxy:test` GREEN. Probes deleted; codec/proxy main back to the T3-committed shape.
+- **T4 design — two-layer idempotency (attribute-clear + CAS).** `ConnectionRegistry.beginTeardown(channel)`
+  reads the cached `Channel` attribute first; if absent → `null` (single-threaded double-teardown fast path:
+  the winner's `clearAttributes` nulled both legs' attrs, so the loser's `channelInactive` reads absent and
+  no-ops BEFORE it ever reaches the CAS). The `ConnectionEntry.beginTearingDown()` CAS is the race-free
+  guarantee for the window where BOTH legs' attributes are still set (two event loops + the AD-25 Deny-callback
+  race). This split is load-bearing for the RED-on-neuter story (see next entry): the deterministic
+  `beginTearingDownIsCasOnce` test bites the CAS directly; the two-leg race test is a non-deterministic
+  supplement whose GREEN/RED under a neutered CAS depends on the interleaving (the attr-clear path can still
+  serialize the two threads). The statistical proof of the race invariant is RELAY-007 (jcstress, DEFERRED —
+  see Completion Notes).
+- **T4 EmbeddedChannel singleton-id trap.** Netty's no-arg `EmbeddedChannel()` ctor shares a singleton
+  `EmbeddedChannelId.INSTANCE`; since the registry keys by ingress `ChannelId` (AD-8), two `new
+  EmbeddedChannel()` ingress channels would COLLIDE on one map key (the second overwriting the first — fatal
+  for RELAY-011's ≥2 concurrent binds). Verified via `javap` on `netty-transport-4.2.16.Final.jar`
+  (`io/netty/channel/embedded/EmbeddedChannelId.class` is the singleton; the `EmbeddedChannel(ChannelId)` ctor
+  exists). Fix: every test channel is `new EmbeddedChannel(DefaultChannelId.newInstance())` — unique ids,
+  deterministic, independent of the default-ctor behavior. Pinned by `distinctIngressChannelsAreDistinctKeys`.
+- **T4 RELAY-025 mechanism — source-scan, NOT ArchUnit (idiom match).** The scenario names "ArchUnit +
+  source/field-type scan"; the repo's established idiom for IDENTIFIER/VALUE-structural invariants is the
+  comment-stripped source-scan (`Relay026ConstantContractTest`, `NoStringFromPasswordTest`), while ArchUnit
+  is reserved for DEPENDENCY/layer rules (`ObservabilityLayerRulesTest`, `NoRolledCryptoArchitectureTest`).
+  RELAY-025 is a "no `message_id`-keyed map / identifier" invariant — identifier-shaped, so source-scan is
+  the idiomatic, robust choice (ArchUnit's `JavaParameterizedType` type-argument introspection is fiddlier
+  for the key-type check). Scan walks `src/main/java/.../relay/`: forbids the `message_id`/`messageId`
+  identifier + any `Map`/`HashMap`/`ConcurrentHashMap`/`ConcurrentMap`/`NavigableMap`/`TreeMap` keyed by
+  `String`/`Long`/`Integer` (the message_id / sequence-number key types — `ChannelId` cannot match); positive
+  rule asserts `ConnectionRegistry` declares `ConcurrentHashMap<ChannelId` so dropping the registry cannot
+  pass by silent false-green. Honest gap documented in the test javadoc: an opaque-wrapper-keyed
+  `Map<SomeDomainKey, SystemId>` is not regex-caught — code review + behavioral RELAY-011 cover it.
+- **T4 RED-on-neuter — idempotent-teardown CAS guard PROVEN (AC9 AI-1).** Neutered
+  `ConnectionEntry.beginTearingDown()` to `tearingDown.set(true); return true;` (always-win, no CAS) →
+  `ConnectionRegistryTest.beginTearingDownIsCasOnce()` FAILED cleanly at line 133 (second call returned `true`
+  not `false`). Reverted → GREEN. (The two-leg race test stayed GREEN under the neuter that run because the
+  attribute-clear path serialized the threads — see the design note above; that is the expected, honest
+  outcome and exactly why RELAY-007 jcstress is the statistical proof, not a single-shot race.)
+- **T4 RED-on-neuter — RELAY-025 scan PROVEN.** Injected a throwaway
+  `private final Map<String, SystemId> messageIdIndex = new HashMap<>();` into `ConnectionEntry` →
+  `Relay025StatelessnessScanTest` FAILED (the forbid-rules matched both the `messageId` identifier AND the
+  `Map<String,` key type) → reverted → full `:proxy:test` GREEN. Probe had ZERO net change.
 
 ### Completion Notes List
 
@@ -559,6 +598,49 @@ glm-5.2[1m] (Tasks 1–3 — bootstrap gate + observability contract seed + pass
   discipline — see the override javadoc). (2) The scan covers `proxy/relay` already (today just `package-info.java`);
   once relay code lands in T6–T8 it is automatically in scope. (3) Caller-owned zeroize (`cred.password().zeroize()`
   in `finally`) is T7's job, not T3 — T3 only ensures the password is never STRING-materialized.
+- **T4 DONE — AC1 `ConnectionRegistry` (AD-8) authored.** Two main types in `proxy/relay/`:
+  (a) `ConnectionEntry` — the ephemeral per-bind state holding EXACTLY the four AD-8 fields: the peer-egress
+  `Channel` (`@Nullable volatile`, absent until the egress connect succeeds — optimistic creation per
+  RELAY-006), the AD-25 splice flip-flag (`AtomicBoolean` CAS-once via `flipSpliced()`), ephemeral session
+  metadata (`SystemId` + the ingress `ChannelId` that keys the registry), and the tearing-down mark
+  (`AtomicBoolean` CAS-once via `beginTearingDown()`). NO `message_id` field/correlation (REL-4 / RELAY-025).
+  Relay-internal; never crosses a package boundary. (b) `ConnectionRegistry` — the singleton `@Component`
+  `ConcurrentHashMap<ChannelId, ConnectionEntry>`; `register(ingress, systemId)` creates optimistically +
+  caches the entry on the ingress attribute; `attachEgress(ingressId, egress)` sets the egress + caches on
+  the egress attribute (no-op if the ingress already tore down during the handshake); `entryFor(channel)`
+  is the O(1) attribute read from either leg; `beginTeardown(channel)` is the idempotent race-free teardown
+  (attribute-read → CAS-once `beginTearingDown` → `remove` + clear both legs' attrs → hand the entry to the
+  caller to close/`cancelHttp`/`zeroize`). The teardown SIDE-EFFECTS (close both legs, `cancelHttp`,
+  `zeroize`) are intentionally NOT in the registry — the caller (T7/T8 handlers) owns them; the registry owns
+  only the state + the idempotent transition (AD-8/AD-32 split).
+- **T4 tests (13, 0 skipped/failed):** `ConnectionRegistryTest` (11) — register/AD-8-fields, distinct-keys
+  (no ChannelId collision), attachEgress-both-legs, attachEgress-no-op-when-gone, `flipSpliced` CAS-once,
+  `beginTearingDown` CAS-once (the deterministic RED-on-neuter biter), RELAY-005 single-threaded idempotent
+  double-teardown, RELAY-005 egress-leg teardown, RELAY-005 caller-side double-zeroize-safe (R8 slice),
+  RELAY-005 two-leg concurrent race (exactly-one-wins), RELAY-006 no-orphan-on-egress-connect-fail.
+  `Relay025StatelessnessScanTest` (2) — RELAY-025 structural statelessness (no `message_id` identifier /
+  message_id-keyed Map) + positive ConnectionRegistry-declares-ChannelId-keyed-map rule.
+- **T4 RELAY-007 (jcstress) DEFERRED — honest scoping.** The `ConnectionRegistry` concurrent-lifecycle
+  stress (RELAY-007, "no-lost-entry / no-orphan / no-double-add under all thread interleavings") is DEFERRED
+  to the nightly hardening story per the T4 checklist and the story's Out-of-scope list ("jcstress
+  (RELAY-007), race-soak (RELAY-024) → nightly hardening story / Epic-2 exit gates"). The single-shot
+  two-leg race test here pins the observable contract ONCE; it is NOT the statistical proof. Open question
+  Q2 (jcstress adoption as a build target vs a JUnit-based stress harness) remains — owned by the nightly
+  story, not this task. The `ConnectionRegistry` is `ConcurrentHashMap`-backed (the scenario's prescribed
+  implementation), so the nightly jcstress harness targets it unchanged.
+- **T4 forward notes for T7/T8.** (1) The teardown side-effects the registry RETURNS the entry for are the
+  handlers' job: `BindInterceptor` (T7) owns egress-establishment-fail teardown + the AD-33 deny + the
+  `finally`-owned `zeroize`; `RelayHandler` (T8) owns the AD-25 flip (`entry.flipSpliced()`), the AD-32
+  bare-close teardown, and the exactly-once `onConnectionClosed` (the registry hands the entry once; the
+  observer fires once). (2) `attachEgress` is the single egress-attachment seam — T7's egress-connect
+  success path calls it (caches the entry on the egress leg so T8's egress-side `entryFor` resolves). (3) The
+  `ConnectionEntry` API (`flipSpliced`/`spliced`/`beginTearingDown`/`tearingDown`/`egress`/`ingress`) is the
+  complete state surface T7/T8 read; no further registry changes are anticipated for T7/T8 (only NEW handler
+  classes consuming it).
+- **T4 regression — full `:proxy:test` GREEN + `./gradlew clean build` GREEN (AC9).** NullAway clean on the
+  two new `@Component`/`final` main types (the `@Nullable Channel egress` field/getter + the two
+  `@Nullable`-returning registry methods are the only nullable surfaces). ArchUnit RELAY-025 (new) +
+  RELAY-026 unaffected; no existing test touched.
 
 ### File List
 
@@ -607,6 +689,22 @@ glm-5.2[1m] (Tasks 1–3 — bootstrap gate + observability contract seed + pass
 - *(mutation-pass only, ZERO net change — not listed as modified):* `codec/.../SmppBindRequest.java` (override
   dropped + restored) and throwaway probes `_T3MutationProbeChain.java` (codec) / `_T3MutationProbeVar.java`
   (proxy/security) — created + deleted during the T3 RED-on-neuter pass.
+- `proxy/src/main/java/smpp/companion/proxy/relay/ConnectionEntry.java` — **added** (T4): the ephemeral
+  per-bind state — the four AD-8 fields (peer-egress `@Nullable Channel`, `AtomicBoolean` splice flip-flag,
+  `SystemId`+ingress `ChannelId` session metadata, `AtomicBoolean` tearing-down mark); CAS-once
+  `flipSpliced()` / `beginTearingDown()`. No `message_id` correlation (REL-4 / RELAY-025).
+- `proxy/src/main/java/smpp/companion/proxy/relay/ConnectionRegistry.java` — **added** (T4): the singleton
+  `@Component` `ConcurrentHashMap<ChannelId, ConnectionEntry>` — `register` / `attachEgress` / `entryFor` /
+  `beginTeardown` (idempotent race-free); `AttributeKey` cache on both legs for O(1) event-loop access.
+- `proxy/src/test/java/smpp/companion/proxy/relay/ConnectionRegistryTest.java` — **added** (T4): RELAY-005
+  (idempotent double-teardown, egress-leg teardown, double-zeroize-safe, CAS-once, two-leg concurrent race)
+  + RELAY-006 (no-orphan-on-egress-connect-fail) + AD-8 field/attribute assertions (11 tests).
+- `proxy/src/test/java/smpp/companion/proxy/relay/Relay025StatelessnessScanTest.java` — **added** (T4): the
+  REL-4 / RELAY-025 structural statelessness source-scan — forbids `message_id`/`messageId` identifiers +
+  String/Long/Integer-keyed Maps in `relay/`; positive rule asserts the registry's `ChannelId`-keyed map (2 tests).
+- *(mutation-pass only, ZERO net change — not listed as modified):* `proxy/.../relay/ConnectionEntry.java` —
+  `beginTearingDown()` CAS neutered (then restored) for the idempotent-teardown RED-on-neuter; a throwaway
+  `Map<String, SystemId> messageIdIndex` probe injected (then removed) for the RELAY-025 RED-on-neuter.
 
 ## Change Log
 
@@ -647,6 +745,24 @@ glm-5.2[1m] (Tasks 1–3 — bootstrap gate + observability contract seed + pass
   inject `.password().toString()` → Rule 1 RED; inject `Password-var.value().toString()` → Rule 2 RED); each reverted.
   Full `:codec:test :proxy:test` GREEN, no regressions; NullAway clean on the override. (T4–T11 remain open — story
   stays in-progress.)
+- 2026-08-11 — **Story 2.2 Task 4:** AC1 `ConnectionRegistry` (AD-8). NEW `ConnectionEntry` (the four AD-8
+  fields: peer-egress `@Nullable Channel`, `AtomicBoolean` splice flip-flag, `SystemId`+ingress `ChannelId`
+  session metadata, `AtomicBoolean` tearing-down mark — no `message_id` correlation, REL-4) + NEW
+  `ConnectionRegistry` (singleton `@Component` `ConcurrentHashMap<ChannelId, ConnectionEntry>`; `register` /
+  `attachEgress` / `entryFor` / `beginTeardown`; `AttributeKey` cache on both legs for O(1)). Two-layer
+  idempotency: attribute-clear (single-threaded double-teardown fast path) + CAS-once `beginTearingDown`
+  (race-free for the two-leg/AD-25-Deny-callback window). Tests: `ConnectionRegistryTest` (11) covering
+  RELAY-005 (idempotent double-teardown, egress-leg teardown, double-zeroize-safe R8 slice, CAS-once,
+  two-leg concurrent race — exactly-one-wins) + RELAY-006 (no-orphan-on-egress-connect-fail); NEW
+  `Relay025StatelessnessScanTest` (2) — the REL-4 structural statelessness source-scan (no `message_id`
+  identifier / String/Long/Integer-keyed Map; positive ChannelId-keyed-map rule). RED-on-neuter PROVEN for
+  the idempotent-teardown CAS (neuter → `beginTearingDownIsCasOnce` RED at line 133) AND the RELAY-025 scan
+  (inject `Map<String, SystemId> messageIdIndex` → scan RED); each reverted. **RELAY-007 (jcstress) DEFERRED
+  to the nightly hardening story** (per T4 checklist + Out-of-scope); the single-shot race test pins the
+  observable contract once but is not the statistical proof (Q2 jcstress-adoption open for the nightly story).
+  EmbeddedChannel singleton-id trap handled (every test channel uses `DefaultChannelId.newInstance()`).
+  Full `:proxy:test` GREEN + `./gradlew clean build` GREEN (AC9); NullAway clean. (T5–T11 remain open —
+  story stays in-progress.)
 
 ## Review Findings
 
