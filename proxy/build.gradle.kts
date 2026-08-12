@@ -10,6 +10,7 @@ plugins {
     id("io.spring.dependency-management") version "1.1.7"
     id("org.owasp.dependencycheck") // SEC-091 CI lane — configured below, NOT wired into `check`
     id("me.champeau.jmh") version "0.7.3" // PERF-001..006 (AC8): JMH codec microbenchmarks (`src/jmh`); nightly-tier
+    id("io.freefair.lombok") version "9.5.0"
 }
 
 // Spring Boot 4.1.0 manages Netty to 4.2.15.Final; the story pins 4.2.16.Final, so override the
