@@ -76,6 +76,7 @@ final class TestCompanionConfigs {
     static TestCompanionConfigs reverseB(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
+        // The AD-30 budget comes minimal from common() (the self-check is unconditional — see common()).
         String b = "companion.reverse.mode-b";
         c.props.put(b + ".smsc.host", "smsc.carrier.example");
         c.props.put(b + ".smsc.port", "2775");
@@ -112,9 +113,16 @@ final class TestCompanionConfigs {
         props.put("companion.bind.port", "2775");
         // max-frame + max-command-length are deliberately unset: they default to SmppFrame.MAX_COMMAND_LENGTH
         // in Java (RELAY-026), not a YAML literal.
-        props.put("companion.memory.max-inbound-depth", "64");
-        props.put("companion.memory.concurrent-pairs", "1024");
-        props.put("companion.memory.safety-factor", "1.5");
+        // Story 2.2 T5b: the AD-30 live direct-memory self-check (DirectMemoryBudgetStartupCheck) is
+        // UNCONDITIONAL — every full-context boot, every role×mode cell, compares the derived budget to
+        // the test JVM's live direct-memory ceiling. The realistic defaults (64 × 1024 × 1.5 ≈ 6 GiB)
+        // exceed a capped test JVM's ceiling (e.g. 512 MiB), so every test config carries a minimal
+        // budget (1 × 1 × 1.0 = 65536 bytes) that fits under it. The self-check still RUNS for every
+        // boot (its fail and warn arms are exercised in DirectMemoryBudgetStartupCheckTest) — this only
+        // keeps the budget inside the ceiling so a VALID boot can start.
+        props.put("companion.memory.max-inbound-depth", "1");
+        props.put("companion.memory.concurrent-pairs", "1");
+        props.put("companion.memory.safety-factor", "1.0");
     }
 
     /** Re-keys every property whose key starts with {@code from} to start with {@code to}. */

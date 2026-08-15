@@ -360,7 +360,7 @@ class CompanionConfigMatrixTest {
         var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
         var props = new ProxyCompanionProperties(
                 new ProxyCompanionProperties.Bind(2775),
-                new ProxyCompanionProperties.Memory(64, 1024, 1.5),
+                new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
                         List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"),
@@ -394,6 +394,16 @@ class CompanionConfigMatrixTest {
     void ad30_nonFiniteSafetyFactorRefuses(String factor) {
         assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.memory.safety-factor", factor),
                 "AD-30 safety-factor " + factor, "finite");
+    }
+
+    @Test
+    @DisplayName("AD-30: an invalid budget-check value -> refuse (unknown policy is never silently ignored)")
+    void ad30_invalidBudgetCheckValueRefuses() {
+        // budget-check is an enum: an unknown token must fail the BIND (fail-closed) — it can neither
+        // fall back to a default nor reach the self-check. assertRefused's token asserts the failure
+        // names the property, so a regression to "ignore unknown value" turns this RED.
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.memory.budget-check", "explode"),
+                "AD-30 budget-check", "budget-check");
     }
 
     @Test
@@ -548,7 +558,7 @@ class CompanionConfigMatrixTest {
                                                           List<ProxyCompanionProperties.RoutingEntry> routing) {
         return new ProxyCompanionProperties(
                 new ProxyCompanionProperties.Bind(2775),
-                new ProxyCompanionProperties.Memory(64, 1024, 1.5),
+                new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
                         List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"),
@@ -566,7 +576,7 @@ class CompanionConfigMatrixTest {
     private static ProxyCompanionProperties reverseAProps(String trustStorePath) {
         return new ProxyCompanionProperties(
                 new ProxyCompanionProperties.Bind(2775),
-                new ProxyCompanionProperties.Memory(64, 1024, 1.5),
+                new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
                         List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"),

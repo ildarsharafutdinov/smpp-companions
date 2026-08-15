@@ -276,6 +276,11 @@ public record ProxyCompanionProperties(
      * AD-30 direct-memory budget inputs ({@code MaxDirectMemorySize = SmppFrame.MAX_COMMAND_LENGTH ×
      * maxInboundDepth × concurrentPairs × safetyFactor}). The max-frame input IS the codec constant
      * ({@link SmppFrame#MAX_COMMAND_LENGTH}, RELAY-026) &mdash; referenced directly, not a config key.
+     * The fourth key, {@code budget-check}, is the over-ceiling policy for the AD-30 live startup
+     * self-check &mdash; NOT an input to the budget formula. Like the other {@code memory.*} inputs it
+     * ships defaulted in application.yml ({@code fail}); there is deliberately no {@code @DefaultValue}
+     * here &mdash; it could construct a half-defaulted record when the whole {@code memory} node is
+     * absent, changing the omitted-block refusal semantics.
      */
     public record Memory(
             @Min(value = 1, message = "companion.memory.max-inbound-depth must be >= 1 — refusing to start (AD-30).")
@@ -283,7 +288,23 @@ public record ProxyCompanionProperties(
             @Min(value = 1, message = "companion.memory.concurrent-pairs must be >= 1 — refusing to start (AD-30).")
             int concurrentPairs,                  // companion.memory.concurrent-pairs
             @DecimalMin(value = "1.0", message = "companion.memory.safety-factor must be a finite number (>= 1.0) — refusing to start (AD-30).")
-            double safetyFactor                   // companion.memory.safety-factor
+            double safetyFactor,                  // companion.memory.safety-factor
+            BudgetCheck budgetCheck               // companion.memory.budget-check — FAIL default ships in application.yml
     ) {
+
+        /**
+         * Over-ceiling policy for the AD-30 live startup self-check
+         * ({@code companion.memory.budget-check}). The default ({@link #FAIL}) ships in
+         * application.yml; the check treats any non-{@link #WARN} value &mdash; including a defensively
+         * null bind from a yml-less context &mdash; as FAIL, so the fail-closed posture holds even
+         * outside the shipped default. There is deliberately no value that skips the check itself (it
+         * always computes and compares; only the over-budget severity is tunable).
+         */
+        public enum BudgetCheck {
+            /** Refuse to start when the budget exceeds the live ceiling (AD-17 fail-fast) — the default. */
+            FAIL,
+            /** Emit the loud over-budget accepted-risk banner and start anyway (the Mode B pattern, AD-17/SEC-052). */
+            WARN
+        }
     }
 }

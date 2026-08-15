@@ -37,6 +37,8 @@ class CompanionTlsBindingTest {
     void tlsKebabCaseKeysRelaxedBindIntoTheRecord(@TempDir Path dir) throws IOException {
         // A complete valid forward+A config via properties; the TLS block is NOT overridden, so it
         // comes from application.yml — catching a field-name/yml-key drift an inspection-only check misses.
+        // The memory overrides are run() args (highest precedence): since T5b the AD-30 self-check is
+        // unconditional, and yml's realistic budget (≈ 6 GiB) exceeds the test JVM's direct-memory ceiling.
         Path cert = Files.createFile(dir.resolve("server.crt"));
         Path key = Files.createFile(dir.resolve("server.key"));
         Path cred = Files.createFile(dir.resolve("oidc-cred"));
@@ -51,7 +53,9 @@ class CompanionTlsBindingTest {
                                      "companion.forward.mode-a.routing[0].system-id=carrierOne",
                                      "companion.forward.mode-a.routing[0].host=reverse.internal",
                                      "companion.forward.mode-a.routing[0].port=2776")
-                             .run()) {
+                             .run("--companion.memory.max-inbound-depth=1",
+                                     "--companion.memory.concurrent-pairs=1",
+                                     "--companion.memory.safety-factor=1.0")) {
             ProxyCompanionProperties.Tls tls = ctx.getBean(ProxyCompanionProperties.class).tls();
             assertThat(tls).isNotNull();
             assertThat(tls.protocols())
