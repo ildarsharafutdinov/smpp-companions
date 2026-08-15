@@ -4,6 +4,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
+import io.netty.util.concurrent.DefaultThreadFactory;
 
 /**
  * Netty bootstrap beans for the stateless relay (AD-1/AD-2/AD-16). T5 mounts the allocator + the AD-30
@@ -37,5 +41,30 @@ public class RelayNettyConfig {
     @Bean(destroyMethod = "")
     public PooledByteBufAllocator pooledByteBufAllocator() {
         return PooledByteBufAllocator.DEFAULT;
+    }
+
+    /**
+     * AD-1/AD-2 &mdash; the ONE shared event loop group for both relay legs (the HexDumpProxy
+     * pattern): the acceptor's boss/worker loops, and &mdash; from T7 &mdash; every per-bind egress
+     * connection, which registers on its ingress channel's event loop so both legs of a coupled pair
+     * run on one thread. Platform threads BY CONSTRUCTION ({@link DefaultThreadFactory} never creates
+     * virtual threads) &mdash; virtual threads never carry the data-plane splice (AD-1); the
+     * {@code companion-relay-...} name makes the relay's loops identifiable in thread dumps (and lets
+     * the AD-1 platform-thread pin observe them). Size 0 = Netty's default (2 &times; cores).
+     *
+     * <p>Shutdown is owned by {@link RelayServerLifecycle#stop()} (acceptor close &rarr; graceful
+     * group shutdown, awaited within the per-phase window) when the relay ran;
+     * {@code destroyMethod = "shutdownGracefully"} is the never-started-cell backstop (non-mode-b
+     * boots never call the lifecycle's stop) and both paths are idempotent. Not {@code destroyMethod = ""}
+     * as on the allocator &mdash; this bean OWNS its group (created here, not a JVM-global singleton).
+     *
+     * <p>{@link MultiThreadIoEventLoopGroup} + {@link NioIoHandler#newFactory()} (NOT the deprecated
+     * {@code NioEventLoopGroup}) is Netty 4.2's NIO idiom &mdash; the 4.2 IoHandle refactor deprecated
+     * the old group class; the {@code NioServerSocketChannel} it serves is unchanged.
+     */
+    @Bean(destroyMethod = "shutdownGracefully")
+    public EventLoopGroup relayEventLoopGroup() {
+        return new MultiThreadIoEventLoopGroup(0, new DefaultThreadFactory("companion-relay"),
+                NioIoHandler.newFactory());
     }
 }

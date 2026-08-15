@@ -7,6 +7,8 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import smpp.companion.proxy.testsupport.RelayTestFixtures;
+
 /**
  * Builds COMPLETE, VALID {@code companion.*} property sets per AD-17 cell, creating the required
  * secret (empty) files + a valid trust store under a temp dir. The role&times;mode cell is selected
@@ -110,7 +112,12 @@ final class TestCompanionConfigs {
         props.put("companion.tls.protocols", "TLSv1.3,TLSv1.2");
         props.put("companion.tls.tls12-cipher-suites", TLS12);
         props.put("companion.tls.tls13-cipher-suites", TLS13);
-        props.put("companion.bind.port", "2775");
+        // Story 2.2 T6: a VALID mode-b full-context boot now BINDS companion.bind.port (the relay
+        // acceptor lifecycle, RelayServerLifecycle). A per-instance free ephemeral port keeps those
+        // boots off the shipped 2775 default — deterministic against a locally-listening SMPP tool and
+        // against other tests. (Forward-cell configs never bind — the lifecycle is mode-b-scoped — but
+        // sharing the probe keeps every base uniform.)
+        props.put("companion.bind.port", String.valueOf(RelayTestFixtures.freePort()));
         // max-frame + max-command-length are deliberately unset: they default to SmppFrame.MAX_COMMAND_LENGTH
         // in Java (RELAY-026), not a YAML literal.
         // Story 2.2 T5b: the AD-30 live direct-memory self-check (DirectMemoryBudgetStartupCheck) is
