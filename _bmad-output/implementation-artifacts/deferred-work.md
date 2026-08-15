@@ -26,6 +26,12 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - **`contextCloseStopsLifecycleWithinGracefulTimeout` 30s-ceiling assertion is trivial** — stop()-ran IS checked (`isRunning` false); a meaningful upper-bound test lands with the AD-22 body in Epic 4. [proxy/src/test/.../bootstrap/BootstrapLifecycleTest.java]
 - **`BootstrapLifecycleTest` non-web assertion is tautological (forces `.web(NONE)`)** — AD-16 is guarded by OBS-013 + `spring.main.web-application-type: none`; the class-name check can't detect classpath drift. Cosmetic. [BootstrapLifecycleTest.java]
 - **`CompanionLifecycle` phase ordering (default `MAX_VALUE` stops first) once a 2nd `SmartLifecycle` lands** — single bean today; Epic 4 manages phases. [proxy/src/main/java/.../bootstrap/CompanionLifecycle.java]
+  **[RESOLVED 2026-08-15 (Story 2.2 T6): both lifecycles now carry EXPLICIT phases —
+  `ProxyCompanionLifecycle.APP_PHASE = 0` and `RelayServerLifecycle.RELAY_ACCEPTOR_PHASE =
+  APP_PHASE + 1000` — so the relay acceptor STOPS first (AD-22 step 1) instead of two default-phase
+  beans racing. Pinned by `RelayServerLifecycleTest.relayAcceptorStopsBeforeTheAppLifecycle` (proven
+  RED when the `getPhase()` override is removed — mutation M-E). The AD-22 7-step drain BODY itself
+  remains Epic 4, as does any further phase management it needs.]**
 - **SEC-099 has only a Nimbus floor — other deps unchecked** — AC5 is Nimbus-specific; the OWASP lane is the general scanner. Maintenance concern, not a 1.1 defect. [buildSrc/src/main/kotlin/smpp.dependency-floors.gradle.kts]
 
 ## Deferred from: code review of 1-4-compile-time-null-safety-enforcement (2026-07-25)
@@ -204,3 +210,31 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   reintroduced (mutation M2). Over-budget severity now follows `companion.memory.budget-check: fail | warn`
   (default `fail` — unchanged behavior; `warn` = loud accepted-risk banner + start). Spine AD-30 amended;
   see the `.memlog.md` 2026-08-15 entry.
+
+## Deferred from: code review of 2-2-stateless-relay-and-a1-session-affinity-smoke (T6, 2026-08-15)
+
+- **T6 wiring seam (`.childHandler` / `applyToIngress` call sites) has no RED-on-neuter pin**
+  [`proxy/.../relay/netty/RelayServerLifecycle.java:87-88`] — dropping either line from `start()` keeps the
+  whole suite GREEN: the full-boot test's TCP-connect probe cannot see an empty pipeline, `AUTO_READ=false`
+  means nothing reads pre-T8, and the `ServerBootstrap` is a local variable (no structural pin either).
+  Behaviorally unobservable until handlers exist. Bites from T7 (`BindInterceptor`) / T9 (the A-1 smoke
+  drives real PDUs through the acceptor); **T7's review checklist must confirm a dropped wiring line goes RED.**
+- **`RelayServerLifecycle.stop()` quiesces the shared event loop at acceptor phase (RELAY_ACCEPTOR_PHASE)**
+  [`proxy/.../relay/netty/RelayServerLifecycle.java:113-115`] — from T7 every per-bind egress connection
+  registers on the SAME `relayEventLoopGroup` bean, so acceptor-stop terminates all established legs before
+  any app-phase drain could run; the javadoc's "owns only the acceptor window" vs "quiesce the shared event
+  loop" tension resolves only when Epic 4's AD-22 7-step drain re-authors this stop body. Spec-mandated today
+  (the T6 checkbox pins exactly this stop: close acceptor → `shutdownGracefully` awaited); recorded so T7
+  review + Epic 4 own the ordering consciously.
+- **`shutdownGracefully()` default 2s quiet period costs every mode-b context close ≥2s**
+  [`proxy/.../relay/netty/RelayServerLifecycle.java:115`] — no-arg = 2s quiet / 15s cap, awaited
+  `syncUninterruptibly()`: ~+8-10s across the suite's mode-b boots (full suite 47s), 2s per production
+  shutdown, up to ~17s of the 30s per-phase window. A documented deliberate choice (javadoc cites Netty's
+  defaults); becomes a mini-drain feature once in-flight PDUs exist. Revisit with the Epic-4 drain work
+  (or pass an explicit 0-quiet / shorter window then).
+- **Wildcard listener posture: the acceptor binds `0.0.0.0` with no bind-host key, connection cap, or idle
+  timeout** (owner decision 2026-08-15, T6 code review) [`proxy/.../relay/netty/RelayServerLifecycle.java:89`;
+  `ProxyCompanionProperties.Bind` is port-only] — accepted channels are inert-but-never-reaped until T7/T8
+  (`AUTO_READ=false`, no handler): an unauthenticated, unbounded socket sink on every interface for a real
+  mode-b boot. **Deferred to Epic 3**: the slice is in-JVM/loopback until then; Epic 3 adds bind-host +
+  listener hardening (including the connection-cap decision) when it wires the production acceptors.

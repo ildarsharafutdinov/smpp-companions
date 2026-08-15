@@ -20,6 +20,7 @@ import io.netty.buffer.PooledByteBufAllocator;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,6 +54,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @ExtendWith(OutputCaptureExtension.class)
 class DirectMemoryBudgetStartupCheckTest {
 
+    /**
+     * Story 2.2 T6: every VALID mode-b full-app boot now BINDS {@code companion.bind.port} (the relay
+     * acceptor lifecycle). The three boots below that reach context refresh's lifecycle phase pass this
+     * free port as a run-arg (HIGHEST precedence — beats application.yml's shipped 2775), so they never
+     * collide with a locally-listening SMPP tool. The two refusal boots fail at refresh BEFORE the
+     * lifecycle starts, so they need no port.
+     */
+    private static final int BIND_PORT = RelayTestFixtures.freePort();
+
     @Test
     @DisplayName("mode-b with a budget under the live ceiling starts silently, and the AD-21 allocator bean is the shared DEFAULT")
     void modeBWithSmallBudgetStartsAndSelfCheckPasses(CapturedOutput out) {
@@ -61,7 +71,8 @@ class DirectMemoryBudgetStartupCheckTest {
         try (ConfigurableApplicationContext ctx = modeBBuilder().run(
                 "--companion.memory.max-inbound-depth=1",
                 "--companion.memory.concurrent-pairs=1",
-                "--companion.memory.safety-factor=1.0")) {
+                "--companion.memory.safety-factor=1.0",
+                "--companion.bind.port=" + BIND_PORT)) {
             assertThat(ctx.isActive()).isTrue();
             // The self-check bean exists → afterPropertiesSet ran and did not throw (budget 65536 < ceiling).
             assertThat(ctx.getBean(DirectMemoryBudgetStartupCheck.class)).isNotNull();
@@ -130,7 +141,8 @@ class DirectMemoryBudgetStartupCheckTest {
         // exception-safety — a neutered warn arm that still throws leaves nothing to close and fails RED).
         try (ConfigurableApplicationContext ctx = modeBBuilder().run(
                 "--companion.memory.concurrent-pairs=1000000",
-                "--companion.memory.budget-check=warn")) {
+                "--companion.memory.budget-check=warn",
+                "--companion.bind.port=" + BIND_PORT)) {
             assertThat(ctx.isActive()).as("budget-check=warn: must start despite the over-ceiling budget").isTrue();
             assertThat(out.getAll())
                     .as("the loud over-budget accepted-risk banner must be emitted")
@@ -150,7 +162,8 @@ class DirectMemoryBudgetStartupCheckTest {
                 "--companion.memory.max-inbound-depth=1",
                 "--companion.memory.concurrent-pairs=1",
                 "--companion.memory.safety-factor=1.0",
-                "--companion.memory.budget-check=warn")) {
+                "--companion.memory.budget-check=warn",
+                "--companion.bind.port=" + BIND_PORT)) {
             assertThat(ctx.isActive()).as("warn policy with an under-ceiling budget: must start").isTrue();
         }
         assertThat(out.getAll())

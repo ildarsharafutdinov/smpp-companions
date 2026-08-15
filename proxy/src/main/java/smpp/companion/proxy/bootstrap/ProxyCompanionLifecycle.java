@@ -12,6 +12,16 @@ import org.springframework.stereotype.Component;
 @Component
 public class ProxyCompanionLifecycle implements SmartLifecycle {
 
+    /**
+     * Explicit app-level phase (Story 2.2 T6 — the deferred-work 2nd-SmartLifecycle ordering item):
+     * this bean coordinates the app-level shutdown window (the AD-22 7-step drain body lands here in
+     * Epic 4), so the relay's data-plane acceptor must stop BEFORE it (Spring stops higher phases
+     * first) — {@code RelayServerLifecycle.RELAY_ACCEPTOR_PHASE} is deliberately {@code APP_PHASE + 1000}.
+     * The previous implicit default ({@code Integer.MAX_VALUE}) stopped this stub FIRST — undefined
+     * against any second lifecycle; now both ends of the contract are named and pinned.
+     */
+    public static final int APP_PHASE = 0;
+
     private volatile boolean running = false;
 
     @Override
@@ -37,5 +47,10 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
     @Override
     public boolean isRunning() {
         return this.running;
+    }
+
+    @Override
+    public int getPhase() {
+        return APP_PHASE;
     }
 }

@@ -205,12 +205,14 @@ behind unchanged interfaces.
     Mutations proven RED: M1 neutered warn arm → warn test RED; M2 reintroduced mode-b guard → forward-A test
     RED. Spine AD-30 amended in place; deferred-work "Epic-3 widening" entry resolved.
 
-- [ ] **Task 6 (AC: 4) — Netty pipelines + `SmartLifecycle` acceptor (AD-1/AD-2/AD-16).**
+- [ ] **Task 6 (AC: 4) — Netty pipelines + `SmartLifecycle` acceptor (AD-1/AD-2/AD-16).** *(T6 substrate landed
+  2026-08-15 — subtasks 2–5 complete; subtask 1 stays open BY OWNER DECISION, see its note.)*
   - [ ] `ServerBootstrap`/`Bootstrap` driven directly (NO Spring messaging integration). Ingress pipeline `SmppFrameDecoder → SmppCodec → BindInterceptor → RelayHandler`; egress `SmppFrameDecoder → SmppCodec → RelayHandler`. One `SmppFrameDecoder` instance per channel (CODEC-014).
-  - [ ] Shared event loop (platform threads — virtual threads never carry the data-plane splice, AD-1). `AUTO_READ=false` + write-completes-gates-read + explicit low-water re-arm (AD-2/AD-30). Per-channel inbound queue bounded.
-  - [ ] `SmartLifecycle` bean: start = bind acceptor + wire egress; `stop(Runnable)` invokes the callback in `finally` (mirror `ProxyCompanionLifecycle`). **Explicit `getPhase()`** so the relay lifecycle and `ProxyCompanionLifecycle` stop in the right order (deferred-work.md 2nd-SmartLifecycle item; full AD-22 drain is Epic 4).
-  - [ ] Config source: `companion.bind.port` (listener) + `companion.reverse.mode-b.{smsc, acknowledged:true}` (the single egress + plaintext opt-in) + `companion.memory.*` (T5) + `companion.tls.*` (AD-34 defaults). Read via `ProxyCompanionProperties` (Story 1.3). **ZERO new config field — `reverse.mode-b` already carries `smsc` + `acknowledged`; NO change to `ProxyCompanionProperties.java`.**
-  - [ ] **No `SslHandler` on either leg.**
+    **[2026-08-15 owner decision — codec-only prefix + attachment points (no placeholder handler classes):** T6 wires `SmppFrameDecoder → SmppCodec` on BOTH legs — per-channel instances (CODEC-014), pinned by `RelayPipelineInitializersTest` (order, exactly-2-user-handlers, distinct instances per channel, no `SslHandler`) — with the `BindInterceptor` (T7) and `RelayHandler` (T8, both legs) `addLast` entries appended at the attachment points documented in `RelayIngressInitializer`/`RelayEgressInitializer`. **This checkbox closes when those entries land (T7 ingress interceptor; T8 both relay-handler legs).** The per-bind egress `Bootstrap` (grouped on the ingress channel's event loop, HexDumpProxy-style) is assembled by T7 from the landed substrate (`RelayEgressInitializer` + `RelayChannelOptions.applyToEgress`); T6 ships no `connect()` — nothing to connect to until the bind interceptor exists.**]**
+  - [x] Shared event loop (platform threads — virtual threads never carry the data-plane splice, AD-1). `AUTO_READ=false` + write-completes-gates-read + explicit low-water re-arm (AD-2/AD-30). Per-channel inbound queue bounded. *(Substrate: the ONE `MultiThreadIoEventLoopGroup` bean (named `companion-relay-*` platform threads — AD-1 pinned by test), `AUTO_READ=false` + explicit `WriteBufferWaterMark` — low = one `SmppFrame.MAX_COMMAND_LENGTH` frame, high = `max-inbound-depth` frames = the per-channel inbound bound in bytes — on BOTH legs via `RelayChannelOptions`. The read-demand BEHAVIOR (arm read on write-complete / low-water re-arm) is T8's `RelayHandler`, as AC4's "backpressure substrate" scopes.)*
+  - [x] `SmartLifecycle` bean: start = bind acceptor + wire egress; `stop(Runnable)` invokes the callback in `finally` (mirror `ProxyCompanionLifecycle`). **Explicit `getPhase()`** so the relay lifecycle and `ProxyCompanionLifecycle` stop in the right order (deferred-work.md 2nd-SmartLifecycle item; full AD-22 drain is Epic 4). *(`RelayServerLifecycle`: mode-b-scoped start (this slice's cell — every other cell stays not-running, no port bind), SYNC bind (occupied port → throws through start() → AD-17 fail-fast, proven), stop = close acceptor → `shutdownGracefully` awaited (deterministic port release within the 30s phase window), callback in `finally`. Phases: `RELAY_ACCEPTOR_PHASE = APP_PHASE + 1000` — acceptor stops FIRST (AD-22 step 1); `ProxyCompanionLifecycle` gained explicit `APP_PHASE = 0`. "Wire egress" = the egress substrate above; the per-bind assembly is T7.)*
+  - [x] Config source: `companion.bind.port` (listener) + `companion.reverse.mode-b.{smsc, acknowledged:true}` (the single egress + plaintext opt-in) + `companion.memory.*` (T5) + `companion.tls.*` (AD-34 defaults). Read via `ProxyCompanionProperties` (Story 1.3). **ZERO new config field — `reverse.mode-b` already carries `smsc` + `acknowledged`; NO change to `ProxyCompanionProperties.java`.** *(T6 reads `bind.port` (acceptor bind) + `memory.max-inbound-depth` (watermark high) through the existing record — ZERO new fields, ZERO `ProxyCompanionProperties` change. `reverse.mode-b.smsc` is CONSUMED at T7's connect site (the egress target — nothing connects in T6); `acknowledged` + `tls.*` stay Story-1.3's validation/yml surface — a plaintext slice consumes no TLS settings.)*
+  - [x] **No `SslHandler` on either leg.** *(pinned per-leg by `RelayPipelineInitializersTest`; TLS is Epic 3.)*
 
 - [ ] **Task 7 (AC: 2) — `BindInterceptor`: bind-family verifier gating + AD-33 collapse + caller-owned zeroize (AD-7/AD-15/AD-25/AD-27/AD-33).**
   - [ ] On decoded `SmppBindRequest`: consume `SmppCommandIds.BIND_FAMILY` (no local redefine). **Route EVERY bind to the single configured egress (`companion.reverse.mode-b.smsc`) — NO `system_id` allow-list, NO routing table (AD-29 is forward-role, inapplicable here).**
@@ -567,6 +569,57 @@ glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + pass
   RED (line 65 — the under-budget mode-b context STARTED instead of throwing) → reverted → full `:proxy:test`
   GREEN. The context biter is exception-safe (closes the unexpectedly-started context on the neutered path
   so it cannot outlive the assertion failure — MEMORY `mutation-pass-needs-exception-safe-test-cleanup`).
+- **T6 design — owner fork resolved: codec-only pipeline prefix + attachment points.** T6's subtask-1
+  pipeline names `BindInterceptor`/`RelayHandler`, but those classes are authored by T7/T8 — and their
+  per-channel constructor SHAPES (verifier/registry/observer/egress deps, ingress-vs-egress direction)
+  are T7/T8's design decisions, so shipping T6 placeholder shells would have front-run them. Asked the
+  owner (2026-08-15); they chose "codec-only + attachment point": T6 wires `SmppFrameDecoder → SmppCodec`
+  on both legs with the two handler slots as documented `addLast` attachment points (comments in the
+  initializers); NO placeholder main classes. Consequence honestly recorded: subtask 1's checkbox stays
+  open until the handler entries land (T7 ingress `BindInterceptor`; T8 `RelayHandler` on both legs) —
+  an explicit owner instruction overriding the strict task-completion ordering for this subtask only.
+- **T6 Netty 4.2 discovery — `NioEventLoopGroup` is CLASS-deprecated in 4.2.16.** First draft used the
+  classic `new NioEventLoopGroup(0, factory)`; the build flagged deprecation, and `javap` confirmed the
+  class-level `@Deprecated` (the 4.2 IoHandle refactor). Swapped to the 4.2 idiom:
+  `new MultiThreadIoEventLoopGroup(0, new DefaultThreadFactory("companion-relay"), NioIoHandler.newFactory())`
+  — build warning-free. `NioServerSocketChannel` is NOT class-deprecated (its hit was member-level) and
+  serves the new group unchanged.
+- **T6 watermark math — the AD-30 per-channel inbound bound in BYTES, tied to the budget input.** Low
+  water = one `SmppFrame.MAX_COMMAND_LENGTH` frame (the "explicit low-water mark to re-arm read" —
+  writability flips back once less than a max frame is queued); high water = `MAX_COMMAND_LENGTH ×
+  memory.maxInboundDepth()` (at most `max-inbound-depth` max-sized framed PDUs queued per channel —
+  the SAME depth the `MemoryBudget.compute` formula multiplies, so per-channel bound and JVM budget
+  cannot drift). Long-multiplication clamped to `Integer.MAX_VALUE` — a pathological depth must not
+  wrap the int-typed `WriteBufferWaterMark` (mutation M-D proves the clamp bites). `low == high`
+  (depth 1, the minimal test budget) is legal.
+- **T6 test-shape gotchas.** (1) `WriteBufferWaterMark` implements NO `equals` — the first draft's
+  `isEqualTo(new WriteBufferWaterMark(...))` failed on identity; assert the `low()`/`high()` accessors.
+  (2) `ChannelPipeline.names()` INCLUDES Netty's internal `TailContext` (but not Head) — the
+  exactly-the-codec-prefix assertion filters `DefaultChannelPipeline$*` names. (3) ErrorProne
+  `FutureReturnValueIgnored` fires on bare `EmbeddedChannel.close()` in tests — class-level
+  `@SuppressWarnings` with a reason (house pattern). (4) `new Socket("127.0.0.1", port)` trips
+  `AddressSelection` — use `InetAddress.getLoopbackAddress()`.
+- **T6 existing-boot accommodations — mode-b full boots now BIND a port (not disable-to-pass).** With
+  the acceptor live, every VALID mode-b full-app boot binds `companion.bind.port`. Two accommodations:
+  `TestCompanionConfigs.common()` now probes a FREE EPHEMERAL port per config instance (was the fixed
+  2775 — deterministic against a locally-listening SMPP tool and other tests; the sec052 matrix boot
+  consumes it via `reverseB().args()`); `DirectMemoryBudgetStartupCheckTest` passes a shared
+  `--companion.bind.port=<free>` run-arg on its three boots that reach the lifecycle phase (run-arg =
+  HIGHEST precedence, beats yml's 2775 — the T5 `.properties()`-loses-to-yml lesson; the two refusal
+  boots fail at refresh before any bind and need none). Forward-cell boots never bind (the lifecycle is
+  mode-b-scoped — pinned by `forwardCellLeavesAcceptorUnstarted`, RED under the guard-removal mutation
+  M-A).
+- **T6 RED-on-neuter — all SEVEN guards PROVEN (AC9 AI-1).** M-A mode-b guard neutered →
+  `forwardCellLeavesAcceptorUnstarted` RED (the forward boot took the port → the test's own bind of it
+  failed); M-B `callback.run()` removed → `stopInvokesCallbackAndReleasesPort` RED; M-C `AUTO_READ`
+  childOption removed → `ingressChildOptionsCarryTheSharedSubstrate` RED; M-D watermark clamp removed →
+  `watermarkHighClampsAtIntegerMaxValueOnPathologicalDepth` RED; M-E `getPhase()` override removed →
+  `relayAcceptorStopsBeforeTheAppLifecycle` RED; M-F `ALLOCATOR` childOption removed → same options
+  biter RED; M-G bind de-synced (`.syncUninterruptibly()` dropped) → `bindFailureFailsStartupFailFast`
+  RED (no throw on the occupied port; the async bind also broke the full-boot socket connect — the
+  port was not yet bound when `run()` returned). Each reverted → masters diff-verified zero residue →
+  full `./gradlew clean build` GREEN (182 proxy tests, 0 failures; only the 3 pre-existing RpcSlice
+  warnings).
 
 ### Completion Notes List
 
@@ -801,6 +854,36 @@ glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + pass
   matrix gains the invalid-enum refusal (53 total). 5 direct `Memory(...)` constructions gained the 4th
   `null` arg. (5) Mutations proven RED: M1 warn-arm neutered (`== WARN` → `false`) → warn test RED; M2
   mode-b guard reintroduced → forward-A test RED; restore → full `:proxy:test` GREEN.
+- **T6 DONE (substrate; subtask 1's handler entries land T7/T8 by owner decision) — AC4 Netty pipelines +
+  `SmartLifecycle` acceptor (AD-1/AD-2/AD-16).** Four new main types in `proxy/relay/netty/`:
+  (a) `RelayChannelOptions` — the shared per-channel substrate applied to BOTH legs: AD-21 allocator,
+  AD-2 `AUTO_READ=false`, AD-30 `WriteBufferWaterMark` (low = one `SmppFrame.MAX_COMMAND_LENGTH` frame,
+  high = `max-inbound-depth` frames, long-clamped at `Integer.MAX_VALUE`; RELAY-026-clean — the constant,
+  never a literal). (b) `RelayIngressInitializer` + (c) `RelayEgressInitializer` — the codec prefix
+  (`SmppFrameDecoder → SmppCodec`, per-channel instances CODEC-014, no `SslHandler`) with documented
+  T7/T8 `addLast` attachment points (owner decision: codec-only, no placeholder handler classes).
+  (d) `RelayServerLifecycle` (`SmartLifecycle`, 2nd in the app): mode-b-scoped start (SYNC bind —
+  occupied port throws through `start()` → AD-17 fail-fast), `stop(Runnable)` with the callback in
+  `finally` (mirror `ProxyCompanionLifecycle`), close-acceptor-then-`shutdownGracefully` (awaited —
+  deterministic port release), explicit `RELAY_ACCEPTOR_PHASE = ProxyCompanionLifecycle.APP_PHASE + 1000`
+  (acceptor STOPS first, AD-22 step 1 — `ProxyCompanionLifecycle` gained the explicit `APP_PHASE`,
+  resolving the deferred-work 2nd-SmartLifecycle item). `RelayNettyConfig` gained the ONE shared
+  event-loop bean (`MultiThreadIoEventLoopGroup` + `NioIoHandler.newFactory()` — Netty 4.2's idiom,
+  NOT the class-deprecated `NioEventLoopGroup`; named `companion-relay-*` PLATFORM threads, AD-1).
+  ZERO new config fields; NO `ProxyCompanionProperties` change. Tests (12, 0 skipped/failed):
+  `RelayChannelOptionsTest` (4 — both legs' option maps via real bootstrap configs, clamp, depth-1),
+  `RelayPipelineInitializersTest` (3 — order/exactly-the-prefix/no-SslHandler per leg + CODEC-014
+  distinct instances), `RelayServerLifecycleTest` (5 — mode-b full-app boot binds+serves TCP+releases on
+  stop + AD-1 named-platform-thread pin; forward cell inert + port never taken; occupied-port fail-fast;
+  stop callback + idempotence; phase pins). Existing-boot accommodations (NOT disable-to-pass):
+  `TestCompanionConfigs.common()` binds a free ephemeral port; the 3 starting mode-b boots in
+  `DirectMemoryBudgetStartupCheckTest` pass a shared free-port run-arg. Seven RED-on-neuter mutations
+  proven (M-A guard, M-B callback, M-C AUTO_READ, M-D clamp, M-E phase, M-F allocator, M-G sync-bind)
+  — see Debug Log. Full `./gradlew clean build` GREEN (182 proxy tests). Forward notes for T7:
+  assemble the per-bind egress `Bootstrap` as `.group(ingressChannel.eventLoop())` (HexDumpProxy
+  same-thread coupling) with `RelayEgressInitializer` + `RelayChannelOptions.applyToEgress`, then
+  `.connect(smsc.host(), smsc.port())`; the initial ingress read is ARMED by the handlers (nothing
+  reads under `AUTO_READ=false` until then — by design).
 
 ### File List
 
@@ -953,6 +1036,47 @@ glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + pass
 - *(T5b review round 2)* `proxy/.../relay/netty/DirectMemoryBudgetStartupCheckTest.java` — **modified
   again**: 6 tests (+ null⇒FAIL direct-construction cell, + warn-under-ceiling no-banner cell; T2/T3
   banner-absence asserts; T2 comment corrected).
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayChannelOptions.java` — **added** (T6): the
+  shared per-channel option substrate for BOTH legs — AD-21 allocator, AD-2 `AUTO_READ=false`, AD-30
+  `WriteBufferWaterMark` (low = 1 frame, high = `max-inbound-depth` frames, long-clamped); T7's egress
+  `Bootstrap` consumes `applyToEgress`.
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayIngressInitializer.java` — **added** (T6):
+  ingress codec prefix (`SmppFrameDecoder → SmppCodec`, per-channel CODEC-014) + the documented T7
+  (`BindInterceptor`) / T8 (`RelayHandler`) attachment points (owner decision — codec-only prefix).
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayEgressInitializer.java` — **added** (T6):
+  the SAME codec prefix for the egress leg + the T8 `RelayHandler` attachment point; no `SslHandler`
+  (plaintext slice).
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayServerLifecycle.java` — **added** (T6):
+  the 2nd `SmartLifecycle` — mode-b-scoped SYNC bind (AD-17 fail-fast), `stop(Runnable)` callback in
+  `finally`, acceptor-close→graceful-shutdown awaited, explicit `RELAY_ACCEPTOR_PHASE` (stops FIRST,
+  AD-22 step 1).
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayNettyConfig.java` — **modified** (T6): +
+  the ONE shared event-loop bean (`MultiThreadIoEventLoopGroup` + `NioIoHandler.newFactory()` — Netty
+  4.2 idiom, NOT the class-deprecated `NioEventLoopGroup`; named `companion-relay-*` platform threads,
+  AD-1; `destroyMethod="shutdownGracefully"` as the never-started-cell backstop).
+- `proxy/src/main/java/smpp/companion/proxy/bootstrap/ProxyCompanionLifecycle.java` — **modified** (T6):
+  + explicit `APP_PHASE = 0` + `getPhase()` (the deferred-work 2nd-SmartLifecycle ordering item —
+  `RELAY_ACCEPTOR_PHASE` is deliberately `APP_PHASE + 1000` so the acceptor stops first).
+- `proxy/src/test/java/smpp/companion/proxy/relay/netty/RelayChannelOptionsTest.java` — **added** (T6):
+  4 unit tests — both legs' option maps read off real bootstrap configs (allocator/AUTO_READ/watermark),
+  the int-overflow clamp, the depth-1 minimal-budget legality.
+- `proxy/src/test/java/smpp/companion/proxy/relay/netty/RelayPipelineInitializersTest.java` — **added**
+  (T6): 3 unit tests — framer→codec order + exactly-the-codec-prefix + no `SslHandler` per leg, and
+  CODEC-014 per-channel instance distinctness.
+- `proxy/src/test/java/smpp/companion/proxy/relay/netty/RelayServerLifecycleTest.java` — **added** (T6):
+  5 tests — mode-b full-app boot (binds, serves TCP, AD-1 named-platform-thread pin, stop releases
+  port + group), forward-cell inertness (port never taken), occupied-port fail-fast, stop(Runnable)
+  callback + idempotence, phase pins. Ephemeral-port discipline + exception-safe group release.
+- `proxy/src/test/java/smpp/companion/proxy/config/TestCompanionConfigs.java` — **modified** (T6):
+  `common()` binds a FREE EPHEMERAL port per config instance (was fixed 2775) — valid mode-b full boots
+  now bind the port (relay acceptor); deterministic against local listeners/other tests.
+- `proxy/src/test/java/smpp/companion/proxy/relay/netty/DirectMemoryBudgetStartupCheckTest.java` —
+  **modified** (T6): + shared `BIND_PORT` free-port run-arg on the three boots that reach the lifecycle
+  phase (the two refusal boots fail at refresh before any bind).
+- *(mutation-pass only, ZERO net change — not listed as modified):*
+  `proxy/.../relay/netty/RelayServerLifecycle.java` (mode-b guard, callback, getPhase, sync-bind
+  neutered then restored) and `proxy/.../relay/netty/RelayChannelOptions.java` (AUTO_READ / clamp /
+  ALLOCATOR neutered then restored) — the seven T6 RED-on-neuter mutations; masters diff-verified.
 
 ## Change Log
 
@@ -1189,3 +1313,103 @@ backup paths.
   `io.freefair.lombok` plugin was already applied). Behavior identical (same generated field, same WARN
   banner through Logback — the warn-banner test stays GREEN). Full `./gradlew clean build` GREEN; no
   FIXMEs remain in main.
+
+- 2026-08-15 — **Story 2.2 Task 6 (substrate):** AC4 Netty pipelines + `SmartLifecycle` acceptor
+  (AD-1/AD-2/AD-16). **Owner fork resolved first:** T6's pipeline names `BindInterceptor`/`RelayHandler`
+  (T7/T8's classes) — owner chose **codec-only prefix + attachment points** (no placeholder handler
+  classes; subtask 1's checkbox closes when the handler `addLast` entries land T7/T8). NEW
+  `relay/netty/`: `RelayChannelOptions` (AD-21 allocator + AD-2 `AUTO_READ=false` + AD-30 watermark —
+  low = one `SmppFrame.MAX_COMMAND_LENGTH` frame, high = `max-inbound-depth` frames, clamped), the two
+  codec-prefix initializers (per-channel CODEC-014, no `SslHandler`), `RelayServerLifecycle`
+  (mode-b-scoped SYNC bind / stop-callback-in-`finally` / acceptor-stops-first explicit phase;
+  `ProxyCompanionLifecycle` gained `APP_PHASE` — the deferred-work 2nd-SmartLifecycle item resolved),
+  + the ONE shared event-loop bean (`MultiThreadIoEventLoopGroup` + `NioIoHandler.newFactory()` —
+  Netty 4.2's idiom; `NioEventLoopGroup` is class-deprecated in 4.2.16; named platform threads, AD-1).
+  ZERO new config fields. Tests +12 (options 4, initializers 3, lifecycle 5 — full-app boots, AD-1
+  platform-thread pin, occupied-port fail-fast, phase pins); accommodations: `common()` free ephemeral
+  port + shared `BIND_PORT` run-arg on the 3 starting mode-b boots in the startup-check suite. Seven
+  RED-on-neuter mutations proven (guard/callback/AUTO_READ/clamp/phase/allocator/sync-bind). Full
+  `./gradlew clean build` GREEN — 182 proxy tests, 0 failures. (T7–T11 remain open — story stays
+  in-progress; T6 subtask 1's handler entries land with T7/T8.)
+
+### Review 2026-08-15 — Story 2.2 T6 (adversarial 3-layer workflow + empirical verification; 14 raw, 9 kept, 5 dismissed)
+
+Reviewed by: Blind Hunter + Edge Case Hunter + Acceptance Auditor (parallel, blind), then per-finding code-read
+triage with two empirical checks: (a) a jshell probe proved Netty 4.2.16 event loops start threads LAZILY
+(`THREADS_BEFORE_ANY_TASK=0` — the "eager selectors / leaked non-daemon threads / phase-test leak" cluster is
+refuted: an unused group spins nothing); (b) `./gradlew :proxy:cleanTest :proxy:test` re-ran the full suite —
+**182 tests, 0 failures, 0 errors, 0 skipped** (the T6 DONE execution claim VERIFIED by run; the seven
+RED-on-neuter mutations remain structurally-verified only — every named biter exists at the right seam; T11's
+consolidated pass re-proves them). Auditor verdict: no AC/spec violations; all 16 T6 claims MATCH the code
+(including independent javap confirmation of the Netty 4.2 class-deprecation claims). Result: **1
+decision-needed, 5 patch, 3 defer, 5 dismissed.**
+
+- [x] [Review][Defer→Epic 3] Wildcard listener posture — `bind(port)` listens on `0.0.0.0` (all interfaces) with no
+  bind-host config key (`Bind` record is port-only), no connection cap, no idle timeout; accepted channels are
+  inert-but-never-reaped until T7/T8 (`AUTO_READ=false`, no handler) — an unauthenticated, unbounded socket sink
+  on every interface for any real mode-b boot. **Owner decision 2026-08-15: defer to Epic 3** — the slice is
+  in-JVM/loopback until then; Epic 3 adds bind-host + hardening (incl. the connection-cap question) when it
+  wires the production acceptors. [RelayServerLifecycle.java:89; ProxyCompanionProperties.java:220-222]
+- [x] [Review][Patch] No `SO_REUSEADDR` on the acceptor — a crash/OOM-kill with established children leaves
+  TIME_WAIT sockets; the restart then hits `BindException` → AD-17 fail-fast boot-loops until kernel state
+  clears (~60s) for a listener whose job is to come back. Fix: `.option(ChannelOption.SO_REUSEADDR, true)` on
+  the `ServerBootstrap` (a SERVER option, not child; fail-fast on an ACTIVE listener is preserved — only
+  TIME_WAIT is bypassed). [RelayServerLifecycle.java:84-89]
+- [x] [Review][Patch] Watermark javadoc misstates direction — "the high water mark is the per-channel inbound
+  queue ceiling" describes the EMERGENT bound (T8's write-completes-gates-read on the peer leg);
+  `WriteBufferWaterMark` trips on the channel's OUTBOUND write buffer. A T8 implementer trusting the javadoc
+  could double-guard inbound or skip the actual `isWritable()` gate. Fix: reword to outbound-buffer truth +
+  emergent inbound bound (javadoc only; no code change). [RelayChannelOptions.java:26-27]
+- [x] [Review][Patch] Full-boot stop-discipline asserts are neuterable — with `stop()` emptied, the group bean's
+  `destroyMethod="shutdownGracefully"` still closes the server channel at context close, so both post-close
+  asserts (`group.isShutdown()`, port-reclaim bind) pass under the neuter (the stop BODY is pinned only by the
+  direct-construction `stopInvokesCallbackAndReleasesPort`). Fix: add
+  `assertThat(relay.isRunning()).isFalse()` after context close — `running` never flips if `stop()` was skipped
+  or emptied → RED. [RelayServerLifecycleTest.java:83-88]
+- [x] [Review][Patch] Vacuous asserts — `esme.isConnected()` / `reclaimed.isBound()` / `neverTaken.isBound()`
+  can never return false (the `Socket`/`ServerSocket` constructors THROW on failure — the ctor is the real,
+  biting guard). Delete the accessor asserts so nothing masquerades as a pin the repo's AC9 bar would reject.
+  [RelayServerLifecycleTest.java:69, 100-102, 150-151]
+- [x] [Review][Patch] Fixture duplication with drift — `freePort()` ×3 (`TestCompanionConfigs`,
+  `DirectMemoryBudgetStartupCheckTest`, `RelayServerLifecycleTest`) + two near-identical 12-line
+  `ProxyCompanionProperties` builders that gratuitously differ (`Bind(2775)` hardcoded vs parameterized port).
+  The next field added to the record breaks five scattered fixtures. Consolidate (one `freePort` helper; one
+  shared mode-b properties builder). [TestCompanionConfigs.java:145; DirectMemoryBudgetStartupCheckTest.java:196-202; RelayServerLifecycleTest.java:225-243, 245-251]
+- [x] [Review][Defer] Wiring seam has no RED-on-neuter pin — dropping `.childHandler(ingressInitializer)` or
+  `channelOptions.applyToIngress(bootstrap)` from `start()` keeps the whole suite GREEN: the full-boot test's
+  TCP-connect probe cannot see an empty pipeline, `AUTO_READ=false` means nothing reads pre-T8, and the
+  `ServerBootstrap` is a local variable (no structural pin either). Deferred to T7/T9: T7's `BindInterceptor`
+  and the T9 A-1 smoke drive real PDUs through the acceptor and will bite on a dropped wiring line; T7 review
+  must confirm. [RelayServerLifecycle.java:87-88]
+- [x] [Review][Defer] `stop()` quiesces the shared event loop at acceptor phase — from T7 every egress leg
+  registers on the SAME group, so acceptor-stop terminates all established legs before any app-phase drain
+  could run; Epic 4's AD-22 7-step drain will re-author this stop body. Spec-mandated today (the T6 checkbox
+  pins exactly this stop), and `shutdownGracefully` is graceful (quiet window lets in-flight complete) —
+  recorded so T7 review + Epic 4 own it consciously. [RelayServerLifecycle.java:113-115]
+- [x] [Review][Defer] `shutdownGracefully()` default 2s quiet period — every mode-b context close blocks ≥2s
+  (~+8-10s across the suite's boots; full suite 47s). A documented, deliberate choice (javadoc cites "Netty's
+  defaults (2s quiet / 15s cap)"); becomes a mini-drain feature once in-flight PDUs exist. Revisit with the
+  Epic-4 drain work (or pass an explicit 0-quiet then). [RelayServerLifecycle.java:115]
+
+Dismissed (5): eager-group/leaked-thread cluster (empirically refuted — lazy thread start, unused group spins
+zero threads); ephemeral-port TOCTOU ×3 (accepted, documented test practice; no parallel execution configured);
+`stop()` close-failure aborts group quiesce (theoretical — NIO server-channel close ~never fails, callback runs
+in `finally`, destroy backstop bounds it); start-after-stop on a dead group (single-shot app; Netty rejects
+tasks on a shutdown group → loud fail-fast through `start()`, no hang); `applyToEgress` has no production
+caller (by-design T7 substrate, spec-documented — T7 review confirms consumption).
+
+**Patches applied + verified (2026-08-15, post-triage; owner chose "apply all 5" after a walkthrough):**
+(a) `SO_REUSEADDR` now set by `applyToIngress` (server-socket option, ingress-only — `applyToEgress` javadoc
+pins its deliberate absence), pinned BOTH ways in `RelayChannelOptionsTest` (ingress `isEqualTo(true)` off
+`config().options()`; egress `isNull()`); (b) watermark javadoc reworded to the outbound-buffer truth + the
+emergent T8 inbound bound (class + method javadoc); (c) full-boot test hoists the `relay` bean ref and asserts
+`isRunning()` false after close; (d) all four vacuous accessor asserts removed (ctor-throw documented as the
+probe); (e) new `proxy/…/testsupport/RelayTestFixtures` (`freePort()` + `modeBProperties(bindPort, depth)`)
+consolidates the three `freePort()` copies and both 12-line properties builders (`RelayChannelOptionsTest`,
+`RelayServerLifecycleTest`, `TestCompanionConfigs`, `DirectMemoryBudgetStartupCheckTest` rewired; the
+null-budgetCheck direct record in the startup-check suite is purpose-built and stays). RED-on-neuter for the
+two NEW pins, per the AC9 AI-1 bar: **M-H1** (dropped `SO_REUSEADDR` line) → `RelayChannelOptionsTest` RED on
+exactly the ingress pin; **M-H2** (`stop()` body emptied) → `RelayServerLifecycleTest` RED (the new full-boot
+`isRunning` pin + the direct stop test). Both restored byte-exact; final `:proxy:cleanTest :proxy:test` GREEN —
+**182 tests, 0 failures, 0 errors, 0 skipped**. Review mutation set grows to M-A…M-G (T6) + M-H1/M-H2 (this
+review) — T11's consolidated pass re-runs all.
