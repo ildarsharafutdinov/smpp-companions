@@ -30,9 +30,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("p2")
 class BootstrapLifecycleTest {
 
+    /**
+     * Minimal AD-30 budget (Story 2.2 T5b: the self-check is unconditional — this forward-A boot carries
+     * it too). Passed as run() args — HIGHEST precedence — so they beat application.yml's realistic
+     * memory defaults (64 × 1024 × 1.5 ≈ 6 GiB), which exceed the test JVM's direct-memory ceiling.
+     */
+    private static final String[] MINIMAL_MEMORY = {
+            "--companion.memory.max-inbound-depth=1",
+            "--companion.memory.concurrent-pairs=1",
+            "--companion.memory.safety-factor=1.0"};
+
     @Test
     void bootsAsNonWebContextAndStartsLifecycle(@TempDir Path dir) throws IOException {
-        try (ConfigurableApplicationContext ctx = builder(dir).run()) {
+        try (ConfigurableApplicationContext ctx = builder(dir).run(MINIMAL_MEMORY)) {
             assertThat(ctx.isActive()).isTrue();
             // No embedded web server (AD-16): the context is a plain AnnotationConfigApplicationContext.
             assertThat(ctx.getClass().getSimpleName()).doesNotContain("WebServer");
@@ -43,7 +53,7 @@ class BootstrapLifecycleTest {
 
     @Test
     void contextCloseStopsLifecycleWithinGracefulTimeout(@TempDir Path dir) throws IOException {
-        ConfigurableApplicationContext ctx = builder(dir).run();
+        ConfigurableApplicationContext ctx = builder(dir).run(MINIMAL_MEMORY);
         ProxyCompanionLifecycle lifecycle = ctx.getBean(ProxyCompanionLifecycle.class);
         assertThat(lifecycle.isRunning()).isTrue();
 
@@ -57,9 +67,10 @@ class BootstrapLifecycleTest {
     }
 
     /**
-     * A forward+A boot: the common keys come from application.yml; the forward.mode-a branch supplies
-     * the cell-required material. The secret paths point at empty files under the temp dir
-     * (existence+readability is what 1.3 validates; the cert/key content is a runtime TLS concern, Epic 3).
+     * A forward+A boot: the common keys come from application.yml (except the memory overrides passed as
+     * run() args — see MINIMAL_MEMORY); the forward.mode-a branch supplies the cell-required material.
+     * The secret paths point at empty files under the temp dir (existence+readability is what 1.3
+     * validates; the cert/key content is a runtime TLS concern, Epic 3).
      */
     private static SpringApplicationBuilder builder(Path dir) throws IOException {
         Path cert = Files.createFile(dir.resolve("server.crt"));

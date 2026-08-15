@@ -166,3 +166,41 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   submitted without `tryAcquire` (can exceed `maxInflight` under kid-rotation) and `jwksCache.set(null)` runs before
   re-fetch succeeds. Fail-closed holds; undermines the bounded-pool/cache invariants under the exact load the cache
   smooths. Epic 3 hardening.
+
+## Deferred from: code review of 2-2-stateless-relay-and-a1-session-affinity-smoke (2026-08-12)
+
+- **App-wide stance on `spring.main.lazy-initialization=true` is undecided** (added 2026-08-15, T5b review
+  round 2) — with lazy init enabled, NO bean eagerly instantiates: the AD-30 self-check, the AD-17
+  bind-time matrix, and (reproduced on Spring Boot 4.1.0) even a ZERO-BRANCH config boot silently instead
+  of refusing. Not a T5b regression (the exposure pre-dates it and is app-wide), but the product's
+  fail-closed posture (AD-17) is currently opt-out-able by a single Spring flag no artifact addresses.
+  Decide app-wide at the architecture/deploy tier (Epic 5): refuse lazy init, or document it as an
+  operator-accepted deviation. Not cell-scoped hardening — pinning only the self-check bean eager would
+  leave the AD-17 matrix equally bypassed.
+
+- **`DirectMemoryBudgetValidator.validate()` silently passes negative-equal inputs** (e.g. `validate(-1,-1)`)
+  [`proxy/.../relay/netty/DirectMemoryBudgetValidator.java` — the `validate(long, long)` method] — latent: the sole
+  caller feeds a non-negative budget from `MemoryBudget.compute` (which guards `product < 0`) and a ceiling from
+  `liveDirectMemoryCeiling()` (explicit `-XX:MaxDirectMemorySize` parsed via `ManagementFactory`, else
+  `Runtime.maxMemory()` — NOT `VM.maxDirectMemory()`, removed by Review Decision A). Note the parsing-based read
+  can yield 0 (explicit `=0`), which strengthens the proposed guard.
+  *(Corrected 2026-08-15, review round 2: the entry previously cited the superseded `VM.maxDirectMemory()`
+  mechanism and a stale line anchor from the pre-Decision-A implementation.)*
+  The method is a public static utility with no documented precondition; a `budget < 0 || liveCeiling <= 0` guard
+  would convert the silent pass into a fail-fast. Upstream-guarded today, so not blocking.
+- **No mechanical guard forces the Epic-3 widening of the mode-b self-check**
+  [`proxy/.../relay/netty/DirectMemoryBudgetStartupCheck.java:34-44`] — `afterPropertiesSet()` no-ops unless
+  `reverse.mode-b` is set (slice-correct for Story 2.2). The widen-to-forward/mode-a/c requirement lives on the
+  load-bearing Javadoc/dev-notes, but no test/tracker bites if Epic 3 wires a non-mode-b relay allocator without
+  widening the guard (AD-30's JVM-flag gap reopens for that cell). Proposed ArchUnit guards were unsound (the
+  allocator `@Bean` is unconditional → would false-positive on every forward boot). Track via a sprint-status
+  `action_item` anchored to the Epic 3 relay story.
+
+  **✅ RESOLVED 2026-08-15 (Story 2.2 T5b, operator decision):** the self-check is now UNCONDITIONAL — the
+  mode-b guard is gone; the check runs for every role×mode cell (every cell relays; the AD-17 constructor
+  guarantees exactly one cell). No Epic-3 widening will ever be needed. The mechanical bite exists:
+  `DirectMemoryBudgetStartupCheckTest.forwardAWithHugeBudgetRefusesToStart` boots a forward.mode-a full
+  context with an over-ceiling budget and asserts the refusal — proven RED when the mode-b guard was
+  reintroduced (mutation M2). Over-budget severity now follows `companion.memory.budget-check: fail | warn`
+  (default `fail` — unchanged behavior; `warn` = loud accepted-risk banner + start). Spine AD-30 amended;
+  see the `.memlog.md` 2026-08-15 entry.

@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-08-11
+last_updated: 2026-08-15
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -133,7 +133,7 @@ action_items:
     action: "Mount the AD-30 live ByteBufAllocatorMetric startup self-check on the shared PooledByteBufAllocator when relay wiring lands — fail-fast if live MaxDirectMemorySize < computed MemoryBudget."
     owner: "Amelia (Developer)"
     lane: "technical / with-relay"
-    status: open
+    status: done   # was open — mounted by Story 2.2 T5 (2026-08-12; ceiling via ManagementFactory/Runtime.maxMemory, NOT ByteBufAllocatorMetric — spine AD-30 amended); T5b (2026-08-15) made it UNCONDITIONAL across all role×mode cells + companion.memory.budget-check fail|warn policy.
   - epic: 1
     action: "Codify four traps into the test-design playbook so Epic 2 authors apply them by default — (a) null-vs-blank binding pattern; (b) RecordingAllocator-bypass (chunk input / route through ctx.alloc()); (c) gate-must-run-in-check (runner check buildAndFail per gate); (d) jqwik-no-Jupiter-annotations-on-@Property rule."
     owner: "Murat (Master Test Architect)"

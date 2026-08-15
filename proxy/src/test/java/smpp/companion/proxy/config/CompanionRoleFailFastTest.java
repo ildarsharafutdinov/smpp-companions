@@ -52,7 +52,7 @@ class CompanionRoleFailFastTest {
         // end-to-end in CompanionConfigMatrixTest.)
         new ProxyCompanionProperties(
                 new Bind(2775),
-                new Memory(64, 1024, 1.5),
+                new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 new Forward(
                         new ForwardModeA(
@@ -63,7 +63,7 @@ class CompanionRoleFailFastTest {
                 null);
         new ProxyCompanionProperties(
                 new Bind(2775),
-                new Memory(64, 1024, 1.5),
+                new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 null,
                 new Reverse(

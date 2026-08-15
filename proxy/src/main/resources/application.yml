@@ -30,6 +30,12 @@ companion:
     max-inbound-depth: 64
     concurrent-pairs: 1024
     safety-factor: 1.5
+    # Over-ceiling policy for the AD-30 live startup self-check (NOT a budget-formula input). "fail"
+    # (the shipped default): the derived budget exceeding the JVM's live direct-memory ceiling refuses
+    # startup (AD-17 fail-fast). "warn": log a loud accepted-risk banner and start (the Mode B pattern)
+    # — for deliberately under-provisioned deployments whose real load stays far below the formula's
+    # worst case. The check treats any non-warn value as fail; there is no value that skips the check.
+    budget-check: fail
 
   tls:
     # AD-34: protocols (1.3 preferred, 1.2 allowed). TLS floor is 1.2 (SEC-061).
