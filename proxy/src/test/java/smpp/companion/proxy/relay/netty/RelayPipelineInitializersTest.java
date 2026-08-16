@@ -11,19 +11,24 @@ import io.netty.handler.ssl.SslHandler;
 
 import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.framer.SmppFrameDecoder;
+import smpp.companion.proxy.observability.CapturingSpliceObserver;
 import smpp.companion.proxy.relay.BindInterceptor;
+import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.RelayHandler;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * AC4 &mdash; the pipeline shape on BOTH legs (owner decision 2026-08-15: codec-only prefix in T6; the
- * {@code BindInterceptor}/{@code RelayHandler} entries are appended by T7/T8 at the documented
- * attachment points). Pins the structural contracts: (a) order &mdash; {@code SmppFrameDecoder} then
- * {@code SmppCodec} then (INGRESS, since T7) {@code BindInterceptor} (the framer feeds the codec, the
- * codec feeds the interceptor); (b) CODEC-014 &mdash; PER-CHANNEL instances of every handler (two
- * channels must never share a framer — nor the stateful per-connection interceptor);
- * (c) NO {@link SslHandler} on either leg (plaintext slice &mdash; TLS is Epic 3).
+ * {@code BindInterceptor} (T7) and {@code RelayHandler} (T8) entries are appended at the documented
+ * attachment points — both LANDED, the slice's pipelines are complete). Pins the structural
+ * contracts: (a) order &mdash; {@code SmppFrameDecoder → SmppCodec → BindInterceptor → RelayHandler}
+ * (INGRESS) and {@code SmppFrameDecoder → SmppCodec → RelayHandler} (EGRESS) (the framer feeds the
+ * codec, the codec feeds the interceptor, the interceptor hands the post-flip plane to the relay
+ * handler); (b) CODEC-014 &mdash; PER-CHANNEL instances of every handler (two channels must never
+ * share a framer — nor the stateful per-connection interceptor, nor the direction-carrying relay
+ * handler); (c) NO {@link SslHandler} on either leg (plaintext slice &mdash; TLS is Epic 3).
  */
 @Tag("unit")
 @Tag("relay")
@@ -38,25 +43,38 @@ class RelayPipelineInitializersTest {
         return RelayTestFixtures.modeBIngressInitializer(RelayTestFixtures.freePort());
     }
 
+    /** The real production egress wiring — the SAME registry/observer pair the ingress initializer shares. */
+    private static RelayEgressInitializer egressInitializer() {
+        return new RelayEgressInitializer(new ConnectionRegistry(), new CapturingSpliceObserver());
+    }
+
     @Test
-    @DisplayName("ingress: framer → codec → BindInterceptor in order, exactly those three, no SslHandler (AC4)")
-    void ingressWiresFramerCodecThenBindInterceptor() {
+    @DisplayName("ingress: framer → codec → BindInterceptor → RelayHandler in order, exactly those four, "
+            + "no SslHandler (AC4)")
+    void ingressWiresFramerCodecInterceptorRelayHandler() {
         EmbeddedChannel channel = new EmbeddedChannel(ingressInitializer());
         try {
             List<String> names = channel.pipeline().names();
             int framer = indexOfPrefix(names, "SmppFrameDecoder");
             int codec = indexOfPrefix(names, "SmppCodec");
             int interceptor = indexOfPrefix(names, "BindInterceptor");
+            int relayHandler = indexOfPrefix(names, "RelayHandler");
             assertThat(framer).as("the ingress leg must carry a SmppFrameDecoder").isGreaterThanOrEqualTo(0);
             assertThat(codec).as("the ingress leg must carry an SmppCodec").isGreaterThanOrEqualTo(0);
             assertThat(interceptor)
                     .as("T7 landed: the ingress leg carries the BindInterceptor after the codec (AC4)")
                     .isGreaterThanOrEqualTo(0);
+            assertThat(relayHandler)
+                    .as("T8 landed: the ingress leg carries the RelayHandler after the interceptor (AC4)")
+                    .isGreaterThanOrEqualTo(0);
             assertThat(framer).as("the framer FEEDS the codec — it must sit first").isLessThan(codec);
             assertThat(codec).as("the codec FEEDS the interceptor — it must sit between").isLessThan(interceptor);
+            assertThat(interceptor)
+                    .as("the interceptor hands the post-flip plane to the relay handler — it must sit between")
+                    .isLessThan(relayHandler);
             assertThat(userHandlers(names))
-                    .as("the ingress pipeline is exactly framer + codec + BindInterceptor (T8 appends RelayHandler)")
-                    .hasSize(3);
+                    .as("the ingress pipeline is EXACTLY framer + codec + BindInterceptor + RelayHandler")
+                    .hasSize(4);
             assertThat(channel.pipeline().get(SslHandler.class))
                     .as("no SslHandler on the ingress leg — plaintext slice (TLS is Epic 3)")
                     .isNull();
@@ -66,11 +84,28 @@ class RelayPipelineInitializersTest {
     }
 
     @Test
-    @DisplayName("egress: the SAME framer → codec prefix, no SslHandler (AC4)")
-    void egressWiresTheSamePrefix() {
-        EmbeddedChannel channel = new EmbeddedChannel(new RelayEgressInitializer());
+    @DisplayName("egress: framer → codec → RelayHandler (the flipper rides the egress leg), exactly those "
+            + "three, no SslHandler (AC4)")
+    void egressWiresFramerCodecRelayHandler() {
+        EmbeddedChannel channel = new EmbeddedChannel(egressInitializer());
         try {
-            assertCodecPrefixOnly(channel, "egress");
+            List<String> names = channel.pipeline().names();
+            int framer = indexOfPrefix(names, "SmppFrameDecoder");
+            int codec = indexOfPrefix(names, "SmppCodec");
+            int relayHandler = indexOfPrefix(names, "RelayHandler");
+            assertThat(framer).as("the egress leg must carry a SmppFrameDecoder").isGreaterThanOrEqualTo(0);
+            assertThat(codec).as("the egress leg must carry an SmppCodec").isGreaterThanOrEqualTo(0);
+            assertThat(relayHandler)
+                    .as("T8 landed: the egress leg carries the RelayHandler after the codec — the AD-25 flip "
+                            + "fires here (the bind_resp arrives from the SMSC on this leg, which rides the "
+                            + "ingress event loop, AD-2)")
+                    .isGreaterThanOrEqualTo(0);
+            assertThat(framer).as("the framer FEEDS the codec — it must sit first").isLessThan(codec);
+            assertThat(codec).as("the codec FEEDS the relay handler — it must sit between").isLessThan(relayHandler);
+            assertThat(userHandlers(names))
+                    .as("the egress pipeline is EXACTLY framer + codec + RelayHandler (T7's per-pair EgressLeg "
+                            + "is appended later by the connect assembly, per-bind)")
+                    .hasSize(3);
             assertThat(channel.pipeline().get(SslHandler.class))
                     .as("no SslHandler on the egress leg either — plaintext to the SMSC (TLS is Epic 3)")
                     .isNull();
@@ -80,12 +115,13 @@ class RelayPipelineInitializersTest {
     }
 
     @Test
-    @DisplayName("CODEC-014: every channel gets its OWN framer, codec — and interceptor — instances (both legs)")
+    @DisplayName("CODEC-014: every channel gets its OWN framer, codec, interceptor — and relay handler — "
+            + "instances (both legs)")
     void eachChannelGetsItsOwnDecoderInstances() {
         EmbeddedChannel ingressA = new EmbeddedChannel(ingressInitializer());
         EmbeddedChannel ingressB = new EmbeddedChannel(ingressInitializer());
-        EmbeddedChannel egressA = new EmbeddedChannel(new RelayEgressInitializer());
-        EmbeddedChannel egressB = new EmbeddedChannel(new RelayEgressInitializer());
+        EmbeddedChannel egressA = new EmbeddedChannel(egressInitializer());
+        EmbeddedChannel egressB = new EmbeddedChannel(egressInitializer());
         try {
             assertThat(ingressA.pipeline().get(SmppFrameDecoder.class))
                     .as("two ingress channels must never share a SmppFrameDecoder (CODEC-014)")
@@ -96,33 +132,25 @@ class RelayPipelineInitializersTest {
                     .as("two ingress channels must never share the STATEFUL BindInterceptor "
                             + "(per-connection adjudication handles)")
                     .isNotSameAs(ingressB.pipeline().get(BindInterceptor.class));
+            assertThat(ingressA.pipeline().get(RelayHandler.class))
+                    .as("two ingress channels must never share the direction-carrying RelayHandler "
+                            + "(per-leg close marker + direction)")
+                    .isNotSameAs(ingressB.pipeline().get(RelayHandler.class));
             assertThat(egressA.pipeline().get(SmppFrameDecoder.class))
                     .as("two egress channels must never share a SmppFrameDecoder (CODEC-014)")
                     .isNotSameAs(egressB.pipeline().get(SmppFrameDecoder.class));
             assertThat(egressA.pipeline().get(SmppCodec.class))
                     .isNotSameAs(egressB.pipeline().get(SmppCodec.class));
+            assertThat(egressA.pipeline().get(RelayHandler.class))
+                    .as("two egress channels must never share the RelayHandler (the per-pair flip + per-leg "
+                            + "close marker are channel-scoped)")
+                    .isNotSameAs(egressB.pipeline().get(RelayHandler.class));
         } finally {
             ingressA.close();
             ingressB.close();
             egressA.close();
             egressB.close();
         }
-    }
-
-    /** The egress codec prefix: framer strictly before codec, and NOTHING else (T8 appends RelayHandler). */
-    private static void assertCodecPrefixOnly(EmbeddedChannel channel, String leg) {
-        List<String> names = channel.pipeline().names();
-        int framer = indexOfPrefix(names, "SmppFrameDecoder");
-        int codec = indexOfPrefix(names, "SmppCodec");
-        assertThat(framer)
-                .as(leg + " leg must carry a SmppFrameDecoder").isGreaterThanOrEqualTo(0);
-        assertThat(codec)
-                .as(leg + " leg must carry an SmppCodec").isGreaterThanOrEqualTo(0);
-        assertThat(framer)
-                .as("the framer FEEDS the codec — it must sit first").isLessThan(codec);
-        assertThat(userHandlers(names))
-                .as(leg + " wires ONLY the codec prefix (T8 appends the egress RelayHandler)")
-                .hasSize(2);
     }
 
     /** pipeline().names() includes Netty's internal TailContext — count only USER handlers. */

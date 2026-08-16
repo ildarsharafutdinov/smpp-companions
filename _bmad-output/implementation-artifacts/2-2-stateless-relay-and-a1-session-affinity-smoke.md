@@ -205,9 +205,12 @@ behind unchanged interfaces.
     Mutations proven RED: M1 neutered warn arm → warn test RED; M2 reintroduced mode-b guard → forward-A test
     RED. Spine AD-30 amended in place; deferred-work "Epic-3 widening" entry resolved.
 
-- [ ] **Task 6 (AC: 4) — Netty pipelines + `SmartLifecycle` acceptor (AD-1/AD-2/AD-16).** *(T6 substrate landed
-  2026-08-15 — subtasks 2–5 complete; subtask 1 stays open BY OWNER DECISION, see its note.)*
-  - [ ] `ServerBootstrap`/`Bootstrap` driven directly (NO Spring messaging integration). Ingress pipeline `SmppFrameDecoder → SmppCodec → BindInterceptor → RelayHandler`; egress `SmppFrameDecoder → SmppCodec → RelayHandler`. One `SmppFrameDecoder` instance per channel (CODEC-014).
+- [x] **Task 6 (AC: 4) — Netty pipelines + `SmartLifecycle` acceptor (AD-1/AD-2/AD-16).** *(T6 substrate landed
+  2026-08-15 — subtasks 2–5 complete; subtask 1 stayed open BY OWNER DECISION until T8 landed the handler
+  entries — CLOSED 2026-08-16: the T8 `RelayHandler` entries are wired on BOTH legs (ingress
+  `framer → codec → BindInterceptor → RelayHandler`, egress `framer → codec → RelayHandler`), pinned by
+  `RelayPipelineInitializersTest` (exactly-4 / exactly-3 user handlers, order, per-channel instances).)*
+  - [x] `ServerBootstrap`/`Bootstrap` driven directly (NO Spring messaging integration). Ingress pipeline `SmppFrameDecoder → SmppCodec → BindInterceptor → RelayHandler`; egress `SmppFrameDecoder → SmppCodec → RelayHandler`. One `SmppFrameDecoder` instance per channel (CODEC-014).
     **[2026-08-15 owner decision — codec-only prefix + attachment points (no placeholder handler classes):** T6 wires `SmppFrameDecoder → SmppCodec` on BOTH legs — per-channel instances (CODEC-014), pinned by `RelayPipelineInitializersTest` (order, exactly-2-user-handlers, distinct instances per channel, no `SslHandler`) — with the `BindInterceptor` (T7) and `RelayHandler` (T8, both legs) `addLast` entries appended at the attachment points documented in `RelayIngressInitializer`/`RelayEgressInitializer`. **This checkbox closes when those entries land (T7 ingress interceptor; T8 both relay-handler legs).** The per-bind egress `Bootstrap` (grouped on the ingress channel's event loop, HexDumpProxy-style) is assembled by T7 from the landed substrate (`RelayEgressInitializer` + `RelayChannelOptions.applyToEgress`); T6 ships no `connect()` — nothing to connect to until the bind interceptor exists.**]**
   - [x] Shared event loop (platform threads — virtual threads never carry the data-plane splice, AD-1). `AUTO_READ=false` + write-completes-gates-read + explicit low-water re-arm (AD-2/AD-30). Per-channel inbound queue bounded. *(Substrate: the ONE `MultiThreadIoEventLoopGroup` bean (named `companion-relay-*` platform threads — AD-1 pinned by test), `AUTO_READ=false` + explicit `WriteBufferWaterMark` — low = one `SmppFrame.MAX_COMMAND_LENGTH` frame, high = `max-inbound-depth` frames = the per-channel inbound bound in bytes — on BOTH legs via `RelayChannelOptions`. The read-demand BEHAVIOR (arm read on write-complete / low-water re-arm) is T8's `RelayHandler`, as AC4's "backpressure substrate" scopes.)*
   - [x] `SmartLifecycle` bean: start = bind acceptor + wire egress; `stop(Runnable)` invokes the callback in `finally` (mirror `ProxyCompanionLifecycle`). **Explicit `getPhase()`** so the relay lifecycle and `ProxyCompanionLifecycle` stop in the right order (deferred-work.md 2nd-SmartLifecycle item; full AD-22 drain is Epic 4). *(`RelayServerLifecycle`: mode-b-scoped start (this slice's cell — every other cell stays not-running, no port bind), SYNC bind (occupied port → throws through start() → AD-17 fail-fast, proven), stop = close acceptor → `shutdownGracefully` awaited (deterministic port release within the 30s phase window), callback in `finally`. Phases: `RELAY_ACCEPTOR_PHASE = APP_PHASE + 1000` — acceptor stops FIRST (AD-22 step 1); `ProxyCompanionLifecycle` gained explicit `APP_PHASE = 0`. "Wire egress" = the egress substrate above; the per-bind assembly is T7.)*
@@ -224,15 +227,15 @@ behind unchanged interfaces.
   - [x] Tests: RELAY-004 (retry-bind while adjudication in-flight → deterministic reject/teardown, no second pair, no registry corruption — fake verifier with `CountDownLatch`-held verdict, configurable `Allow` OR `Deny`). **AD-33 collapse test (slice-scoped):** verifier-`Deny` (fake `Deny`-verifier) → the generic failure code; egress-establishment-fail (no SMSC response) → the SAME generic code (collapse holds); SMSC-originated non-ROK `bind_*_resp` forwarded verbatim, NOT collapsed (RELAY-002c). **The AD-33 routing-miss collapse half CANNOT run in 2.2 (no routing table) and DEFERS to Epic 3 forward-role**; the verifier-`Deny` collapse half stays (fake verifier) + RELAY-002c.
   - [x] RED-on-neuter for the verifier-`Deny` collapse (fake `Deny`-verifier: neuter the deny-synthesis → the bind wrongly ROKs / hangs instead of denying) and the zeroize-in-finally.
 
-- [ ] **Task 8 (AC: 3, 7) — `RelayHandler`: AD-25 single-flip + AD-32 bare-close + REL-1 splice + SpliceObserver triggers (AD-2/AD-3/AD-25/AD-27/AD-32).**
-  - [ ] **The ONLY flipper:** on the ingress event loop, on decoded `bind_*_resp` where `SmppBindResponse.isOk()`, flip the entry's flag; fire `onBindAccept(systemId)` exactly at the flip (NOT at the verdict). Non-ROK → do NOT flip; tear down.
-  - [ ] **Race-free re-check:** before flipping (Allow path) AND in the Deny callback, re-check the `ConnectionRegistry` entry — if absent or `tearing-down`, the callback is a no-op (AD-25 gate-fix).
-  - [ ] **Post-flip opaque splice:** framed-`ByteBuf` forward both directions; `SmppCodec` object-decode dormant post-couple (AD-2). **No live `pipeline.remove()`** — the coupling is a flag flip, not a pipeline mutation.
-  - [ ] **AD-32 bare-close (final spine):** pre-flip, on EITHER leg — bind-family cooperative; egress `generic_nack`/non-ROK `bind_resp` forwarded verbatim (case 4); **everything else → NO response, close**. `command_id` read only to confirm "not bind-family" (`ByteBuf.getInt(4)`, no codec helper — AD-19); TRACE-gated only. Race-free teardown: same event loop, remove entry + mark `tearing-down` BEFORE close → `cancelHttp()` + `zeroize()` → close.
-  - [ ] **SpliceObserver triggers:** `onFramedPdu(Direction)` per framed PDU; `onConnectionClosed(Direction, CloseReason)` **exactly-once** (CAS on the channel attribute) at the `channelInactive` teardown site; the violation handler only stashes `CloseReason`, never calls `onConnectionClosed` directly.
-  - [ ] Tests (drive the REAL pipeline — gate-must-run-in-`check` trap; do NOT call handler methods directly): RELAY-001 (single-flipper — flips ONLY on decoded ROK `bind_resp`; no flip on non-ROK/peeked-id/Allow-without-bind_resp), RELAY-002 (ingress pre-couple non-bind → bare close, no egress PDU), RELAY-003 (egress pre-couple `deliver_sm` not leaked), RELAY-002c (SMSC `generic_nack`/non-ROK forwarded verbatim). REL-1: RELAY-008 (half-close propagates + drains/drops cleanly, sequence integrity), RELAY-009 (in-flight write racing `channelInvalid` → zero or exactly one complete frame on the wire), RELAY-010 (RST → both legs + registry, teardown OBSERVED). **CODEC-021 sibling of RELAY-001 (Risk Note 2 second vector):** feed a 0-byte-body (header-only) `bind_resp` → `SmppCodec` throws `DecoderException` before `SmppBindResponse` is built, so `isOk()` is NEVER reached — assert the `channelInvalid` teardown (`CloseReason`/counter fires), NOT `isOk()==false` (distinct from RELAY-001's decoded non-ROK branch).
-  - [ ] RecordingAllocator-bypass trap: any allocator/leak assertion feeds input in MULTIPLE chunks via `ctx.alloc()` wrapped in `RecordingAllocator` (one `writeInbound(Unpooled.buffer())` is tautological — Epic-1 retro).
-  - [ ] RED-on-neuter for the single-flipper, the AD-32 bare-close, the flip re-check, exactly-once `onConnectionClosed`, AND the non-ROK teardown guard (AC9 enumerates "non-ROK teardown" but T8's checklist omits it — neuter the "Non-ROK → do NOT flip; tear down" arm → a non-ROK `bind_resp` wrongly flips / fails to tear down).
+- [x] **Task 8 (AC: 3, 7) — `RelayHandler`: AD-25 single-flip + AD-32 bare-close + REL-1 splice + SpliceObserver triggers (AD-2/AD-3/AD-25/AD-27/AD-32).**
+  - [x] **The ONLY flipper:** on the ingress event loop, on decoded `bind_*_resp` where `SmppBindResponse.isOk()`, flip the entry's flag; fire `onBindAccept(systemId)` exactly at the flip (NOT at the verdict). Non-ROK → do NOT flip; tear down.
+  - [x] **Race-free re-check:** before flipping (Allow path) AND in the Deny callback, re-check the `ConnectionRegistry` entry — if absent or `tearing-down`, the callback is a no-op (AD-25 gate-fix).
+  - [x] **Post-flip opaque splice:** framed-`ByteBuf` forward both directions; `SmppCodec` object-decode dormant post-couple (AD-2). **No live `pipeline.remove()`** — the coupling is a flag flip, not a pipeline mutation.
+  - [x] **AD-32 bare-close (final spine):** pre-flip, on EITHER leg — bind-family cooperative; egress `generic_nack`/non-ROK `bind_resp` forwarded verbatim (case 4); **everything else → NO response, close**. `command_id` read only to confirm "not bind-family" (`ByteBuf.getInt(4)`, no codec helper — AD-19); TRACE-gated only. Race-free teardown: same event loop, remove entry + mark `tearing-down` BEFORE close → `cancelHttp()` + `zeroize()` → close.
+  - [x] **SpliceObserver triggers:** `onFramedPdu(Direction)` per framed PDU; `onConnectionClosed(Direction, CloseReason)` **exactly-once** (CAS on the channel attribute) at the `channelInactive` teardown site; the violation handler only stashes `CloseReason`, never calls `onConnectionClosed` directly.
+  - [x] Tests (drive the REAL pipeline — gate-must-run-in-`check` trap; do NOT call handler methods directly): RELAY-001 (single-flipper — flips ONLY on decoded ROK `bind_resp`; no flip on non-ROK/peeked-id/Allow-without-bind_resp), RELAY-002 (ingress pre-couple non-bind → bare close, no egress PDU), RELAY-003 (egress pre-couple `deliver_sm` not leaked), RELAY-002c (SMSC `generic_nack`/non-ROK forwarded verbatim). REL-1: RELAY-008 (half-close propagates + drains/drops cleanly, sequence integrity), RELAY-009 (in-flight write racing `channelInvalid` → zero or exactly one complete frame on the wire), RELAY-010 (RST → both legs + registry, teardown OBSERVED). **CODEC-021 sibling of RELAY-001 (Risk Note 2 second vector):** feed a 0-byte-body (header-only) `bind_resp` → `SmppCodec` throws `DecoderException` before `SmppBindResponse` is built, so `isOk()` is NEVER reached — assert the `channelInvalid` teardown (`CloseReason`/counter fires), NOT `isOk()==false` (distinct from RELAY-001's decoded non-ROK branch).
+  - [x] RecordingAllocator-bypass trap: any allocator/leak assertion feeds input in MULTIPLE chunks via `ctx.alloc()` wrapped in `RecordingAllocator` (one `writeInbound(Unpooled.buffer())` is tautological — Epic-1 retro).
+  - [x] RED-on-neuter for the single-flipper, the AD-32 bare-close, the flip re-check, exactly-once `onConnectionClosed`, AND the non-ROK teardown guard (AC9 enumerates "non-ROK teardown" but T8's checklist omits it — neuter the "Non-ROK → do NOT flip; tear down" arm → a non-ROK `bind_resp` wrongly flips / fails to tear down).
 
 - [ ] **Task 9 (AC: 6, 7) — In-JVM mock SMSC + A-1 mechanics smoke (RELAY-011) + REL-1 roundtrip + A-1 ops-plan docs (AD-24/AD-9).**
   - [ ] In-JVM mock SMSC: embedded Netty server in `proxy/src/test` using the PRODUCTION codec (`SmppFrameDecoder` + `SmppCodec`) — NOT a jSMPP harness. Programs: ≥N concurrent binds under one `system_id` → ROK each; `deliver_sm` on the SMSC socket that received the bind (carrier affinity emulation); injectable delay/stall; captures forwarded PDUs for byte-exact assertion. **Never an oracle for A-1 or codec correctness** (shares the codec's bugs + assumes A-1) — document this in the fixture's javadoc.
@@ -375,7 +378,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Tasks 1–7 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7); T8–T11 pending).
+glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7) + RelayHandler/AC3+AC7 (T8); T9–T11 pending).
 
 ### Debug Log References
 
@@ -714,6 +717,84 @@ glm-5.2[1m] (Tasks 1–7 — bootstrap gate + observability contract seed + pass
   making the fail-closed arm read it explicitly (`error == null && verdict instanceof Allow` /
   `error == null && verdict != null` — behavior identical under the `whenComplete` contract).
   Post-round `./gradlew clean build` GREEN — **277 tests, 0 failures, 0 skipped** (matrix +3).
+- **T8 design — the flip site is the EGRESS-leg `RelayHandler`, resolving "RelayHandler on the ingress
+  event loop" (AC3/AD-25).** The `bind_*_resp` arrives FROM the SMSC on the EGRESS channel; that channel
+  rides the INGRESS channel's event loop (T7's HexDumpProxy same-loop coupling, AD-2), so the flip runs
+  "on the ingress event loop" in the spine's sense while physically sitting in the egress pipeline
+  (`framer → codec → RelayHandler → EgressLeg`). The ingress-leg `RelayHandler` can never see a decoded
+  `SmppBindResponse` at all: T7's interceptor consumes bind-family pre-flip and its post-flip passthrough
+  fires REQUESTS only — so the single-flipper property is STRUCTURAL (one branch in one handler on one
+  leg), not merely conventional. `RelayHandler` is one class, one per-channel instance per LEG
+  (`Direction` is the only per-instance state beyond the shared registry/observer beans).
+- **T8 design — the AD-32 ingress-violation teardown is DELEGATED to `BindInterceptor` (a new
+  package-private seam `teardownForPreCoupleViolation(Channel)`), because the pending-adjudication
+  handles live there.** AC3's pinned ordering (remove + mark tearing-down BEFORE close → `cancelHttp()`
+  + `zeroize()` → close) needs the `pendingVerdict`/`pendingPassword` fields, which are per-channel
+  interceptor state; a `RelayHandler`-owned teardown could not cancel the ROPC (the interceptor's
+  `channelInactive` only fires its cancel arm when IT wins `beginTeardown` — a RelayHandler-won teardown
+  clears the attrs first and the cancel would be skipped). The seam does exactly the T7
+  `denyAndTeardown` sequence minus the deny write (bare close — AD-32 case 3 emits NOTHING), and
+  RelayHandler reaches it via `channel.pipeline().get(BindInterceptor.class)` (same package). The EGRESS
+  leg's violations need no delegation: closing the egress is enough — `EgressLeg.channelInactive`
+  (answered==false) collapses the dead bind via AD-33 (RELAY-003's propagation), and a RelayHandler-won
+  `beginTeardown` makes that arm lose the race cleanly (the post-egress ingress violation test pins
+  exactly this: NO deny, both legs closed).
+- **T8 design — `CloseReason` stashes + the exactly-once CAS; which values fire this slice (honest
+  coverage).** Only `channelInactive` calls `onConnectionClosed` (CAS on a channel attribute set at
+  `handlerAdded`); every other path (violations, teardowns, `exceptionCaught`) merely STASHES a reason
+  on the channel. Unstashed defaults: `PEER_HALF_CLOSE` for a spliced pair (the RELAY-008 contract),
+  `OTHER` for a pre-flip leg (the handshake planes — T7's deny/violation closes — left no T8 stash);
+  teardown propagation copies its reason onto the peer it closes. `exceptionCaught` classifies
+  `DecoderException → DECODE_ERROR` (the CODEC-021 sibling lands here — `isOk()` is never reached) and
+  `IOException → PEER_RST` (how a reset surfaces pre-inactive). Fired this slice:
+  `PRE_COUPLE_NON_BIND_PDU`, `BIND_FAILED_NON_ROK`, `GENERIC_NACK_PRE_BIND`, `DECODE_ERROR`,
+  `PEER_HALF_CLOSE`, `PEER_RST`, `OTHER`. NOT fired (closed-set stability, not a must-fire list):
+  `UNKNOWN_COMMAND_ID` (the relay classifies non-bind uniformly — maintaining a known-id set in
+  `relay/` would duplicate codec knowledge AD-27 forbids; unknown ids are a subset of non-bind),
+  `CLEAN_UNBIND_HANDSHAKE` (detecting it needs post-flip command_id peeking AD-3/AD-32 scope to the
+  pre-flip window; a post-flip unbind is opaque and its close reports `PEER_HALF_CLOSE` — correct but
+  coarser), `OVERSIZED_FRAME`/`UNDERSIZED_FRAME` (the framer's rejects classify as `DECODE_ERROR` via
+  their `DecoderException`/`TooLongFrameException` types), and the TLS/shutdown values (Epic 3/4).
+- **T8 design — `generic_nack` classification constant.** AD-32 case 4 is the ONE pre-couple opaque
+  case that must be distinguished (SMSC-originated answer → forward verbatim). `SmppCommandIds` does
+  not export it — AD-27 declares `generic_nack` opaque-spliced, NOT bind-family, and the codec-touch
+  discipline is T3-only — so `RelayHandler` carries a private `GENERIC_NACK = 0x80000000` (documented
+  as a classification constant, NOT a redefinition of the bind set; `SmppCommandIds.requestIdOf`'s own
+  javadoc names the same literal). The read is the AD-32-prescribed bare `getInt(4)` (no codec helper,
+  AD-19), on the EGRESS leg only; the INGRESS violation path reads NO header at all (non-bind is
+  already structural there — the codec emitted it opaque because it is not bind-family).
+- **T8 test-harness gotchas (three, empirically grounded).** (1) **`writeInbound` on a CLOSED
+  `EmbeddedChannel` throws `ClosedChannelException`** — the RED phase surfaced it on the first
+  `lateBindResp` draft. Any "delivery racing teardown" scenario must keep the channel OPEN and clear
+  the pair state directly: `registry.beginTeardown(...)` leaves the CLOSES to the caller (the T4 split),
+  and `ConnectionEntry.beginTearingDown()` is the CAS without the attr clear — together they
+  deterministically fabricate BOTH halves of the AD-25 re-check window (entry absent / entry cached but
+  tearing-down). (2) **`EmbeddedChannel.close()` tears the pipeline down** — after close,
+  `pipeline().get(RelayHandler.class)` returns null and a manual `fireChannelInactive()` propagates
+  through an EMPTY pipeline (probe-verified: a post-close duplicate is a NO-OP, not a biter). The
+  exactly-once biter therefore delivers its duplicate inactive PRE-close, while the handler is
+  installed; the initial post-close shape passed VACUOUSLY under the neutered CAS and was restructured
+  (the mutation pass caught its own false-green — the exact failure mode the Epic-1 gate exists for).
+  (3) **`BindInterceptorTest`'s ingress pipeline predated T8** (framer→codec→interceptor, no
+  `RelayHandler`) — the non-ROK close-events assertion failed on the missing INGRESS event until the
+  real production pipeline (4 handlers) was retrofitted into its `@BeforeEach` + the throwing-verifier
+  sub-channel.
+- **T8 RED phase genuine — 12/12 behavioral failures against a compiling no-op stub** (XML-verified;
+  the console's "18 completed" aggregates other bookkeeping — trust the XML, the T7 lesson). Two test
+  reshapes followed from the gotchas above BEFORE the implementation: the re-check biter (both halves)
+  and the RELAY-009 dead-pair phase (registry-direct teardown instead of close-then-write).
+- **T8 RED-on-neuter — all FIVE guards PROVEN (AC9 AI-1; unique `/tmp/t8-backups` masters, restored
+  byte-exact, `grep -c MUTATION` = 0, full `clean build` GREEN after).** **N1** flipper neutered
+  (`if (entry.flipSpliced())` → `if (false)`) → 5 flip-dependent tests RED (the named biter:
+  `flipsOnlyOnDecodedRokBindRespThenSplicesOpaquely` — `onBindAccept` never fired). **N2** the AD-32
+  bare-close seam neutered (`teardownForPreCoupleViolation` → immediate return) → exactly the 2
+  RELAY-002 tests RED (no close, no `cancelHttp`, no zeroize). **N3** the `tearingDown` re-check
+  conjunct dropped → exactly the re-check biter RED (the late bind_resp wrongly FLIPS on the cached
+  tearing-down entry). **N4** the exactly-once CAS neutered (always fire) → RED ONLY AFTER the biter
+  restructure (the post-close duplicate was a no-op; the pre-close duplicate double-fires →
+  `connectionClosedFiresExactlyOncePerChannel` RED at `hasSize(2)`). **N5** the non-ROK teardown
+  dropped (forward only) → exactly the 2 non-ROK tests RED (RelayHandlerTest's + the T7-evolved
+  BindInterceptorTest one: pair stays registered, legs open).
 - **T6 RED-on-neuter — all SEVEN guards PROVEN (AC9 AI-1).** M-A mode-b guard neutered →
   `forwardCellLeavesAcceptorUnstarted` RED (the forward boot took the port → the test's own bind of it
   failed); M-B `callback.run()` removed → `stopInvokesCallbackAndReleasesPort` RED; M-C `AUTO_READ`
@@ -1026,6 +1107,57 @@ glm-5.2[1m] (Tasks 1–7 — bootstrap gate + observability contract seed + pass
   mirroring the 2.1 slice's clamp default) is the verifier's budget; (d) `onConnectionClosed` triggers
   stay T8's (T7 fires only `onBindReject`).
 
+- **T8 DONE — AC3+AC7 `RelayHandler` (AD-25 single-flip + AD-32 bare-close + REL-1 splice +
+  SpliceObserver triggers; AD-2/AD-3/AD-25/AD-27/AD-32).** NEW `proxy/relay/RelayHandler.java` — one
+  class, one per-channel instance per LEG (Direction-carrying; the flip site is the EGRESS-leg instance,
+  which rides the ingress event loop — AD-2 same-loop coupling; see Debug Log). Behavior: channelRead
+  re-checks the entry (absent/tearing-down → consume + fail-closed close — the AD-25 race-free
+  re-check, both halves test-fabricated deterministically); pre-flip decoded `SmppBindResponse` → ROK
+  flips via `entry.flipSpliced()` (the ONLY flip call site in the relay) + `onBindAccept` exactly at
+  the flip + arms both legs' post-couple reads, then PROPAGATES to `EgressLeg` (the AD-25 forwarder
+  split — RelayHandler never forwards the bind_resp); non-ROK propagates FIRST (verbatim per AD-32
+  case 4) then `teardownPair(BIND_FAILED_NON_ROK)`; pre-flip `SmppBindRequest` propagates (the
+  interceptor plane owns bind-family); pre-flip opaque on EGRESS → the one case-4 check
+  (`getInt(4) == generic_nack` → verbatim forward + `GENERIC_NACK_PRE_BIND` teardown) else violation
+  (release + stash + close → `EgressLeg` collapses via AD-33 — RELAY-003); pre-flip opaque on INGRESS
+  → release + stash + `BindInterceptor.teardownForPreCoupleViolation` (the new package-private seam
+  running AC3's literal ordering: `beginTeardown` → `cancelHttp`+`zeroize` → close both — bare, no
+  deny; RELAY-002); post-flip EVERY PDU (incl. `unbind`, incl. a stray bind-family decode via
+  `originalFrame()`) splices opaquely to the peer with one `onFramedPdu(direction)` fire, dead-peer
+  guard (release + teardown, RELAY-009), write-completes-gates-read listener (re-arm only while the
+  peer is writable) + `channelWritabilityChanged` low-water re-arm (the AD-2/AD-30 backpressure
+  behavior — embedded channels cannot observe read-arming; T9's real sockets prove it live);
+  `channelInactive` tears a SPLICED pair down (either leg — RELAY-008/010) and fires
+  `onConnectionClosed` EXACTLY-ONCE per channel (CAS on the channel attribute; violations only ever
+  STASH a CloseReason); `exceptionCaught` classifies `DecoderException`→`DECODE_ERROR` (the CODEC-021
+  sibling — `isOk()` never reached) / `IOException`→`PEER_RST`, tears a spliced pair, closes.
+  `BindInterceptor` gained the `teardownForPreCoupleViolation` seam + a post-flip
+  `exceptionCaught` propagation arm (spliced → `fireExceptionCaught` so RelayHandler stashes
+  PEER_RST/DECODE_ERROR — pre-flip arms unchanged). `RelayIngressInitializer` appends the ingress
+  `RelayHandler` (T6 subtask-1's last slot — checkbox CLOSED); `RelayEgressInitializer` became
+  constructor-carrying (shared registry/observer) and appends the egress `RelayHandler`. Tests: NEW
+  `RelayHandlerTest` (12 — RELAY-001a/b/e + the re-check both halves, RELAY-002 mid-adjudication +
+  post-egress (the Q1 no-deny race), RELAY-003 no-leak, RELAY-002c generic_nack verbatim+teardown,
+  CODEC-021 sibling, RELAY-008 half-close propagation + whole-PDU drain, RELAY-009 zero-or-one
+  complete frame + raced-frame release, RELAY-010 RST observed, AC5 exactly-once with a PRE-close
+  duplicate inactive; multi-chunk feed per the RecordingAllocator-bypass trap; `@Timeout(SEPARATE_THREAD)`).
+  `BindInterceptorTest` retrofitted to the real 4-handler ingress pipeline + its non-ROK test evolved
+  to the T8 teardown contract (the T7 comment had pinned exactly this deferred arm).
+  `RelayPipelineInitializersTest` pins exactly-4/exactly-3 user handlers + per-channel RelayHandler
+  distinctness. RED phase genuine (12/12 vs the no-op stub); FIVE RED-on-neuter mutations (N1–N5) each
+  RED on exactly their named biters — N4's FIRST biter shape was a false-green (post-close duplicate
+  never reaches the torn-down pipeline; probe-verified) and was restructured pre-close — the mutation
+  pass caught its own vacuous test. Full `./gradlew clean build` GREEN — **289 tests, 0 failures,
+  0 skipped** (proxy 207 = 195+12; codec 82 unchanged). Honest scope notes: (a) read-ARMING is
+  unobservable on EmbeddedChannel — T9's real sockets carry the live proof; (b) RST is simulated as
+  the pipeline-fired IOException (exactly how a live NIO channel surfaces it) — the real-socket RST
+  injection is T9's; (c) the CloseReason values NOT fired this slice (UNKNOWN_COMMAND_ID,
+  CLEAN_UNBIND_HANDSHAKE, OVERSIZED/UNDERSIZED_FRAME, TLS, SHUTDOWN_DRAIN) — see the Debug Log
+  coverage entry; (d) RELAY-001(c) (a "raw frame whose command_id matches bind_resp but not decoded")
+  is unconstructible through the real pipeline — `SmppCodec` decodes bind-family structurally and a
+  malformed one becomes a `DecoderException` (the CODEC-021 sibling covers that arm); the flip keys on
+  the decoded type, so the peeked-id shortcut is structurally absent.
+
 ### File List
 
 - `proxy/src/test/java/smpp/companion/proxy/bootstrap/PreviewFeatureCompileGateTest.java` — **added**: the
@@ -1282,6 +1414,51 @@ glm-5.2[1m] (Tasks 1–7 — bootstrap gate + observability contract seed + pass
 - *(T7 owner-FIXME round)* `proxy/src/test/java/smpp/companion/proxy/relay/BindInterceptorTest.java` —
   **modified again**: class-level `@Timeout(10, SEPARATE_THREAD)` + the deadline-flow assert;
   `LatchedBindCredentialVerifier` captures the ScopedValue-bound deadlines.
+- `proxy/src/main/java/smpp/companion/proxy/relay/RelayHandler.java` — **added** (T8): the AC3+AC7
+  data-plane handler — AD-25 single flipper (the egress-leg instance, riding the ingress event loop),
+  AD-32 pre-couple bare-close (ingress via the interceptor seam, egress via close+EgressLeg collapse,
+  generic_nack case-4 verbatim), post-flip opaque splice + write-completes-gates-read + low-water
+  re-arm, `channelInactive` pair teardown + exactly-once `onConnectionClosed` (CAS),
+  `exceptionCaught` classification (DECODE_ERROR/PEER_RST/OTHER).
+- `proxy/src/main/java/smpp/companion/proxy/relay/BindInterceptor.java` — **modified** (T8): +
+  package-private `teardownForPreCoupleViolation(Channel)` (the AD-32 case-3 ingress seam running the
+  pinned AC3 ordering: beginTeardown → cancelHttp+zeroize → close both, NO deny) + the post-flip
+  `exceptionCaught` propagation arm (spliced → `fireExceptionCaught` so RelayHandler stashes the
+  reason and owns the pair teardown); pre-flip arms byte-identical to T7.
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayIngressInitializer.java` — **modified**
+  (T8): the T8 `addLast` entry LANDED (`new RelayHandler(registry, observer, Direction.INGRESS)` after
+  `BindInterceptor`) — T6 subtask 1's ingress slot closed; the full AC4 pipeline is wired.
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayEgressInitializer.java` — **modified**
+  (T8): constructor-carrying (`@RequiredArgsConstructor` on the shared `ConnectionRegistry` +
+  `SpliceObserver` — Spring wires the same singletons into both initializers) + the T8 `addLast` entry
+  (`Direction.EGRESS` after the codec prefix).
+- `proxy/src/test/java/smpp/companion/proxy/relay/RelayHandlerTest.java` — **added** (T8): 12 tests —
+  RELAY-001a/b/e + flip-re-check (both halves), RELAY-002 (mid-adjudication + post-egress), RELAY-003,
+  RELAY-002c (generic_nack), CODEC-021 sibling, RELAY-008, RELAY-009, RELAY-010, AC5 exactly-once
+  (PRE-close duplicate delivery); multi-chunk feed; hand-authored PDU builders incl. opaque non-bind
+  PDUs + a local `FakeEgressConnector`.
+- `proxy/src/test/java/smpp/companion/proxy/relay/BindInterceptorTest.java` — **modified** (T8): the
+  ingress pipelines (@BeforeEach + the throwing-verifier sub-channel) retrofitted to the REAL
+  4-handler production shape (RelayHandler added); the non-ROK verbatim test evolved to the T8
+  teardown contract (registry 0, both legs closed, `BIND_FAILED_NON_ROK` close events — the T7 comment
+  had pinned this exact deferred arm); `RelayEgressInitializer` construction now shares the
+  registry/observer.
+- `proxy/src/test/java/smpp/companion/proxy/relay/netty/RelayPipelineInitializersTest.java` —
+  **modified** (T8): ingress pin evolved to exactly-4 user handlers
+  (`framer → codec → BindInterceptor → RelayHandler`, order pinned), egress to exactly-3
+  (`framer → codec → RelayHandler`), + per-channel `RelayHandler` distinctness on both legs; the
+  egress initializer factory shares a registry/observer pair.
+- `proxy/src/test/java/smpp/companion/proxy/testsupport/RelayTestFixtures.java` — **modified** (T8):
+  `modeBIngressInitializer` now builds ONE shared `ConnectionRegistry` + observer instance and hands
+  the same pair to the ingress initializer and the (now constructor-carrying)
+  `RelayEgressInitializer` — mirroring Spring's singleton wiring, required for the egress-leg flipper
+  to resolve the pair the ingress interceptor registered.
+- *(mutation-pass only, ZERO net change — not listed as modified):*
+  `proxy/.../relay/RelayHandler.java` (N1 flipper, N3 re-check conjunct, N4 exactly-once CAS, N5
+  non-ROK teardown) and `proxy/.../relay/BindInterceptor.java` (N2 bare-close seam) — neutered then
+  restored from unique `/tmp/t8-backups` masters; restored files `grep MUTATION`-verified clean and
+  the final `clean build` ran AFTER the restores. A throwaway `ProbeN4Test` (the closed-pipeline
+  diagnosis) was created and deleted within the round.
 
 ## Change Log
 
@@ -1666,3 +1843,23 @@ review) — T11's consolidated pass re-runs all.
   values), no planning artifact pins a deadline number or names the zero-new-config constraint (grep —
   story-text only; the owner override is recorded here), and no unresolved FIXME remains in main.
   Re-run the workflow after the limit resets if a second opinion is wanted.
+
+- 2026-08-16 — **Story 2.2 Task 8:** AC3+AC7 `RelayHandler` — the AD-25 single-flip + AD-32 bare-close +
+  REL-1 opaque splice + pinned SpliceObserver triggers (AD-2/AD-3/AD-25/AD-27/AD-32). NEW
+  `proxy/relay/RelayHandler.java` (per-leg instances; the flip site is the EGRESS-leg handler riding the
+  ingress event loop — structural single-flipper: the ingress leg can never see a decoded bind_resp);
+  `BindInterceptor` gained the `teardownForPreCoupleViolation` seam (AC3's literal ordering — the
+  pending cancelHttp/zeroize handles live in the interceptor) + a post-flip exceptionCaught propagation
+  arm; both initializers wire their `RelayHandler` entries (T6 subtask 1's checkbox CLOSED — the AC4
+  pipelines are complete). Tests +12 (`RelayHandlerTest`: RELAY-001a/b/e + re-check both halves,
+  RELAY-002 ×2, RELAY-003, RELAY-002c generic_nack, CODEC-021 sibling, RELAY-008/009/010, AC5
+  exactly-once with a PRE-close duplicate); `BindInterceptorTest` retrofitted to the real 4-handler
+  ingress pipeline + its non-ROK test evolved to the T8 teardown contract; pipeline pins 4/3 handlers.
+  RED phase genuine (12/12 vs a no-op stub); FIVE RED-on-neuter mutations proven (N1 flipper, N2
+  bare-close seam, N3 tearing-down re-check, N4 exactly-once CAS — whose first biter shape was a
+  false-green caught by the mutation pass itself (post-close duplicates never reach the torn-down
+  embedded pipeline; restructured pre-close), N5 non-ROK teardown). Full `./gradlew clean build` GREEN —
+  289 tests, 0 failures, 0 skipped (proxy 207; was 195). Honest scope: read-arming unobservable on
+  embedded channels (T9's real sockets), RST simulated as the pipeline-fired IOException (real-socket
+  injection is T9's), 7 of 16 CloseReason values fire this slice (coverage map in the Debug Log).
+  (T9–T11 remain open — story stays in-progress.)

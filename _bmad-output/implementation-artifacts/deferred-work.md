@@ -269,3 +269,120 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   drifting from it (state duplication across the two legs + the continuation). Behavior-preserving bar:
   the 10 `BindInterceptorTest` behaviors (RELAY-004, both AD-33 arms, RELAY-002c, AD-14 verbatim,
   fail-closed, late-verdict no-op) stay green unchanged.
+
+## Deferred from: owner note during Story 2.2 T8 review (2026-08-16)
+
+- **Unify the pair-state vocabulary on `couple`-variants; retire `splice`/`flip` as state terms**
+  (owner note 2026-08-16, T8 review) — today the CODE predicate is `ConnectionEntry.spliced()` /
+  `flipSpliced()` (the AD-25 flag, the only runtime state) while the PROSE mixes three vocabularies:
+  "coupled pair" (the ingress↔egress pairing, AD-8/AD-9 — broader than the flag: a pair is coupled
+  from optimistic registration, RELAY-006), "pre-couple/post-couple" (the window, ≡ pre-flip/post-flip
+  — the same instant), and "the flip"/"the splice" (the transition). Owner direction: ONE vocabulary,
+  `couple`-variants (`coupled()` / `couple()` / pre-couple / post-couple), avoiding `splice`/`flip` in
+  code and relay prose. **Rename blast radius:** the `spliced` field + both methods
+  [`proxy/.../relay/ConnectionEntry.java:52,61-74`]; javadoc/comment prose across `RelayHandler`,
+  `BindInterceptor`, `ConnectionRegistry`, both initializers; test names + helpers
+  (`RelayHandlerTest.flipsOnlyOnDecodedRok…` / `coupleAndFlip()`, `ConnectionRegistryTest`'s
+  `flipSpliced` CAS pins, `RelayPipelineInitializersTest`); the 2-2 story file's prose. **Two decisions
+  the round must make first:** (a) the BINDING spine itself speaks splice/flip — AD-25's rule text
+  ("the splice flag is flipped by exactly one unit"; the AD is literally titled "Bind→splice
+  transition state machine") and AD-2's title ("coupling + framed-ByteBuf splice") — so renaming only
+  the code re-creates the same code/prose split one level up; a full unification needs in-place spine
+  amendments + `.memlog.md` entries (the contract-amendment discipline). (b) Whether the SEEDED
+  `SpliceObserver` seam + its 4 methods rename too (`onFramedPdu` is already couple-neutral; the type
+  name is not) — that is a ratified-contract change rippling through ARCHITECTURE-SPINE.md AD-27,
+  `epics.md`, the TEA docs, and the readiness report (the 2026-08-11 `onByteTransfer` drop is the
+  precedent for the amendment path). **Timing:** a standalone mechanical round AFTER Story 2.2
+  completes (T9–T11 + their reviews still cite the current names; renaming mid-story churns review
+  diffs twice) and BEFORE Epic 3 widens the relay surface; re-run the full mutation pass after — a
+  rename can silently de-target RED-on-neuter biters (N1's neuter site is the `flipSpliced()` call).
+  Pairs naturally with the T7-noted Strategy/state-object refactor above — do them together so the
+  state names are chosen once.
+- **Split `RelayHandler` — it is two direction-dictated state machines in one class** (owner note
+  2026-08-16, T8 review) — the single class branches on its `direction` field at every
+  pre-couple decision point, encoding two different per-leg machines: the EGRESS handler is the
+  flip reader + AD-32 classifier (decoded ROK `bind_resp` → flip; `generic_nack` check on the one
+  opaque header read → case-4 verbatim forward; other violations → close, letting `EgressLeg`'s
+  AD-33 collapse run), while the INGRESS handler is the violation delegator (pre-couple non-bind →
+  `BindInterceptor.teardownForPreCoupleViolation`, the cancelHttp+zeroize seam). Only the POST-flip
+  plane is genuinely symmetric (opaque splice, write-completes-gates-read, low-water re-arm,
+  pair teardown, exactly-once close). Branch sites today: `RelayHandler.channelRead` (the
+  `direction == EGRESS && getInt(4) == GENERIC_NACK` conjunct and the `direction == INGRESS`
+  delegation arm) and `peerOf()`. **Candidate shape:** two classes (`RelayIngressHandler` /
+  `RelayEgressHandler`) over one shared post-couple splice component — the initializers already wire
+  per-leg instances, so the split has ZERO wiring cost (`RelayIngressInitializer` /
+  `RelayEgressInitializer` each instantiate their own), and it mirrors T7's own answer to the same
+  asymmetry (the nested per-leg `BindInterceptor.EgressLeg`). **Constraints for the round:** the 12
+  `RelayHandlerTest` behaviors stay green unchanged-in-intent (the real-pipeline discipline means the
+  harness itself may need the class split mirrored); `RelayPipelineInitializersTest` pins
+  `RelayHandler.class` by name and must be re-pointed deliberately (not silently); the
+  `CLOSE_REASON`/`CLOSE_FIRED` attribute keys are class-scoped — two classes get two key namespaces
+  (harmless: one handler per leg, but the marker init must move to both); the flip's structural
+  single-site property (the ingress leg can never see a decoded `bind_resp`) should become
+  structural-by-TYPE, which a split makes stronger — the flip call site exists only in the egress
+  class. **Timing:** same combined post-2.2 / pre-Epic-3 cleanup round as the Strategy/state-object
+  refactor and the couple-vocabulary unification above — all three touch the same cluster; do them
+  once, together, with the full mutation pass re-run afterward.
+- **Split `BindInterceptor` by ROLE — the forward and reverse bind-handshake roles are significantly
+  different** (owner note 2026-08-16, T8 review) — today the interceptor is reverse.mode-b-ONLY by
+  construction (the constructor refuses to build without `companion.reverse.mode-b.smsc`; every bind
+  routes to the single configured egress, NO allow-list, NO routing table — the 2.2 slice scope), but
+  the binding spine's FORWARD role adds materially different control-plane semantics when Epic 3
+  wires it: the AD-29 1:1 routing table (`system_id` allow-list → the single egress target), the
+  routing-miss deny arm (AD-11 fail-closed, AD-33-collapsed — this story explicitly deferred it to
+  Epic 3 as "inapplicable to this reverse.mode-b slice"), per-target egress selection
+  (`tlsContextId`, AD-34 per-egress cipher contexts), and forward-mode variants of the acceptor
+  wiring. Growing the ONE class with `role ==` branches would fork every method; a split
+  (per-role interceptors over the shared handshake skeleton — adjudication + `ScopedValue`
+  `RequestContext`, the AD-33 deny synth, caller-owned zeroize, RELAY-004 retry-guard, the pinned
+  teardown ordering) keeps each role's illegal states unrepresentable. **Enabler:** AD-17 guarantees
+  exactly ONE role×mode cell per deployment, so `RelayIngressInitializer` can select the interceptor
+  implementation at WIRING time — no runtime role branching anywhere on the hot path. **Split the
+  DECISION from the EXECUTION:** choose the seam (shared base vs composed handshake component vs the
+  queued Strategy/state-object shape) in the combined post-2.2 cleanup round, but EXECUTE the split
+  when Epic 3's forward role actually lands — today a split yields a one-implementation strategy
+  (speculative), and the state-machine refactor above is the better vehicle for the shared skeleton.
+  **Bar:** the 10 `BindInterceptorTest` behaviors stay green unchanged-in-intent; the reverse.mode-b
+  path must NOT grow an allow-list arm (2.2 AC2's scope note is slice-scoped, not contradicted);
+  the RELAY-004/AD-33/zeroize pins are role-INDEPENDENT and belong in whatever shared skeleton
+  survives. Related: `RelayServerLifecycle` carries the same mode-b-scoping question for Epic 3's
+  acceptor widening.
+- **Extract a `ConnectionEntry` STATE MANAGER — the handlers call it, it decides, it delegates the
+  work back** (owner note 2026-08-16, T8 review) — today the pair's state machine is distributed
+  across ~10 decision sites (`BindInterceptor.onRequest`/`onVerdict`/`denyAndTeardown`/
+  `channelInactive`/`exceptionCaught`, `EgressLeg.channelRead0`/`channelInactive`,
+  `RelayHandler.channelRead`/`channelInactive`/`exceptionCaught`) that each re-derive state from the
+  registry entry and branch in-method; each handler knows the WHOLE machine. Owner direction: extract
+  one class that MANAGES `ConnectionEntry` state — the handlers/interceptor CALL it, the MANAGER
+  decides what to do, and DELEGATES the work back to the interceptor/handler (policy centralizes;
+  the wire-effect mechanism — writes, closes, read-arming, `cancelHttp`, zeroize — stays in the
+  handlers, which own the `ChannelHandlerContext`s). **Two implementation variants to weigh:**
+  (1) a SINGLE manager covering both forward+reverse scenarios, vs (2) DISTINCT managers per role.
+  Variant choice is the SAME decision as the `BindInterceptor` role-split note above at a different
+  altitude — role split at the interceptor level vs at the manager level; treat them as ONE fork, not
+  two. Mechanically, "delegates the work back" needs an executor-facing port (manager holds
+  references to the interceptor/handler arms) OR the manager returns a sealed decision the caller
+  executes — the latter avoids the circular manager↔handler dependency; record which when chosen.
+  **Thread-bounding (the owner's explicit design axis): bound the code by the threads it rides.**
+  Facts to design against: ALL entry/registry transitions today ride ONE Netty event loop per pair
+  (AD-2 same-loop coupling — the per-bind egress `Bootstrap` groups on the ingress channel's loop),
+  which is exactly why two CAS-once `AtomicBoolean`s + a `volatile` egress suffice (CAS only for the
+  cross-leg/teardown race); the ONE off-loop entry point is the verdict continuation
+  (`whenComplete` → `channel.eventLoop().execute(...)` hop) coming off the verifier's bounded VT
+  executor (AD-5/AD-28 — `ScopedValue` `RequestContext` bound at verify-time, control plane). The
+  extraction should make that confinement FIRST-CLASS: manager = event-loop-confined policy (like the
+  handlers), with the continuation hop as its single off-loop entry; anything VT-side (adjudication
+  kickoff) stays in the interceptor's control-plane half. **Two cautions:** (a) the POST-FLIP SPLICE
+  is the hot path — every spliced PDU must remain a flag-read + forward, not a manager consultation
+  (a virtual dispatch per PDU is a PERF regression Epic 6 would catch late; keep the manager on the
+  handshake/teardown plane, or prove the indirection negligible); (b) AD-8 pins "the ONLY mutable
+  runtime state is the ConnectionRegistry" — the manager must be POLICY over the registry's STORAGE,
+  not a second state copy (the AD-32 rule "the entry's state, not a separate boolean" applies to the
+  manager itself); absorbing the registry INTO the manager is an AD-8-adjacent restructuring that
+  needs a spine note. **Timing + precedence:** same combined post-2.2/pre-Epic-3 round, and make this
+  decision FIRST — it is the umbrella the Strategy/state-object, direction-split, and role-split
+  notes fold into (they become "what the manager's executors look like"). **Bar:** the 10
+  `BindInterceptorTest` + 12 `RelayHandlerTest` behaviors green unchanged-in-intent; RELAY-005/006
+  idempotence + no-orphan pins survive; the CAS-once triggers (`onBindAccept` at the flip,
+  `onConnectionClosed` exactly-once) stay exactly-once; RELAY-007 jcstress (nightly) targets the
+  manager unchanged if the registry survives as storage.

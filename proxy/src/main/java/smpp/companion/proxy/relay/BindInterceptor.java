@@ -347,6 +347,29 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     }
 
     /**
+     * The T8 {@code RelayHandler}'s AD-32 case-3 arm: a pre-couple non-bind violation on the ingress leg
+     * bare-closes the pair. The interceptor owns this teardown because the pending-adjudication handles
+     * ({@code cancelHttp} + zeroize) live HERE — the ordering is the pinned AC3/AD-32 sequence:
+     * {@code beginTeardown} (remove + mark tearing-down BEFORE close) → {@code cancelHttp()} +
+     * {@code zeroize()} → close. Uniformly emits NOTHING on the wire — no {@code bind_resp}, no synthetic
+     * {@code _resp} (AD-32 case 3 / RELAY-002; a losing racer no-ops per RELAY-005).
+     *
+     * @param ingress the violating legacy-client leg; non-null.
+     */
+    void teardownForPreCoupleViolation(Channel ingress) {
+        ConnectionEntry won = registry.beginTeardown(ingress); // remove + mark tearing-down BEFORE close
+        cancelAndWipePending();
+        if (won == null) {
+            return; // a concurrent teardown owns the closes
+        }
+        Channel egress = won.egress();
+        if (egress != null) {
+            egress.close();
+        }
+        ingress.close(); // the bare close — the whole wire effect of AD-32 case 3
+    }
+
+    /**
      * The ONE PDU the relay builds (AD-33): a header-only {@code bind_*_resp} — 16 octets written directly
      * ({@link SmppFrame#HEADER_LENGTH}; never re-serialized via {@code SmppBindEncoder}). The response id
      * comes from the codec's own constants ({@link SmppCommandIds} — AD-27: the bind-family set is
@@ -436,7 +459,13 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // channel and land in channelInactive.
         Channel channel = ctx.channel();
         ConnectionEntry entry = registry.entryFor(channel);
-        if (entry != null && !entry.spliced()) {
+        if (entry != null && entry.spliced()) {
+            // Post-flip: T8's plane — propagate so the RelayHandler stashes the CloseReason
+            // (DECODE_ERROR / PEER_RST) and performs the pair teardown; it owns the close.
+            ctx.fireExceptionCaught(cause);
+            return;
+        }
+        if (entry != null) {
             ConnectionEntry won = registry.beginTeardown(channel);
             cancelAndWipePending();
             if (won != null) {
