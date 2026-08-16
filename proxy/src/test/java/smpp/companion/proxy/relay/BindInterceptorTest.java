@@ -32,6 +32,8 @@ import smpp.companion.codec.framer.SmppFrame;
 import smpp.companion.codec.framer.SmppFrameDecoder;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.observability.CapturingSpliceObserver;
+import smpp.companion.proxy.observability.CloseReason;
+import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
 import smpp.companion.proxy.security.BindCredential;
@@ -103,13 +105,16 @@ class BindInterceptorTest {
         observer = new CapturingSpliceObserver();
         verifier = new LatchedBindCredentialVerifier();
         connector = new FakeEgressConnector();
-        egressInitializer = new RelayEgressInitializer();
+        egressInitializer = new RelayEgressInitializer(registry, observer); // T8: constructor-carrying (shared beans)
         ProxyCompanionProperties properties = RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1);
         RelayChannelOptions channelOptions = new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT);
         BindInterceptor interceptor = new BindInterceptor(
                 verifier, registry, observer, properties, egressInitializer, channelOptions, connector);
+        // The REAL production ingress pipeline (AC4): framer → codec → BindInterceptor → RelayHandler —
+        // T8 added the last entry; both legs carry one per-channel RelayHandler sharing these beans.
         ingress = new EmbeddedChannel(
-                DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor);
+                DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor,
+                new RelayHandler(registry, observer, Direction.INGRESS));
     }
 
     @AfterEach
@@ -320,9 +325,17 @@ class BindInterceptorTest {
         assertThat(bytesOf(toLegacy))
                 .as("VERBATIM — the SMSC's own status, system_id AND unparsed TLV tail, not a 16-byte synth")
                 .isEqualTo(smscResp);
-        assertThat(registry.size())
-                .as("the non-ROK teardown is T8's (AC3: no flip, tear down) — T7 forwards only")
-                .isEqualTo(1);
+        // T8 landed: the non-ROK teardown is RelayHandler's arm (AC3: no flip; forward FIRST, then tear down
+        // both legs). This suite's egress leg carries the real T8 RelayHandler via the shared initializer.
+        assertThat(ingress.<ByteBuf>readOutbound()).as("nothing follows the verbatim answer").isNull();
+        assertThat(ingress.isOpen()).as("non-ROK → tear down (AC3)").isFalse();
+        assertThat(egress.isOpen()).isFalse();
+        assertThat(registry.size()).as("the failed pair leaves the registry").isZero();
+        assertThat(observer.connectionCloses())
+                .as("observed with the non-ROK reason on both legs (T8's stashes)")
+                .containsExactlyInAnyOrder(
+                        new CapturingSpliceObserver.ConnectionClose(Direction.EGRESS, CloseReason.BIND_FAILED_NON_ROK),
+                        new CapturingSpliceObserver.ConnectionClose(Direction.INGRESS, CloseReason.BIND_FAILED_NON_ROK));
     }
 
     @Test
@@ -411,7 +424,8 @@ class BindInterceptorTest {
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT), connector);
         // Swap the interceptor into a fresh pipeline (the @BeforeEach channel already has one).
         EmbeddedChannel throwingIngress = new EmbeddedChannel(
-                DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), throwing);
+                DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), throwing,
+                new RelayHandler(registry, observer, Direction.INGRESS));
         try {
             throwingIngress.writeInbound(inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 12, "legacy1", "pw123456")));
             ByteBuf deny2 = throwingIngress.readOutbound();

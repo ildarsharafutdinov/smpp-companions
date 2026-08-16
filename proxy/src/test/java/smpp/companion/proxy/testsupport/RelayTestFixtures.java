@@ -67,18 +67,23 @@ public final class RelayTestFixtures {
 
     /**
      * The real production ingress wiring for direct-construction tests (T7 made the initializer
-     * constructor-carrying): the default verifier/observer/registry beans, the mode-b properties, the
-     * egress initializer, and the shared substrate options. One home for the same drift reason as
-     * {@link #modeBProperties} — a constructor-signature change breaks ONE fixture.
+     * constructor-carrying; T8 made the egress initializer constructor-carrying too): the default
+     * verifier/observer/registry beans, the mode-b properties, the egress initializer, and the shared
+     * substrate options. The registry/observer instances are SHARED between the two initializers —
+     * Spring wires the same singleton beans into both, and the egress-leg RelayHandler (the AD-25
+     * flipper) must resolve the same registry the ingress interceptor wrote. One home for the same
+     * drift reason as {@link #modeBProperties} — a constructor-signature change breaks ONE fixture.
      */
     public static RelayIngressInitializer modeBIngressInitializer(int bindPort) {
         ProxyCompanionProperties properties = modeBProperties(bindPort, 1);
+        ConnectionRegistry registry = new ConnectionRegistry();
+        NoopSpliceObserver observer = new NoopSpliceObserver();
         return new RelayIngressInitializer(
                 new AlwaysAllowBindCredentialVerifier(),
-                new ConnectionRegistry(),
-                new NoopSpliceObserver(),
+                registry,
+                observer,
                 properties,
-                new RelayEgressInitializer(),
+                new RelayEgressInitializer(registry, observer),
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT));
     }
 }
