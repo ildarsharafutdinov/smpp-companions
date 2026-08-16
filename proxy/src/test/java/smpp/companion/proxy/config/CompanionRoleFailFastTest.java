@@ -1,5 +1,7 @@
 package smpp.companion.proxy.config;
 
+import java.time.Duration;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -51,7 +53,7 @@ class CompanionRoleFailFastTest {
         // forward branch and a reverse branch without throwing. (Matrix validation is exercised
         // end-to-end in CompanionConfigMatrixTest.)
         new ProxyCompanionProperties(
-                new Bind(2775),
+                new Bind(2775, Duration.ofSeconds(4)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 new Forward(
@@ -62,7 +64,7 @@ class CompanionRoleFailFastTest {
                         null),
                 null);
         new ProxyCompanionProperties(
-                new Bind(2775),
+                new Bind(2775, Duration.ofSeconds(4)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 null,

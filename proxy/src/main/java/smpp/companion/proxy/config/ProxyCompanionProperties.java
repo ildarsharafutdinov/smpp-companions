@@ -6,7 +6,9 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -216,13 +218,40 @@ public record ProxyCompanionProperties(
     }
 
     /**
-     * SMPP bind port (the proxy's own listener; always required, SEC-055).
+     * The proxy's own SMPP listener (always required) plus the bind-handshake adjudication budget.
+     *
+     * @param port the proxy's own SMPP listener port (SEC-055).
+     * @param adjudicationDeadline the BUDGET for one bind's credential adjudication (Story 2.2 T7, owner
+     *         FIXME 2026-08-15): {@code RequestContext.deadline = now + this} is what the relay hands the
+     *         {@code BindCredentialVerifier} via the {@code ScopedValue} (AD-5/AD-12); the Epic-3 ROPC
+     *         adapter derives its per-call timeouts from it. Default {@code 4s} in
+     *         {@code application.yml} — the PERF-3-flavored bind-latency budget; the wired
+     *         {@code AlwaysAllow} stand-in ignores it, and the RELAY-side timeout arm
+     *         (no-hanging-socket enforcement) remains the deferred RELAY-020 slice. Positive — zero and
+     *         negative refuse startup (compact-ctor guard, AD-17).
      */
     public record Bind(
             @Min(value = 1, message = "companion.bind.port must be in [1,65535] — refusing to start (SEC-055).")
             @Max(value = 65535, message = "companion.bind.port must be in [1,65535] — refusing to start (SEC-055).")
-            int port
+            int port,
+            @NotNull(message = "companion.bind.adjudication-deadline is required — refusing to start.")
+            Duration adjudicationDeadline
     ) {
+
+        /**
+         * Fail-fast construction guard: the adjudication deadline must be a POSITIVE duration (zero and
+         * negative are misconfigurations, not degenerate-but-usable budgets — a zero deadline would have
+         * the verifier treat every bind as already-expired). Fires at construction (direct) and at refresh
+         * (yml/args), so an invalid value refuses startup (AD-17).
+         */
+        public Bind {
+            Objects.requireNonNull(adjudicationDeadline, "adjudicationDeadline");
+            if (adjudicationDeadline.isZero() || adjudicationDeadline.isNegative()) {
+                throw new IllegalArgumentException(
+                        "companion.bind.adjudication-deadline must be positive — refusing to start (got "
+                                + adjudicationDeadline + ")");
+            }
+        }
     }
 
     /**

@@ -214,15 +214,15 @@ behind unchanged interfaces.
   - [x] Config source: `companion.bind.port` (listener) + `companion.reverse.mode-b.{smsc, acknowledged:true}` (the single egress + plaintext opt-in) + `companion.memory.*` (T5) + `companion.tls.*` (AD-34 defaults). Read via `ProxyCompanionProperties` (Story 1.3). **ZERO new config field — `reverse.mode-b` already carries `smsc` + `acknowledged`; NO change to `ProxyCompanionProperties.java`.** *(T6 reads `bind.port` (acceptor bind) + `memory.max-inbound-depth` (watermark high) through the existing record — ZERO new fields, ZERO `ProxyCompanionProperties` change. `reverse.mode-b.smsc` is CONSUMED at T7's connect site (the egress target — nothing connects in T6); `acknowledged` + `tls.*` stay Story-1.3's validation/yml surface — a plaintext slice consumes no TLS settings.)*
   - [x] **No `SslHandler` on either leg.** *(pinned per-leg by `RelayPipelineInitializersTest`; TLS is Epic 3.)*
 
-- [ ] **Task 7 (AC: 2) — `BindInterceptor`: bind-family verifier gating + AD-33 collapse + caller-owned zeroize (AD-7/AD-15/AD-25/AD-27/AD-33).**
-  - [ ] On decoded `SmppBindRequest`: consume `SmppCommandIds.BIND_FAMILY` (no local redefine). **Route EVERY bind to the single configured egress (`companion.reverse.mode-b.smsc`) — NO `system_id` allow-list, NO routing table (AD-29 is forward-role, inapplicable here).**
-  - [ ] **Verifier `Deny*` → AD-33 deny:** synthesize the matching `bind_*_resp` with ONE generic bind-failure `command_status` (header-only 16-octet construct built directly — AD-32 forbids re-serializing via `SmppBindEncoder` on the hot path; the deny `bind_resp` is the ONE place the relay builds a PDU). Exact code: **open question Q2 (reopened — left for the dev to ratify at T7 impl):** the prior `ESME_RINVSYSAUTH 0x0000000E` pin was tied to routing-miss AND is a non-existent SMPP 3.4 code name pinned to the wrong hex (`0x0E` = `ESME_RINVPASWD`); with routing-miss gone the collapse covers verifier-`Deny*` + egress-establishment-fail only, and AD-33's anti-enumeration purpose favors a GENERIC code (e.g. `ESME_RSYSERR 0x00000008`) over a credential-specific one. Ratify the chosen generic code vs SMPP 3.4 §5.1.3 at T7 impl.
-  - [ ] Invoke `BindCredentialVerifier.verify(BindCredential, ScopedValue<RequestContext>)`; construct `BindCredential(new SystemId(req.systemId()), new Password(req.password()))` and the `RequestContext(systemId, channelId, deadline)` bound via `ScopedValue` (AD-5; never `ThreadLocal`). Await `VerdictRequest.future()`.
-  - [ ] On `Allow`: open egress (T6), forward `req.originalFrame()` to the SMSC verbatim (AD-14), `release()` after. On `Deny*`: AD-33 deny `bind_resp` + `onBindReject(systemId, verdict)` (AD-19: no labeled `system_id` values; reject counter unlabeled full-stop). **Egress-establishment-fail (no SMSC response PDU) collapses to the SAME generic deny code (AD-33)** — a prober cannot distinguish verifier-reject from unreachable-SMSC; SMSC-originated non-ROK `bind_*_resp` is forwarded verbatim (AD-32 case 4, RELAY-002c — NOT collapsed).
-  - [ ] On decoded `bind_*_resp` from egress: forward to the legacy client (the AD-25 forwarder split — BindInterceptor owns bind-family forward; RelayHandler reads read-only to flip).
-  - [ ] **Caller-owned zeroize:** `cred.password().zeroize()` in `finally` on EVERY path (Allow/Deny/cancelHttp/timeout/exception). This resolves the open 2.1 review finding (deferred-work.md §AlwaysAllow-zeroization) — `AlwaysAllow` does not inspect the secret, so the relay owns the wipe.
-  - [ ] Tests: RELAY-004 (retry-bind while adjudication in-flight → deterministic reject/teardown, no second pair, no registry corruption — fake verifier with `CountDownLatch`-held verdict, configurable `Allow` OR `Deny`). **AD-33 collapse test (slice-scoped):** verifier-`Deny` (fake `Deny`-verifier) → the generic failure code; egress-establishment-fail (no SMSC response) → the SAME generic code (collapse holds); SMSC-originated non-ROK `bind_*_resp` forwarded verbatim, NOT collapsed (RELAY-002c). **The AD-33 routing-miss collapse half CANNOT run in 2.2 (no routing table) and DEFERS to Epic 3 forward-role**; the verifier-`Deny` collapse half stays (fake verifier) + RELAY-002c.
-  - [ ] RED-on-neuter for the verifier-`Deny` collapse (fake `Deny`-verifier: neuter the deny-synthesis → the bind wrongly ROKs / hangs instead of denying) and the zeroize-in-finally.
+- [x] **Task 7 (AC: 2) — `BindInterceptor`: bind-family verifier gating + AD-33 collapse + caller-owned zeroize (AD-7/AD-15/AD-25/AD-27/AD-33).**
+  - [x] On decoded `SmppBindRequest`: consume `SmppCommandIds.BIND_FAMILY` (no local redefine). **Route EVERY bind to the single configured egress (`companion.reverse.mode-b.smsc`) — NO `system_id` allow-list, NO routing table (AD-29 is forward-role, inapplicable here).**
+  - [x] **Verifier `Deny*` → AD-33 deny:** synthesize the matching `bind_*_resp` with ONE generic bind-failure `command_status` (header-only 16-octet construct built directly — AD-32 forbids re-serializing via `SmppBindEncoder` on the hot path; the deny `bind_resp` is the ONE place the relay builds a PDU). Exact code: **open question Q2 (reopened — left for the dev to ratify at T7 impl):** the prior `ESME_RINVSYSAUTH 0x0000000E` pin was tied to routing-miss AND is a non-existent SMPP 3.4 code name pinned to the wrong hex (`0x0E` = `ESME_RINVPASWD`); with routing-miss gone the collapse covers verifier-`Deny*` + egress-establishment-fail only, and AD-33's anti-enumeration purpose favors a GENERIC code (e.g. `ESME_RSYSERR 0x00000008`) over a credential-specific one. Ratify the chosen generic code vs SMPP 3.4 §5.1.3 at T7 impl. *(Q2 RATIFIED at T7 impl: **`ESME_RBINDFAIL 0x0000000D`** — verified against the repo's own `docs/SMPP_v3_4_Issue1_2.pdf` §5.1.3 ("Bind Failed"; `RSYSERR 0x08`, `RINVPASWD 0x0E`, `RINVSYSID 0x0F` around it). §5.1.3's LITERAL generic bind-failure code; zero credential-validity information; identical across BOTH collapse arms (a prober cannot distinguish verifier-reject from unreachable-SMSC); reads definitive rather than retry-worthy, so naive clients don't retry-storm the way `RSYSERR`'s "System Error" conventionally invites. The story's illustrative `RSYSERR` was considered and set aside (see Debug Log). Tests pin the LITERAL `0x0000000D` independent of the production constant.)*
+  - [x] Invoke `BindCredentialVerifier.verify(BindCredential, ScopedValue<RequestContext>)`; construct `BindCredential(new SystemId(req.systemId()), new Password(req.password()))` and the `RequestContext(systemId, channelId, deadline)` bound via `ScopedValue` (AD-5; never `ThreadLocal`). Await `VerdictRequest.future()`.
+  - [x] On `Allow`: open egress (T6), forward `req.originalFrame()` to the SMSC verbatim (AD-14), `release()` after. On `Deny*`: AD-33 deny `bind_resp` + `onBindReject(systemId, verdict)` (AD-19: no labeled `system_id` values; reject counter unlabeled full-stop). **Egress-establishment-fail (no SMSC response PDU) collapses to the SAME generic deny code (AD-33)** — a prober cannot distinguish verifier-reject from unreachable-SMSC; SMSC-originated non-ROK `bind_*_resp` is forwarded verbatim (AD-32 case 4, RELAY-002c — NOT collapsed).
+  - [x] On decoded `bind_*_resp` from egress: forward to the legacy client (the AD-25 forwarder split — BindInterceptor owns bind-family forward; RelayHandler reads read-only to flip).
+  - [x] **Caller-owned zeroize:** `cred.password().zeroize()` in `finally` on EVERY path (Allow/Deny/cancelHttp/timeout/exception). This resolves the open 2.1 review finding (deferred-work.md §AlwaysAllow-zeroization) — `AlwaysAllow` does not inspect the secret, so the relay owns the wipe.
+  - [x] Tests: RELAY-004 (retry-bind while adjudication in-flight → deterministic reject/teardown, no second pair, no registry corruption — fake verifier with `CountDownLatch`-held verdict, configurable `Allow` OR `Deny`). **AD-33 collapse test (slice-scoped):** verifier-`Deny` (fake `Deny`-verifier) → the generic failure code; egress-establishment-fail (no SMSC response) → the SAME generic code (collapse holds); SMSC-originated non-ROK `bind_*_resp` forwarded verbatim, NOT collapsed (RELAY-002c). **The AD-33 routing-miss collapse half CANNOT run in 2.2 (no routing table) and DEFERS to Epic 3 forward-role**; the verifier-`Deny` collapse half stays (fake verifier) + RELAY-002c.
+  - [x] RED-on-neuter for the verifier-`Deny` collapse (fake `Deny`-verifier: neuter the deny-synthesis → the bind wrongly ROKs / hangs instead of denying) and the zeroize-in-finally.
 
 - [ ] **Task 8 (AC: 3, 7) — `RelayHandler`: AD-25 single-flip + AD-32 bare-close + REL-1 splice + SpliceObserver triggers (AD-2/AD-3/AD-25/AD-27/AD-32).**
   - [ ] **The ONLY flipper:** on the ingress event loop, on decoded `bind_*_resp` where `SmppBindResponse.isOk()`, flip the entry's flag; fire `onBindAccept(systemId)` exactly at the flip (NOT at the verdict). Non-ROK → do NOT flip; tear down.
@@ -375,7 +375,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8; T5–T11 pending).
+glm-5.2[1m] (Tasks 1–7 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7); T8–T11 pending).
 
 ### Debug Log References
 
@@ -609,6 +609,111 @@ glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + pass
   boots fail at refresh before any bind and need none). Forward-cell boots never bind (the lifecycle is
   mode-b-scoped — pinned by `forwardCellLeavesAcceptorUnstarted`, RED under the guard-removal mutation
   M-A).
+- **T7 design — Q2 ratified: `ESME_RBINDFAIL 0x0000000D`, NOT the story's illustrative `ESME_RSYSERR`.**
+  Ratified against the primary source IN THE REPO (`pdftotext docs/SMPP_v3_4_Issue1_2.pdf` §5.1.3:
+  `ESME_RSYSERR 0x00000008 System Error`, `ESME_RBINDFAIL 0x0000000D Bind Failed`,
+  `ESME_RINVPASWD 0x0000000E Invalid Password`, `ESME_RINVSYSID 0x0000000F Invalid System ID` — also
+  independently confirming the story's claim that the prior `0x0E` pin was `RINVPASWD`, not
+  `RINVSYSAUTH`). Why RBINDFAIL over RSYSERR: (1) it is §5.1.3's LITERAL generic bind-failure status —
+  the exact semantic slot of "ONE generic bind-failure `command_status` answering a `bind_*` request";
+  (2) anti-enumeration is a TIE (both carry zero credential information), but RSYSERR conventionally
+  signals a TRANSIENT system error — naive legacy clients retry-storm on it — while RBINDFAIL reads
+  definitive, which mildly ANTI-amplifies probing under the collapse; (3) honest for BOTH arms
+  (verifier-deny AND egress-unreachable are both "the bind failed"). The production constant
+  (`BindInterceptor.AD_33_GENERIC_BIND_FAILURE_STATUS`) is pinned in tests by the LITERAL `0x0000000D`
+  (plus the §5.1.3-verified neighbor codes in the test javadoc), so re-pointing the constant cannot
+  silently re-point the wire contract.
+- **T7 design — the egress `bind_resp` forwarder: a nested `BindInterceptor.EgressLeg`, resolving the
+  AC4/RELAY-003 "egress has no BindInterceptor" vs AD-25 "BindInterceptor forwards the bind_resp"
+  tension.** The egress leg's fixed initializer keeps its documented shape (`framer → codec` + the T8
+  slot — untouched by T7); the per-bind connect assembly (inside `BindInterceptor`, HexDumpProxy-style)
+  appends a per-pair `EgressLeg` inner handler AFTER that prefix: `framer → codec → RelayHandler(T8,
+  from the initializer) → EgressLeg(T7, from the assembly)`. Two load-bearing consequences: (a) the
+  `addLast` happens in the connect-success listener BEFORE any read is armed (`AUTO_READ=false` — no
+  PDU can precede it; registration precedes connect, so the initializer's handlers are already in
+  place), which is NOT the AD-2-forbidden "live pipeline surgery" (that ban is `pipeline.remove()` on a
+  live channel — removing); (b) `EgressLeg` is the bind family's LAST consumer (forwards the SMSC's
+  `bind_resp` bytes verbatim to the ingress, releases the decoded PDU, propagates nothing) — a contract
+  that stays STABLE when T8's `RelayHandler` inserts earlier in the pipeline: T8's handler observes the
+  decoded `bind_resp` first (flips, read-only) and PROPAGATES bind-family PDUs so the forwarder still
+  sees them; opaque PDUs are consumed by whichever handler handles them first. At T7-time (no
+  RelayHandler yet) `EgressLeg` directly follows `SmppCodec` — same contract.
+- **T7 design — zeroize TIMING: at adjudication settlement + at teardown, NOT at `verify()`-return.**
+  The subtask says "`zeroize()` in a `finally` on EVERY path"; the finally that matters is the VERDICT
+  CONTINUATION's (plus every teardown path): the Epic-3 ROPC adapter reads the password ASYNCHRONOUSLY
+  while its future is pending (the ROPC token request carries the credential), so a wipe at
+  `verify()`-return would hand the adapter zeroed bytes. Wipe sites: the continuation's `finally`
+  (Allow/Deny/exceptional — the Allow arm is the only one no teardown covers, and it has a dedicated
+  biter), `cancelAndWipePending()` on every teardown arm (retry-bind, ingress/egress death, violation —
+  idempotent, RELAY-005 double-zeroize safe), and the sync-throw catch. Verified SAFE for the AD-14
+  forward: `SmppBytes.readNullTerminated` COPIES each C-octet field into a fresh `byte[]`, so the
+  password's backing array is never the forwarded frame's memory — the wipe cannot corrupt the bind the
+  SMSC receives (a real jshell-free read of the codec source; the forwarded frame keeps the cleartext
+  until its buffer is released, which is the codec's documented model).
+- **T7 design — `EgressConnector` seam (package-private ctor param), and it CLOSES the T6-review
+  deferred wiring pin.** RELAY-006's technique note sanctions "an injected failing ChannelFuture"; the
+  seam takes the fully-assembled `Bootstrap` + host/port and returns the `ChannelFuture` (production:
+  `bootstrap.connect(host, port)`). Beyond the injectable failure, the tests capture the Bootstrap and
+  pin what the T6 review deferred to T7 ("dropping `.childHandler`/`applyToEgress` keeps the suite
+  GREEN"): group == the ingress event loop (HexDumpProxy same-loop coupling), handler == the
+  `RelayEgressInitializer` bean, `ALLOCATOR`/`AUTO_READ=false`/watermark options present — mutations
+  N3/N4 prove both bites. The 6-arg public ctor (used by `RelayIngressInitializer`) delegates with the
+  DEFAULT connector; only the 7-arg package-private ctor exposes the seam (tests live in the same
+  package).
+- **T7 test-harness gotchas (three).** (1) **`EmbeddedChannel.eventLoop().execute()` after `close()`
+  QUEUES the task instead of running it** (empirically probed via jshell: the task never ran; a real
+  event loop always drains its queue) — the late-verdict tests must call `ingress.runPendingTasks()`
+  after completing the held future, else the continuation silently never runs and the no-op/re lease
+  asserts are VACUOUS (the original RELAY-004 late-verdict arm passed vacuously before the pump was
+  added). (2) **`readOutbound()` hands the reader ownership** — the refCnt-reaching-zero proof requires
+  releasing the read buffer first (the deny-synth buffer is independent, but the AD-14 forwarded frame
+  shares the underlying buffer with the test's wrapped input). (3) The RED-phase run's Gradle console
+  said "15 tests completed, 9 failed" while the class XML says `tests="9" failures="9"` — trust the XML
+  (the console line aggregates other bookkeeping); the RED phase was 9/9 behavioral failures against a
+  compiling no-op stub.
+- **T7 RED-on-neuter — all FIVE guards PROVEN (AC9 AI-1; each reverted from a unique
+  `/tmp/t7-backups` path, main diff-verified byte-exact after restore).** **N1** deny synthesis neutered
+  (`writeAndFlush(deny)+CLOSE` → bare `close()`) → exactly the 5 deny-dependent tests RED (verifier-deny,
+  bind-type matching, egress-death, egress-establishment-fail, RELAY-004 retry-reject — no deny on the
+  wire). **N2** the continuation's `finally`-zeroize removed → exactly the ALLOW-path test RED (its
+  zeroize assert is the only arm no teardown wipe covers — added precisely so N2 has a biter; the deny
+  tests' wipes come from the teardown arm and stay green under N2, correctly so). **N3**
+  `channelOptions.applyToEgress(bootstrap)` dropped → the wiring-pin test RED (options absent). **N4**
+  `.handler(egressInitializer)` dropped → the wiring-pin test RED (handler absent). **N5** the AD-25
+  race-free re-check removed → both late-verdict no-op tests RED (the late Allow wrongly opens an
+  egress).
+- **T7 owner-FIXME round (2026-08-15, post-T7 — the owner left 6 in-code FIXMEs; addressed same-day,
+  the T5b pattern).** (1) **Adjudication deadline → config:** `companion.bind.adjudication-deadline`
+  (`Bind` record's 2nd component, `Duration`, `@NotNull` + compact-ctor POSITIVITY guard — zero/negative
+  refuse, AD-17), default **4s** in application.yml (was a hardcoded 30s constant; the owner's FIXME
+  named the 4s default). Follows the T5b house pattern exactly — the default ships in yml, deliberately
+  NO `@DefaultValue`, and `TestCompanionConfigs.common()` states the key explicitly because the matrix
+  boots run on `ApplicationContextRunner`, which does NOT load application.yml (a bare `@NotNull`
+  without that would null-fail all 53 matrix tests — the load-bearing trap of this round). 6 direct
+  `new Bind(...)` sites gained the arg (`RelayTestFixtures` exports `DEFAULT_ADJUDICATION_DEADLINE`).
+  New bite: `nonPositiveAdjudicationDeadlineRefuses` (0s/-5s/PT0S — the INVALID value is bound, not the
+  key removed) + an end-to-end flow assert (the latched verifier captures `ctx.get().deadline()` inside
+  the ScopedValue-bound verify; asserted ≈ now+4s) + a yml-default pin in `CompanionTlsBindingTest`
+  (that boot sets NO `companion.bind.*` property — mirror of the T5b `budgetCheck==FAIL` end-to-end
+  pin). Mutation **N6** (guard → `if (false)`) RED on exactly the 3 new parameters. (2) The
+  spliced-passthrough arm's comment now DESCRIBES the mechanism (post-flip a bind-family PDU still
+  DECODES — SmppCodec is structural, "dormant" means downstream ignores it — so the arm sees a decoded
+  `SmppBindRequest`, fires it downstream untouched, T8's RelayHandler owns the frame). (3) `assert
+  pendingVerdict == null && pendingPassword == null` at `adjudicate` entry — a single-event-loop
+  invariant (every entry-clearing path also clears the pending handles on the same loop), `assert` not
+  throw so the production bind path pays nothing without `-ea`; probe-proven live (a temporary
+  `assert false` failed 2 tests — Gradle test workers run `-ea`; **N7** probe, reverted exactly).
+  (4) The sync-throw catch's redundant `pendingPassword` assignment REMOVED (nothing was stored to
+  track; `cancelAndWipePending` finding nothing is correct; the explicit `zeroize()` below is that
+  arm's single wipe). (5) `EgressLeg` → Lombok `@RequiredArgsConstructor` (house style). (6) "Prove
+  non-blocking": the verify() call site documents the proof (the call only hands off; the await is the
+  `whenComplete` chain; a blocking-inside-verify verifier violates the PORT contract, AD-28) and
+  `BindInterceptorTest` gained a class-level `@Timeout(10)` — a blocking regression now FAILS a test
+  instead of hanging the suite (RELAY-004's mid-flight second write already proves the pipeline stays
+  live deterministically). ErrorProne `UnusedVariable` on the continuation's `error` param resolved by
+  making the fail-closed arm read it explicitly (`error == null && verdict instanceof Allow` /
+  `error == null && verdict != null` — behavior identical under the `whenComplete` contract).
+  Post-round `./gradlew clean build` GREEN — **277 tests, 0 failures, 0 skipped** (matrix +3).
 - **T6 RED-on-neuter — all SEVEN guards PROVEN (AC9 AI-1).** M-A mode-b guard neutered →
   `forwardCellLeavesAcceptorUnstarted` RED (the forward boot took the port → the test's own bind of it
   failed); M-B `callback.run()` removed → `stopInvokesCallbackAndReleasesPort` RED; M-C `AUTO_READ`
@@ -885,6 +990,42 @@ glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + pass
   `.connect(smsc.host(), smsc.port())`; the initial ingress read is ARMED by the handlers (nothing
   reads under `AUTO_READ=false` until then — by design).
 
+- **T7 DONE — AC2 `BindInterceptor` (bind-family verifier gating + AD-33 collapse + caller-owned
+  zeroize; AD-7/AD-12/AD-14/AD-15/AD-25/AD-27/AD-33).** NEW `proxy/relay/BindInterceptor.java` — the
+  per-channel ingress handler + nested `EgressLeg` (the egress-side `bind_resp` forwarder, the AD-25
+  forwarder split's egress arm; see the Debug Log placement decision) + the package-private
+  `EgressConnector` seam (RELAY-006's injected future; closes the T6-review-deferred bootstrap-wiring
+  pin). Behavior: first bind → optimistic `registry.register` (RELAY-006) → `BindCredential` +
+  `ScopedValue`-bound `RequestContext` → `verify` (never blocks the loop, never spawns a VT — AD-28) →
+  continuation hopped to the ingress event loop with the AD-25 race-free re-check; `Allow` → per-bind
+  egress `Bootstrap` on the ingress event loop (T6 `RelayEgressInitializer` + `applyToEgress`) →
+  AD-14 verbatim `originalFrame` forward (write = the release) + `read()` arming; `Deny*` →
+  `onBindReject` (Verdicts only) + the AD-33 header-only deny (`ESME_RBINDFAIL 0x0000000D`, Q2
+  ratified vs §5.1.3) + `ChannelFutureListener.CLOSE` (walkthrough §5 "bind_resp error, then close");
+  egress-establishment-fail (refused connect OR SMSC death pre-`bind_resp`) collapses to the SAME code
+  with NO `onBindReject`; SMSC non-ROK `bind_resp` forwarded VERBATIM (RELAY-002c); verifier
+  exception/absent verdict → fail-closed deny, no observer trigger (AD-11/AD-27); RELAY-004 retry-bind
+  → generic deny answering the RETRY's sequence + `cancelHttp` + teardown (the in-flight predicate is
+  the registry entry, per AD-32); caller-owned `zeroize` at settlement + every teardown arm (see the
+  Debug Log timing decision); teardown ordering per AC3 (`beginTeardown` → cancel+wipe → deny+close;
+  losing racers no-op). `RelayIngressInitializer` appends the T7 `addLast` entry (T6 subtask 1's
+  ingress half CLOSED — its checkbox stays open for T8's two RelayHandler legs). Tests (10, 0
+  skipped/failed): `BindInterceptorTest` (RELAY-004, AD-33 deny collapse + bind-type matching +
+  egress-fail indistinguishability, AD-14 verbatim + bootstrap wiring pin, RELAY-002c non-ROK verbatim,
+  ROK verbatim, egress pre-bind_resp death, ingress-vanish-mid-adjudication + late-verdict no-op,
+  verifier-exception fail-closed both arms) + `LatchedBindCredentialVerifier` (latch-held-verdict fake,
+  reusable by T8/T9); `RelayPipelineInitializersTest` ingress pin evolved to exactly-3 user handlers
+  (+ per-channel interceptor distinctness); `RelayServerLifecycleTest` rewired via the new shared
+  `RelayTestFixtures.modeBIngressInitializer` fixture. RED phase genuine (9/9 RED against a compiling
+  no-op stub, XML-verified); 5 RED-on-neuter mutations (N1–N5) each RED on exactly their named biters.
+  Full `./gradlew clean build` GREEN — 274 tests, 0 failures, 0 skipped (proxy 191; was 182 at T6).
+  Honest scope notes: (a) the ingress leg's pre-couple NON-bind policy (AD-32 case-3 bare-close) is
+  T8's — at T7 opaque ingress PDUs pass to the tail and are released, no leak, no policy yet;
+  (b) post-ROK teardown (non-ROK `bind_resp` / post-flip lifecycle) is T8's — T7 forwards only;
+  (c) no relay-side verdict TIMEOUT arm (RELAY-020 deferred) — the `RequestContext` deadline (30s,
+  mirroring the 2.1 slice's clamp default) is the verifier's budget; (d) `onConnectionClosed` triggers
+  stay T8's (T7 fires only `onBindReject`).
+
 ### File List
 
 - `proxy/src/test/java/smpp/companion/proxy/bootstrap/PreviewFeatureCompileGateTest.java` — **added**: the
@@ -1077,6 +1218,70 @@ glm-5.2[1m] (Tasks 1–4 — bootstrap gate + observability contract seed + pass
   `proxy/.../relay/netty/RelayServerLifecycle.java` (mode-b guard, callback, getPhase, sync-bind
   neutered then restored) and `proxy/.../relay/netty/RelayChannelOptions.java` (AUTO_READ / clamp /
   ALLOCATOR neutered then restored) — the seven T6 RED-on-neuter mutations; masters diff-verified.
+- `proxy/src/main/java/smpp/companion/proxy/relay/BindInterceptor.java` — **added** (T7): the AC2
+  bind-handshake interceptor — per-channel ingress handler (verifier gating via `ScopedValue`-bound
+  `RequestContext`, AD-33 `ESME_RBINDFAIL` header-only deny synth, RELAY-004 retry-guard, caller-owned
+  zeroize at settlement + teardown) + nested `EgressLeg` (the AD-25 egress-arm `bind_resp` forwarder,
+  appended by the per-bind connect assembly) + the package-private `EgressConnector` seam
+  (RELAY-006's injected future; production default = `bootstrap.connect(host, port)`).
+- `proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayIngressInitializer.java` — **modified**
+  (T7): the documented T7 `addLast` attachment point LANDED (`new BindInterceptor(...)` per accepted
+  channel after the codec prefix; 6 constructor-injected beans). T6 subtask 1's ingress half is closed;
+  the T8 `RelayHandler` slot remains.
+- `proxy/src/test/java/smpp/companion/proxy/relay/BindInterceptorTest.java` — **added** (T7): 10 tests —
+  RELAY-004 retry-bind, AD-33 deny collapse (literal `0x0000000D` pin), bind-type resp matching,
+  egress-establishment-fail collapse, AD-14 verbatim forward + the egress-bootstrap wiring pin,
+  RELAY-002c non-ROK verbatim, ROK verbatim, egress pre-`bind_resp` death, ingress-vanish +
+  late-verdict no-op, verifier-exception fail-closed (both arms).
+- `proxy/src/test/java/smpp/companion/proxy/relay/LatchedBindCredentialVerifier.java` — **added** (T7):
+  the latch-held-verdict fake (captures credentials for the zeroize asserts + `cancelHttp` calls);
+  reusable by T8/T9.
+- `proxy/src/test/java/smpp/companion/proxy/relay/netty/RelayPipelineInitializersTest.java` —
+  **modified** (T7): the ingress pin evolved to exactly-3 user handlers
+  (`framer → codec → BindInterceptor`, order pinned) + per-channel interceptor distinctness in the
+  CODEC-014 test; the egress pin stays exactly-2 (T8's slot).
+- `proxy/src/test/java/smpp/companion/proxy/relay/netty/RelayServerLifecycleTest.java` — **modified**
+  (T7): the three `new RelayIngressInitializer()` sites rewired through the shared fixture (the
+  initializer became constructor-carrying).
+- `proxy/src/test/java/smpp/companion/proxy/testsupport/RelayTestFixtures.java` — **modified** (T7): +
+  `modeBIngressInitializer(bindPort)` — the shared real-wiring factory (same consolidation rationale as
+  the T6 review's fixture finding).
+- *(mutation-pass only, ZERO net change — not listed as modified):*
+  `proxy/.../relay/BindInterceptor.java` — the five T7 mutations (N1 deny synthesis, N2 finally-zeroize,
+  N3 `applyToEgress`, N4 egress initializer handler, N5 the AD-25 re-check) neutered then restored from
+  `/tmp/t7-backups`; the restored file diff-verified byte-exact before the final `clean build`. The
+  owner-FIXME round added N6 (the `Bind` positivity guard, in
+  `proxy/.../config/ProxyCompanionProperties.java` — reverted byte-exact) and the N7 `assert false`
+  probe (assertions-enabled proof, reverted exactly).
+- *(T7 owner-FIXME round, 2026-08-16)* `proxy/src/main/java/smpp/companion/proxy/config/ProxyCompanionProperties.java`
+  — **modified again**: the `Bind` record gains its 2nd component `Duration adjudicationDeadline`
+  (`companion.bind.adjudication-deadline`; `@NotNull` + compact-ctor positivity guard, AD-17) +
+  `java.time.Duration`/`java.util.Objects` imports.
+- *(T7 owner-FIXME round)* `proxy/src/main/resources/application.yml` — **modified again**:
+  `companion.bind.adjudication-deadline: 4s` + the budget/ownership comment.
+- *(T7 owner-FIXME round)* `proxy/src/main/java/smpp/companion/proxy/relay/BindInterceptor.java` —
+  **modified again**: the deadline read from `properties.bind().adjudicationDeadline()` (30s constant
+  deleted), the spliced-passthrough comment rewritten, the adjudicate-entry `assert`, the sync-throw
+  catch simplified, `EgressLeg` → `@RequiredArgsConstructor`, the non-blocking-proof comment at the
+  `verify()` call, and the fail-closed arm made to read `error` explicitly (ErrorProne
+  `UnusedVariable`).
+- *(T7 owner-FIXME round)* `proxy/src/test/java/smpp/companion/proxy/config/TestCompanionConfigs.java`
+  — **modified again**: `common()` sets `companion.bind.adjudication-deadline=4s` (the
+  `ApplicationContextRunner` boots load no yml — the round's load-bearing trap).
+- *(T7 owner-FIXME round)* `proxy/src/test/java/smpp/companion/proxy/config/CompanionConfigMatrixTest.java`
+  — **modified again**: + `nonPositiveAdjudicationDeadlineRefuses` (0s/-5s/PT0S; N6's biter) + the 3
+  direct `Bind` constructions gained the duration.
+- *(T7 owner-FIXME round)* `proxy/src/test/java/smpp/companion/proxy/config/CompanionTlsBindingTest.java`
+  — **modified again**: the yml-default pin (`adjudicationDeadline == 4s` from application.yml in the
+  boot that sets no `companion.bind.*` property).
+- *(T7 owner-FIXME round)* `proxy/src/test/java/smpp/companion/proxy/config/CompanionRoleFailFastTest.java` /
+  `proxy/src/test/java/smpp/companion/proxy/relay/netty/DirectMemoryBudgetStartupCheckTest.java` /
+  `proxy/src/test/java/smpp/companion/proxy/testsupport/RelayTestFixtures.java` — **modified again**:
+  direct `Bind` constructions gained the duration (`RelayTestFixtures` exports
+  `DEFAULT_ADJUDICATION_DEADLINE`).
+- *(T7 owner-FIXME round)* `proxy/src/test/java/smpp/companion/proxy/relay/BindInterceptorTest.java` —
+  **modified again**: class-level `@Timeout(10, SEPARATE_THREAD)` + the deadline-flow assert;
+  `LatchedBindCredentialVerifier` captures the ScopedValue-bound deadlines.
 
 ## Change Log
 
@@ -1413,3 +1618,51 @@ exactly the ingress pin; **M-H2** (`stop()` body emptied) → `RelayServerLifecy
 `isRunning` pin + the direct stop test). Both restored byte-exact; final `:proxy:cleanTest :proxy:test` GREEN —
 **182 tests, 0 failures, 0 errors, 0 skipped**. Review mutation set grows to M-A…M-G (T6) + M-H1/M-H2 (this
 review) — T11's consolidated pass re-runs all.
+
+- 2026-08-15 — **Story 2.2 Task 7:** AC2 `BindInterceptor` — bind-family verifier gating + AD-33
+  collapse + caller-owned zeroize (AD-7/AD-12/AD-14/AD-15/AD-25/AD-27/AD-33). NEW
+  `proxy/relay/BindInterceptor.java` (per-channel ingress handler + nested `EgressLeg` egress-arm
+  `bind_resp` forwarder + `EgressConnector` seam) + the T7 `addLast` entry in `RelayIngressInitializer`
+  (T6 subtask 1's ingress half closed). **Q2 RATIFIED: the AD-33 generic bind-failure code is
+  `ESME_RBINDFAIL 0x0000000D`** (§5.1.3 "Bind Failed", verified against the repo's own spec PDF; the
+  story's illustrative `ESME_RSYSERR` considered and set aside — §5.1.3-literal, definitive-not-
+  retry-worthy, identical across both collapse arms; pinned in tests by the LITERAL, independent of the
+  production constant). Zeroize timing decided: at adjudication settlement + every teardown arm (NOT at
+  `verify()`-return — the Epic-3 ROPC adapter reads the secret async; `SmppBytes` copies C-octet fields
+  so the wipe can never corrupt the AD-14 forward). Tests +11 (10 `BindInterceptorTest` +
+  `LatchedBindCredentialVerifier`; ingress pipeline pin evolved to 3 handlers; `RelayTestFixtures`
+  gained the shared initializer factory). RED phase genuine (9/9 vs a compiling stub); FIVE
+  RED-on-neuter mutations (N1 deny synth, N2 finally-zeroize, N3/N4 the T6-review-DEFERRED
+  egress-bootstrap wiring pins, N5 the AD-25 re-check) each RED on exactly their named biters. Full
+  `./gradlew clean build` GREEN — 274 tests, 0 failures, 0 skipped (proxy 191). (T8–T11 remain open —
+  story stays in-progress.)
+
+- 2026-08-16 — **Story 2.2 T7 owner-FIXME round (6 in-code FIXMEs, addressed same-day):** (1) the
+  adjudication deadline extracted to config — `companion.bind.adjudication-deadline: 4s`
+  (`ProxyCompanionProperties.Bind` 2nd component, `@NotNull` + compact-ctor positivity guard
+  zero/negative→refuse; the T5b house pattern: default in application.yml, no `@DefaultValue`,
+  `TestCompanionConfigs.common()` states it because the `ApplicationContextRunner` matrix boots load NO
+  yml — the round's load-bearing trap). New bite: matrix refusal 0s/-5s/PT0S (mutation N6 RED on
+  exactly those 3) + an end-to-end flow assert (the latched verifier captures the ScopedValue-bound
+  deadline ≈ now+4s) + the yml-default pin in `CompanionTlsBindingTest` (mirror of the T5b
+  `budgetCheck==FAIL` pin). (2) Spliced-passthrough comment rewritten to describe the mechanism.
+  (3) `assert pendingVerdict/pendingPassword == null` at adjudicate entry — a single-event-loop
+  invariant, probe-proven live under Gradle's `-ea` (N7). (4) The redundant `pendingPassword`
+  assignment removed from the sync-throw catch (the explicit zeroize is that arm's single wipe).
+  (5) `EgressLeg` → Lombok `@RequiredArgsConstructor`. (6) "Prove non-blocking": call-site comment +
+  class-level `@Timeout(10, SEPARATE_THREAD)` on `BindInterceptorTest` — SEPARATE_THREAD is
+  load-bearing (the default SAME_THREAD can only observe a timeout AFTER a method returns; the
+  separate thread INTERRUPTS an interruptible block — the realistic blocking-verifier regression —
+  into a test failure). ErrorProne `UnusedVariable` on the continuation's `error` param resolved by
+  making the fail-closed arm read it explicitly (behavior identical under the `whenComplete`
+  contract). Full `./gradlew clean build` GREEN — 277 tests, 0 failures, 0 skipped.
+  **Verification note (honest record):** the post-round adversarial 4-lens workflow died vacuously —
+  all 4 finder agents hit the account's 429 usage limit (resets 2026-08-16 03:39), so its empty
+  findings carry no evidence; the round was instead PARENT-VERIFIED inline (the T5b 429 precedent).
+  The inline pass caught and fixed one real defect (the `@Timeout` SAME_THREAD overclaim above) and
+  grounded the rest: every boot path binds the deadline (the green suite's `@NotNull` paths are the
+  empirical proof; the record-arity change makes any missed direct construction a compile error),
+  the Duration tokens all parse (N6's RED-under-neuter proves 0s/-5s/PT0S reached the guard as parsed
+  values), no planning artifact pins a deadline number or names the zero-new-config constraint (grep —
+  story-text only; the owner override is recorded here), and no unresolved FIXME remains in main.
+  Re-run the workflow after the limit resets if a second opinion is wanted.
