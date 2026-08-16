@@ -9,6 +9,7 @@ import java.util.List;
 import io.netty.buffer.PooledByteBufAllocator;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.observability.CapturingSpliceObserver;
 import smpp.companion.proxy.observability.NoopSpliceObserver;
 import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
@@ -52,6 +53,16 @@ public final class RelayTestFixtures {
      * consumes no TLS settings), no forward branch.
      */
     public static ProxyCompanionProperties modeBProperties(int bindPort, int maxInboundDepth) {
+        return modeBProperties(bindPort, maxInboundDepth, "smsc.example", 2775);
+    }
+
+    /**
+     * The egress-targeted variant the T9/T10 socket-level smoke tests use: the single
+     * {@code companion.reverse.mode-b.smsc} points at the caller's in-JVM mock (loopback host + the
+     * mock's ephemeral port) instead of the unreachable {@code smsc.example} placeholder.
+     */
+    public static ProxyCompanionProperties modeBProperties(
+            int bindPort, int maxInboundDepth, String smscHost, int smscPort) {
         return new ProxyCompanionProperties(
                 new ProxyCompanionProperties.Bind(bindPort, DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(
@@ -61,7 +72,7 @@ public final class RelayTestFixtures {
                 new ProxyCompanionProperties.Reverse(
                         null,
                         new ProxyCompanionProperties.ReverseModeB(
-                                new ProxyCompanionProperties.Smsc("smsc.example", 2775), true),
+                                new ProxyCompanionProperties.Smsc(smscHost, smscPort), true),
                         null));
     }
 
@@ -86,4 +97,46 @@ public final class RelayTestFixtures {
                 new RelayEgressInitializer(registry, observer),
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT));
     }
+
+    /**
+     * The real production wiring for the T9/T10 socket-level smoke tests: same constructor graph as
+     * {@link #modeBIngressInitializer(int)} (the real initializers + the production default
+     * {@code AlwaysAllow} verifier + the shared substrate options) but with (a) the egress target
+     * pointed at the caller's in-JVM mock and (b) a {@link CapturingSpliceObserver} whose handle the
+     * test keeps — so a smoke test can assert the pinned triggers while driving REAL TCP sockets
+     * through the REAL acceptor ({@code RelayServerLifecycle.start()}; the T6-review deferred
+     * wiring-pin — real PDUs through the acceptor bite on any dropped wiring line).
+     *
+     * @param properties the egress-targeted mode-b record (see
+     *         {@link #modeBProperties(int, int, String, int)}) — the SAME instance the initializer
+     *         graph receives, so the harness caller's {@code RelayServerLifecycle} binds the port the
+     *         record carries.
+     */
+    public static ModeBRelayHarness modeBRelayHarness(ProxyCompanionProperties properties) {
+        ConnectionRegistry registry = new ConnectionRegistry();
+        CapturingSpliceObserver observer = new CapturingSpliceObserver();
+        return new ModeBRelayHarness(
+                properties,
+                new RelayIngressInitializer(
+                        new AlwaysAllowBindCredentialVerifier(),
+                        registry,
+                        observer,
+                        properties,
+                        new RelayEgressInitializer(registry, observer),
+                        new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT)),
+                registry,
+                observer);
+    }
+
+    /**
+     * The socket-smoke harness: the properties record, the real ingress initializer for
+     * {@code RelayServerLifecycle}, and the SHARED registry/observer handles the initializers were
+     * wired with (the same singleton wiring Spring does — the egress-leg flipper must resolve the
+     * registry the ingress interceptor wrote).
+     */
+    public record ModeBRelayHarness(
+            ProxyCompanionProperties properties,
+            RelayIngressInitializer ingressInitializer,
+            ConnectionRegistry registry,
+            CapturingSpliceObserver observer) { }
 }
