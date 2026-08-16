@@ -237,12 +237,12 @@ behind unchanged interfaces.
   - [x] RecordingAllocator-bypass trap: any allocator/leak assertion feeds input in MULTIPLE chunks via `ctx.alloc()` wrapped in `RecordingAllocator` (one `writeInbound(Unpooled.buffer())` is tautological — Epic-1 retro).
   - [x] RED-on-neuter for the single-flipper, the AD-32 bare-close, the flip re-check, exactly-once `onConnectionClosed`, AND the non-ROK teardown guard (AC9 enumerates "non-ROK teardown" but T8's checklist omits it — neuter the "Non-ROK → do NOT flip; tear down" arm → a non-ROK `bind_resp` wrongly flips / fails to tear down).
 
-- [ ] **Task 9 (AC: 6, 7) — In-JVM mock SMSC + A-1 mechanics smoke (RELAY-011) + REL-1 roundtrip + A-1 ops-plan docs (AD-24/AD-9).**
-  - [ ] In-JVM mock SMSC: embedded Netty server in `proxy/src/test` using the PRODUCTION codec (`SmppFrameDecoder` + `SmppCodec`) — NOT a jSMPP harness. Programs: ≥N concurrent binds under one `system_id` → ROK each; `deliver_sm` on the SMSC socket that received the bind (carrier affinity emulation); injectable delay/stall; captures forwarded PDUs for byte-exact assertion. **Never an oracle for A-1 or codec correctness** (shares the codec's bugs + assumes A-1) — document this in the fixture's javadoc.
-  - [ ] **RELAY-011 (load-bearing):** ≥2 concurrent `bind_transceiver` under the SAME `system_id`, distinct ingress Channels; inject a uniquely-tagged `deliver_sm` per egress; assert each tag arrives on exactly its originating ingress (capturing `SpliceObserver` per Channel; AssertJ on tag→Channel). Zero cross-bleed.
-  - [ ] REL-1 roundtrip: `submit_sm` (legacy→SMSC) + `deliver_sm` (SMSC→legacy) across a coupled pair — no drop/dup/corrupt; PDU boundaries preserved (golden-vector-driven where wire bytes are needed — load `codec/src/test/resources/golden-vectors/`).
-  - [ ] **A-1 ops-plan docs (OBS-035/036/037):** author `docs/` A-1 real-carrier test plan with explicit PASS criterion (≥2 concurrent binds, same `system_id`, both ROK on the real carrier), explicit FAIL criterion + DLR-affinity assertion (submit on bind A → `deliver_sm` on bind A's socket, not B), and naming the real carrier/conformance SMSC as the oracle (explicitly excluding the in-JVM mock). Docs-gate tests scan for the criterion shape (regex/AssertJ presence).
-  - [ ] RED-on-neuter: neuter the coupling (e.g. forward `deliver_sm` to the wrong ingress) → RELAY-011 goes RED.
+- [x] **Task 9 (AC: 6, 7) — In-JVM mock SMSC + A-1 mechanics smoke (RELAY-011) + REL-1 roundtrip + A-1 ops-plan docs (AD-24/AD-9).**
+  - [x] In-JVM mock SMSC: embedded Netty server in `proxy/src/test` using the PRODUCTION codec (`SmppFrameDecoder` + `SmppCodec`) — NOT a jSMPP harness. Programs: ≥N concurrent binds under one `system_id` → ROK each; `deliver_sm` on the SMSC socket that received the bind (carrier affinity emulation); injectable delay/stall; captures forwarded PDUs for byte-exact assertion. **Never an oracle for A-1 or codec correctness** (shares the codec's bugs + assumes A-1) — document this in the fixture's javadoc. *(Landed as `MockSmsc`: one accepted connection = one `Session` with byte-exact bind/PDU captures + `deliver`/`deliverAll` injection on that session's socket; injectable delay (`start(long millis)`, scheduled via `CompletableFuture.delayedExecutor` — never an event-loop block) + stall (`stallBinds()`/`releaseBinds()` on a future-gate); the oracle disclaimer is the class javadoc's opening bold.)*
+  - [x] **RELAY-011 (load-bearing):** ≥2 concurrent `bind_transceiver` under the SAME `system_id`, distinct ingress Channels; inject a uniquely-tagged `deliver_sm` per egress; assert each tag arrives on exactly its originating ingress (capturing `SpliceObserver` per Channel; AssertJ on tag→Channel). Zero cross-bleed. *(Both binds written to the two sockets BEFORE either response is read — genuinely concurrent handshakes; pair identity matched by bind-frame CONTENT (`sessionBoundWith(bindA)`), which is itself the AD-14 byte-exact assertion through two real sockets. The socket-level read IS the tag→Channel assertion — see the Debug Log entry on the channel-blind seam.)*
+  - [x] REL-1 roundtrip: `submit_sm` (legacy→SMSC) + `deliver_sm` (SMSC→legacy) across a coupled pair — no drop/dup/corrupt; PDU boundaries preserved (golden-vector-driven where wire bytes are needed — load `codec/src/test/resources/golden-vectors/`). *(Bind = the `bind_transceiver_request_all_fields` golden vector parsed from its `raw-hex:` token; 4 submit_sm in ONE coalesced socket write → exactly 4 complete framed captures at the mock; 3 deliver_sm in ONE mock-side write → exactly 3 byte-exact frames at the legacy socket; `onFramedPdu` count/order pinned. Plus the real-socket teardown arms T8 deferred to T9 — see Debug Log.)*
+  - [x] **A-1 ops-plan docs (OBS-035/036/037):** author `docs/` A-1 real-carrier test plan with explicit PASS criterion (≥2 concurrent binds, same `system_id`, both ROK on the real carrier), explicit FAIL criterion + DLR-affinity assertion (submit on bind A → `deliver_sm` on bind A's socket, not B), and naming the real carrier/conformance SMSC as the oracle (explicitly excluding the in-JVM mock). Docs-gate tests scan for the criterion shape (regex/AssertJ presence). *(Landed as `docs/a-1-carrier-test-plan.md` + `A1CarrierPlanDocsTest` — 3 gate tests, one per OBS id; normalized lowercased/backtick-stripped/whitespace-collapsed text so prose tweaks never false-RED; the doc's existence is asserted FIRST and loudly.)*
+  - [x] RED-on-neuter: neuter the coupling (e.g. forward `deliver_sm` to the wrong ingress) → RELAY-011 goes RED. *(N1: splice forwarded to `self` instead of the peer → RELAY-011 RED on `SocketTimeoutException` (the tagged deliver_sm never reaches client A) AND REL-1 RED (`awaitPdus` unreached — the submits echo back); the teardown test correctly stayed GREEN (no spliced PDUs). N2: blanked ops-plan doc → all 3 docs-gate tests RED. Both restored byte-exact from `/tmp/t9-backups`; full `clean build` GREEN after.)*
 
 - [ ] **Task 10 (AC: 6) — jSMPP independent A-1 conformance oracle (OBS-038).**
   - [ ] Add `org.jsmpp:jsmpp:3.0.2` to `proxy` testImplementation (test-only — never the production codec; mirror the codec module's coordinate, `codec/build.gradle.kts:38`).
@@ -378,7 +378,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7) + RelayHandler/AC3+AC7 (T8); T9–T11 pending).
+glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7) + RelayHandler/AC3+AC7 (T8); Task 9 — the in-JVM mock SMSC + RELAY-011 A-1 smoke + REL-1 roundtrip + OBS-035/036/037 ops-plan docs; T10–T11 pending).
 
 ### Debug Log References
 
@@ -795,7 +795,63 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   `connectionClosedFiresExactlyOncePerChannel` RED at `hasSize(2)`). **N5** the non-ROK teardown
   dropped (forward only) → exactly the 2 non-ROK tests RED (RelayHandlerTest's + the T7-evolved
   BindInterceptorTest one: pair stays registered, legs open).
-- **T6 RED-on-neuter — all SEVEN guards PROVEN (AC9 AI-1).** M-A mode-b guard neutered →
+- **T9 design — direct-construction REAL-acceptor harness (`RelayTestFixtures.ModeBRelayHarness`), NOT a
+  full Spring boot.** The A-1 smoke needs a CAPTURING `SpliceObserver` wired into the REAL
+  initializers, but a component-scanned `ProxyCompanionApplication` boot resolves the `@Component`
+  `NoopSpliceObserver` by type (registering a second observer bean creates injection ambiguity; the
+  noop is the seeded default by design). The harness instead builds the exact production constructor
+  graph — `RelayIngressInitializer(verifier, registry, observer, properties, egressInitializer,
+  channelOptions)` + the shared `RelayEgressInitializer` — behind the REAL `RelayServerLifecycle`
+  acceptor, with the production-default `AlwaysAllowBindCredentialVerifier` (AC6's wired verifier)
+  and the egress target pointed at the mock (`modeBProperties(bindPort, depth, smscHost, smscPort)`,
+  the new 4-arg overload; the 2-arg form delegates unchanged). This discharges the T6-review
+  DEFERRED wiring pin in full: real PDUs now flow through the acceptor, so a dropped
+  `.childHandler(ingressInitializer)` / initializer-wiring line fails RELAY-011/REL-1 outright.
+- **T9 design — the socket-level read IS the tag→Channel assertion (the subtask's "capturing
+  SpliceObserver per Channel" phrasing).** AC5's seam is deliberately channel-BLIND
+  (`onFramedPdu(Direction)` carries no channel identity — AD-19's cardinality posture), so a
+  per-channel observer capture is unconstructible through the contract. The legacy TCP connection
+  IS the ingress channel identity: asserting "client A's socket reads exactly the bytes injected on
+  pair A's SMSC socket (and then times out)" is the tag→Channel mapping, at the wire, with no seam
+  change. The shared `CapturingSpliceObserver` still pins the trigger contract: 2× `onBindAccept`
+  under ONE `SystemId` (A-1's premise observed at the relay), one `onFramedPdu` per spliced PDU on
+  the leg it was read from, zero `onBindReject`.
+- **T9 design — mock sessions matched by bind-frame CONTENT, not accept order.** Two concurrent
+  binds' egress connects race in principle (verdict continuations hop through the shared event
+  loop); `sessionBoundWith(bindA)` matches the session whose captured bind bytes equal client A's
+  bind — removing the order dependence AND independently proving "each bind couples to its own
+  egress pair" (two distinct sessions, each carrying the exact original bind — AD-14 through two
+  real sockets + the framer, byte-exact).
+- **T9 design — the real-socket teardown arms T8 deferred here are IN the smoke class (AC7's
+  half-close/RST text).** FIN = client `shutdownOutput()` (true half-close, read side kept); RST =
+  `setSoLinger(true, 0)` + `close()` (loopback). Both assert the SMSC-side socket goes inactive,
+  `registry.size()==0`, and observed `onConnectionClosed` in BOTH directions. The FIN arm pins
+  `PEER_HALF_CLOSE` on both legs exactly; the RST arm asserts reasons ⊆
+  {PEER_RST, PEER_HALF_CLOSE, OTHER} honestly (which arm fires depends on whether a read was armed
+  at the reset instant — an armed read surfaces the `IOException`/PEER_RST path, a bare inactive
+  takes the default — both are the observed fail-closed teardown RELAY-010 requires). These tests
+  are ALSO the live proof of the AD-2 read-demand substrate T8 could not observe on
+  `EmbeddedChannel`s: under `AUTO_READ=false` not one byte of RELAY-011/REL-1 would cross without
+  the handlers' arming — every observed byte flowed through write-completes-gates-read.
+- **T9 gotchas (three).** (1) **Golden vectors are NOT on proxy's test classpath** — they live in
+  codec's TEST source set (`codec/src/test/resources`), so the smoke loads them by FILE PATH
+  (`../codec/src/test/resources/golden-vectors`, the `NoStringFromPasswordTest` sibling-module
+  idiom; the corpus root is asserted to exist loudly), parsing the single-line provenance header's
+  `raw-hex:` token via `HexFormat` — hand-authored-from-spec bytes, codec-independent. (2)
+  **Markdown backticks broke the docs-gate regex** on the first run (`2 concurrent
+  `bind_transceiver`` carries a backtick between "concurrent" and "bind") — the gate's normalizer
+  now strips backticks (formatting noise, like whitespace); wording/markdown tweaks must never
+  false-RED a falsifiability gate. (3) **ErrorProne `UnnamedVariable`** flags the lambda param in
+  `thenCompose(unused -> bindGate)` — the JDK 22+ unnamed-variable `_` is the clean fix (and reads
+  as intent: the delay future's value is deliberately dropped).
+- **T9 RED-on-neuter — both mutations PROVEN (unique `/tmp/t9-backups` masters, restored
+  diff-verified byte-exact, `grep T9-MUTATION` = 0, full `clean build` GREEN after the restores).**
+  **N1** (the checklist's named coupling neuter): `splice()` forwarded to `self` instead of the
+  peer → RELAY-011 RED on `SocketTimeoutException` (the tagged deliver_sm echoes back to the mock —
+  client A reads nothing) AND REL-1 RED (`awaitPdus(4)` unreached — the submits echo back to the
+  legacy client); the real-socket teardown test stayed GREEN, correctly (its scenario carries no
+  spliced PDUs). **N2**: the ops-plan doc blanked → all 3 `A1CarrierPlanDocsTest` tests RED (the
+  existence-first assert plus every shape assert).
   `forwardCellLeavesAcceptorUnstarted` RED (the forward boot took the port → the test's own bind of it
   failed); M-B `callback.run()` removed → `stopInvokesCallbackAndReleasesPort` RED; M-C `AUTO_READ`
   childOption removed → `ingressChildOptionsCarryTheSharedSubstrate` RED; M-D watermark clamp removed →
@@ -1158,6 +1214,46 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   malformed one becomes a `DecoderException` (the CODEC-021 sibling covers that arm); the flip keys on
   the decoded type, so the peeked-id shortcut is structurally absent.
 
+- **T9 DONE — AC6(a)+AC7 socket-level smoke: in-JVM mock SMSC (RELAY-011's A-1 mechanics + the REL-1
+  roundtrip + T8's deferred real-socket teardown arms) + the OBS-035/036/037 ops-plan docs + their
+  docs gate.** NEW `MockSmsc` (test fixture): embedded Netty server on the PRODUCTION codec
+  (`SmppFrameDecoder → SmppCodec`, per-channel CODEC-014, own single-thread `mock-smsc` group) —
+  every `SmppBindRequest` answered a hand-authored ROK `bind_*_resp` (matching response id + the
+  request's sequence) behind the injectable delay (`start(long)`, `delayedExecutor`-scheduled) /
+  stall (`stallBinds()`/`releaseBinds()` future-gate — never an event-loop block); one accepted
+  connection = one `Session` (byte-exact `bindFrame()` + `received()` captures, `deliver`/
+  `deliverAll` injection on THAT session's socket = the carrier-affinity emulation). The
+  oracle-honesty disclaimer (never an oracle for A-1 or codec correctness — shares the codec's bugs,
+  assumes A-1) is the fixture javadoc's opening. NEW `RelayA1SmokeTest` (3 tests, real sockets
+  through the REAL acceptor via the new `ModeBRelayHarness`): (1) **RELAY-011** — two concurrent
+  `bind_transceiver` under ONE `system_id` (both written before either response is read) both ROK;
+  two distinct mock sessions each carrying the byte-exact original bind (own egress pair per
+  ingress, AD-14 through two real sockets); tagged `deliver_sm` per egress socket lands on EXACTLY
+  its originating legacy socket byte-exact, then both sockets time out clean (zero cross-bleed, no
+  duplicates); observer pins 2× `onBindAccept` under one `SystemId` + 2× `onFramedPdu(EGRESS)`.
+  (2) **REL-1 roundtrip** — the golden-vector `bind_transceiver_request_all_fields` crosses both
+  sockets byte-exact; 4 submit_sm in ONE coalesced write → exactly 4 complete framed captures at
+  the mock (no drop/dup/corrupt, order + boundaries preserved); 3 deliver_sm in ONE mock-side
+  write → exactly 3 byte-exact frames at the legacy socket; `onFramedPdu` fires 4× INGRESS + 3×
+  EGRESS in order. (3) **real-socket teardown** — FIN (`shutdownOutput`) propagates to BOTH legs +
+  registry, observed, `PEER_HALF_CLOSE`×2; RST (`SO_LINGER 0`) tears both legs down, observed —
+  the T8-deferred live proofs, and with them the live proof of the AD-2 read-demand substrate
+  (nothing crosses under `AUTO_READ=false` without the handlers' arming). NEW
+  `docs/a-1-carrier-test-plan.md` + `A1CarrierPlanDocsTest` (3 gates — explicit numeric PASS
+  criterion [2 concurrent binds, same system_id, ESME_ROK, on the real carrier], explicit FAIL
+  criterion + the DLR-affinity procedure [submit on bind A → deliver_sm on bind A's socket, NOT
+  bind B's], oracle = real target carrier / conformance SMSC with the in-JVM mock EXPLICITLY
+  excluded); normalized (lowercase/backtick-strip/whitespace-collapse) so prose tweaks never
+  false-RED; doc existence asserted FIRST and loudly. `RelayTestFixtures` gained the egress-targeted
+  `modeBProperties` overload + the `ModeBRelayHarness` record. RED-on-neuter: N1 (splice → wrong
+  leg) RED on RELAY-011 + REL-1; N2 (blanked doc) RED on all 3 gates — see Debug Log. Full
+  `./gradlew clean build` GREEN — **295 tests, 0 failures, 0 skipped** (proxy 213 = 207 + 6 new;
+  codec 82 unchanged). Honest scope: (a) the in-JVM mock trivially affirms A-1 — that is exactly why
+  the jSMPP independent oracle (T10) is mandatory next, and the genuine falsification remains the
+  non-CI carrier plan just authored; (b) the mock never answers `submit_sm` with a
+  `submit_sm_resp` (the splice scenarios need one-way flows; conformance breadth is Story 2.3);
+  (c) session→client mapping is content-matched (bind bytes), not accept-order — see Debug Log.
+
 ### File List
 
 - `proxy/src/test/java/smpp/companion/proxy/bootstrap/PreviewFeatureCompileGateTest.java` — **added**: the
@@ -1459,6 +1555,31 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   restored from unique `/tmp/t8-backups` masters; restored files `grep MUTATION`-verified clean and
   the final `clean build` ran AFTER the restores. A throwaway `ProbeN4Test` (the closed-pipeline
   diagnosis) was created and deleted within the round.
+- `proxy/src/test/java/smpp/companion/proxy/relay/MockSmsc.java` — **added** (T9): the in-JVM mock
+  SMSC on the PRODUCTION codec — per-connection `Session` (byte-exact bind/PDU captures +
+  per-socket `deliver`/`deliverAll` injection), ROK bind answering behind the injectable
+  delay/stall gate; javadoc opens with the NEVER-an-oracle disclaimer (AD-24/RELAY-011).
+- `proxy/src/test/java/smpp/companion/proxy/relay/RelayA1SmokeTest.java` — **added** (T9): the
+  real-socket A-1 smoke — RELAY-011 (concurrent same-`system_id` binds, zero DLR cross-bleed),
+  the REL-1 golden-vector roundtrip (no drop/dup/corrupt, boundaries preserved), and the
+  real-socket FIN/RST teardown arms T8 deferred; plain blocking loopback clients + hand-authored
+  PDU builders.
+- `proxy/src/test/java/smpp/companion/proxy/relay/A1CarrierPlanDocsTest.java` — **added** (T9): the
+  OBS-035/036/037 docs-falsifiability gate (3 tests — PASS criterion shape, FAIL + DLR-affinity
+  shape, oracle naming + in-JVM-mock exclusion).
+- `docs/a-1-carrier-test-plan.md` — **added** (T9): the A-1 real-carrier test plan — oracle
+  (real carrier / conformance SMSC, mock explicitly excluded), preconditions, explicit PASS/FAIL
+  criteria, the DLR-affinity assertion procedure, evidence + escalation on FAIL.
+- `proxy/src/test/java/smpp/companion/proxy/testsupport/RelayTestFixtures.java` — **modified**
+  (T9): + the egress-targeted `modeBProperties(bindPort, depth, smscHost, smscPort)` overload
+  (2-arg form delegates unchanged) + the `ModeBRelayHarness` record +
+  `modeBRelayHarness(properties)` (the real constructor graph with a capturing observer + the
+  registry handle for the socket smoke tests).
+- *(mutation-pass only, ZERO net change — not listed as modified):*
+  `proxy/.../relay/RelayHandler.java` (N1: the splice forwarded to the wrong leg) and
+  `docs/a-1-carrier-test-plan.md` (N2: blanked) — neutered then restored from unique
+  `/tmp/t9-backups` masters; restored files diff-verified byte-exact, `grep T9-MUTATION` = 0, and
+  the full `clean build` ran AFTER the restores.
 
 ## Change Log
 
@@ -1863,3 +1984,22 @@ review) — T11's consolidated pass re-runs all.
   embedded channels (T9's real sockets), RST simulated as the pipeline-fired IOException (real-socket
   injection is T9's), 7 of 16 CloseReason values fire this slice (coverage map in the Debug Log).
   (T9–T11 remain open — story stays in-progress.)
+
+- 2026-08-16 — **Story 2.2 Task 9:** AC6(a)+AC7 socket-level smoke + the A-1 ops plan. NEW
+  `MockSmsc` (in-JVM mock SMSC on the PRODUCTION codec — ROK bind answering behind an injectable
+  delay/stall gate, per-session byte-exact captures, per-socket `deliver_sm` injection = the
+  carrier-affinity emulation; NEVER an oracle — javadoc opens with the disclaimer) + NEW
+  `RelayA1SmokeTest` (3 tests on REAL sockets through the REAL acceptor via the new
+  `ModeBRelayHarness`): RELAY-011 — two concurrent binds under one `system_id` both ROK, each
+  coupled to its own egress pair (content-matched bind bytes), tagged `deliver_sm` per egress lands
+  on EXACTLY its originating legacy socket — zero cross-bleed; REL-1 — the golden-vector bind +
+  4-submit/3-deliver coalesced-write chains, no drop/dup/corrupt, boundaries preserved; real-socket
+  FIN/RST teardown arms (the T8-deferred live proofs + the live AD-2 read-demand proof). NEW
+  `docs/a-1-carrier-test-plan.md` (OBS-035/036/037: explicit numeric PASS criterion, explicit FAIL
+  criterion + the DLR-affinity procedure, real-carrier/conformance-SMSC oracle with the in-JVM mock
+  explicitly excluded) + `A1CarrierPlanDocsTest` (3 falsifiability gates, normalization-tolerant,
+  doc existence asserted loudly). `RelayTestFixtures` gained the egress-targeted properties
+  overload + the harness record. RED-on-neuter: N1 (splice → wrong leg) RED on RELAY-011
+  (`SocketTimeoutException`) + REL-1; N2 (blanked doc) RED on all 3 gates; both restored
+  byte-exact. Full `./gradlew clean build` GREEN — 295 tests, 0 failures, 0 skipped (proxy 213 =
+  207 + 6). (T10–T11 remain open — story stays in-progress.)
