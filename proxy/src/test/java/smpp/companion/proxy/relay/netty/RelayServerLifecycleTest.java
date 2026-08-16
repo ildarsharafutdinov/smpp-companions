@@ -118,7 +118,7 @@ class RelayServerLifecycleTest {
         EventLoopGroup group = newGroup();
         RelayServerLifecycle lifecycle =
                 new RelayServerLifecycle(RelayTestFixtures.modeBProperties(port, 1), group, newOptions(port),
-                        new RelayIngressInitializer());
+                        RelayTestFixtures.modeBIngressInitializer(port));
         try (ServerSocket occupied = new ServerSocket(port)) {
             try {
                 assertThatThrownBy(lifecycle::start)
@@ -141,7 +141,7 @@ class RelayServerLifecycleTest {
         EventLoopGroup group = newGroup();
         RelayServerLifecycle lifecycle =
                 new RelayServerLifecycle(RelayTestFixtures.modeBProperties(port, 1), group, newOptions(port),
-                        new RelayIngressInitializer());
+                        RelayTestFixtures.modeBIngressInitializer(port));
         try {
             lifecycle.start();
             assertThat(lifecycle.isRunning()).isTrue();
@@ -174,7 +174,7 @@ class RelayServerLifecycleTest {
         // app lifecycle whose Epic-4 body (AD-22 drain) runs after the data plane is down.
         assertThat(new RelayServerLifecycle(
                 RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1), newGroup(),
-                newOptions(RelayTestFixtures.freePort()), new RelayIngressInitializer())
+                newOptions(RelayTestFixtures.freePort()), RelayTestFixtures.modeBIngressInitializer(RelayTestFixtures.freePort()))
                 .getPhase())
                 .isEqualTo(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE);
         assertThat(new ProxyCompanionLifecycle().getPhase())

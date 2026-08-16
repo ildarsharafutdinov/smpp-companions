@@ -3,9 +3,18 @@ package smpp.companion.proxy.testsupport;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.time.Duration;
 import java.util.List;
 
+import io.netty.buffer.PooledByteBufAllocator;
+
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.observability.NoopSpliceObserver;
+import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.netty.RelayChannelOptions;
+import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
+import smpp.companion.proxy.relay.netty.RelayIngressInitializer;
+import smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier;
 
 /**
  * Shared relay-test fixtures (T6 code-review consolidation): the free-ephemeral-port probe and the
@@ -16,6 +25,12 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
 public final class RelayTestFixtures {
 
     private RelayTestFixtures() {}
+
+    /**
+     * The documented application.yml default for {@code companion.bind.adjudication-deadline} — shared by
+     * the direct-construction fixtures so they stay uniform with real boots (Story 2.2 T7 owner FIXME).
+     */
+    public static final Duration DEFAULT_ADJUDICATION_DEADLINE = Duration.ofSeconds(4);
 
     /**
      * Probes a free ephemeral port (bound then immediately released). Probe-then-use carries an
@@ -38,7 +53,7 @@ public final class RelayTestFixtures {
      */
     public static ProxyCompanionProperties modeBProperties(int bindPort, int maxInboundDepth) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(bindPort),
+                new ProxyCompanionProperties.Bind(bindPort, DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(
                         maxInboundDepth, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(List.of("TLSv1.3"), List.of(), List.of()),
@@ -48,5 +63,22 @@ public final class RelayTestFixtures {
                         new ProxyCompanionProperties.ReverseModeB(
                                 new ProxyCompanionProperties.Smsc("smsc.example", 2775), true),
                         null));
+    }
+
+    /**
+     * The real production ingress wiring for direct-construction tests (T7 made the initializer
+     * constructor-carrying): the default verifier/observer/registry beans, the mode-b properties, the
+     * egress initializer, and the shared substrate options. One home for the same drift reason as
+     * {@link #modeBProperties} — a constructor-signature change breaks ONE fixture.
+     */
+    public static RelayIngressInitializer modeBIngressInitializer(int bindPort) {
+        ProxyCompanionProperties properties = modeBProperties(bindPort, 1);
+        return new RelayIngressInitializer(
+                new AlwaysAllowBindCredentialVerifier(),
+                new ConnectionRegistry(),
+                new NoopSpliceObserver(),
+                properties,
+                new RelayEgressInitializer(),
+                new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT));
     }
 }

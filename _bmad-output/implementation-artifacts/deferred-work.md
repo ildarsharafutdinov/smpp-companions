@@ -165,6 +165,15 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - **`AlwaysAllowBindCredentialVerifier` does not zeroize the password** [`AlwaysAllowBindCredentialVerifier.java:20-22`] —
   the stand-in never inspects the secret (always-allow, documented no-op `cancelHttp`); AC5 "on adjudication completion"
   ownership (verifier vs caller/relay) is ambiguous. Resolve with `relay/` wiring / Epic 3.
+  **[RESOLVED 2026-08-15, Story 2.2 T7: ownership = the CALLER (the relay), per the T7 subtask.**
+  `BindInterceptor` owns `cred.password().zeroize()` on every path — the verdict continuation's `finally`
+  (Allow/Deny/exceptional) AND every teardown arm (`cancelAndWipePending()`: retry-bind, ingress/egress
+  death, violation — idempotent, RELAY-005-safe), deliberately NOT at `verify()`-return (the Epic-3 ROPC
+  adapter reads the secret while its future is pending; `SmppBytes` copies C-octet fields, so the wipe
+  can never corrupt the AD-14 forwarded frame). Proven: the Allow-path zeroize assert
+  (`BindInterceptorTest.allowForwardsTheOriginalFrameVerbatimToTheConfiguredEgress`) + the
+  deny/teardown-path asserts, with mutation N2 (finally-zeroize removed) RED on exactly the Allow-path
+  biter.]
 - **`close()` does `shutdownNow()` with no `awaitTermination`** [`RopcSlice.java:353-356`] — cosmetic for the throwaway
   test slice (pool-task `finally` blocks still eventually run on daemon VTs); Epic 3 production adapter should drain
   (`awaitTermination` + fail-closed-log on timeout).
@@ -238,3 +247,25 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   (`AUTO_READ=false`, no handler): an unauthenticated, unbounded socket sink on every interface for a real
   mode-b boot. **Deferred to Epic 3**: the slice is in-JVM/loopback until then; Epic 3 adds bind-host +
   listener hardening (including the connection-cap decision) when it wires the production acceptors.
+
+## Deferred from: owner notes during Story 2.2 T7 + owner-FIXME round (2026-08-16)
+
+- **Refactor `BindInterceptor` to an explicit Strategy/state-object shape** (owner note 2026-08-16)
+  [`proxy/.../relay/BindInterceptor.java`] — the interceptor's control flow is an implicit state machine
+  branched in-method (`onRequest`/`onVerdict`/`channelInactive`/`exceptionCaught` each re-derive the state
+  from the registry). Candidate state set, as the owner named it plus what the code actually encodes:
+  `not-registered` (no `ConnectionRegistry` entry — before the first bind / after teardown),
+  `not-spliced` (entry exists, handshake in flight — itself three sub-phases today: ADJUDICATING while
+  `pendingVerdict != null`, CONNECTING between the Allow verdict and the egress listener, and
+  AWAITING-BIND_RESP once `EgressLeg` is attached but `answered == false`), `spliced` (the AD-25 flip —
+  T8's plane), and the transient terminal `tearing-down` (the entry's CAS mark). `EgressLeg.answered` is a
+  per-leg mini-state of the same machine. A Strategy refactor (per-state handler objects replacing the
+  if/else chains) would make illegal transitions unrepresentable instead of comment-enforced.
+  **Revisit AFTER T8 lands** — T8 owns the flip and the post-flip plane, so the complete state set only
+  becomes visible then; refactoring now would churn twice. Design constraint to reconcile: AD-32
+  deliberately made the REGISTRY ENTRY the "bind in flight" predicate ("the entry's state, not a separate
+  boolean") because the EgressLeg/T8 handlers and the teardown racers all share that one cross-handler
+  truth — an explicit per-interceptor state field must either derive from it on every read or risk
+  drifting from it (state duplication across the two legs + the continuation). Behavior-preserving bar:
+  the 10 `BindInterceptorTest` behaviors (RELAY-004, both AD-33 arms, RELAY-002c, AD-14 verbatim,
+  fail-closed, late-verdict no-op) stay green unchanged.

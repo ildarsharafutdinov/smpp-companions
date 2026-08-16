@@ -1,5 +1,7 @@
 package smpp.companion.proxy.config;
 
+import java.time.Duration;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -58,6 +60,12 @@ class CompanionTlsBindingTest {
                                      "--companion.memory.safety-factor=1.0")) {
             ProxyCompanionProperties.Tls tls = ctx.getBean(ProxyCompanionProperties.class).tls();
             assertThat(tls).isNotNull();
+            // Story 2.2 T7 owner FIXME pin: this boot sets NO companion.bind.* property, so the adjudication
+            // deadline comes from application.yml's documented default — the yml key + relaxed binding +
+            // the 4s default are all load-bearing (mirror of the T5b budgetCheck==FAIL end-to-end pin).
+            assertThat(ctx.getBean(ProxyCompanionProperties.class).bind().adjudicationDeadline())
+                    .as("companion.bind.adjudication-deadline defaults to 4s from application.yml")
+                    .isEqualTo(Duration.ofSeconds(4));
             assertThat(tls.protocols())
                     .as("companion.tls.protocols")
                     .containsExactly("TLSv1.3", "TLSv1.2");

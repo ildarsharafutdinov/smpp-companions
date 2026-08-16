@@ -118,6 +118,11 @@ final class TestCompanionConfigs {
         // against other tests. (Forward-cell configs never bind — the lifecycle is mode-b-scoped — but
         // sharing the probe keeps every base uniform.)
         props.put("companion.bind.port", String.valueOf(RelayTestFixtures.freePort()));
+        // Story 2.2 T7 owner FIXME: companion.bind.adjudication-deadline is now a required key (the
+        // ApplicationContextRunner boots below do NOT load application.yml, so the yml default cannot
+        // supply it — every base carries the documented 4s default explicitly, the T5b no-@DefaultValue
+        // pattern: the default lives in yml for real boots; test configs state it).
+        props.put("companion.bind.adjudication-deadline", "4s");
         // max-frame + max-command-length are deliberately unset: they default to SmppFrame.MAX_COMMAND_LENGTH
         // in Java (RELAY-026), not a YAML literal.
         // Story 2.2 T5b: the AD-30 live direct-memory self-check (DirectMemoryBudgetStartupCheck) is

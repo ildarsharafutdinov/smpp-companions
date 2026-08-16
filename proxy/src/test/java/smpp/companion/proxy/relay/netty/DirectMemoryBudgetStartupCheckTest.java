@@ -1,5 +1,7 @@
 package smpp.companion.proxy.relay.netty;
 
+import java.time.Duration;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -181,7 +183,7 @@ class DirectMemoryBudgetStartupCheckTest {
         // over-ceiling budget (64 × 1_000_000 × 1.5 ≈ 6.29 TB ≫ any ceiling) + null MUST throw.
         // RED under the `!= FAIL` mutation (null != FAIL would banner+boot instead of refusing).
         ProxyCompanionProperties props = new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775),
+                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1_000_000, 1.5, null),
                 new ProxyCompanionProperties.Tls(List.of("TLSv1.3"), List.of(), List.of()),
                 null,

@@ -20,6 +20,10 @@ companion:
   bind:
     # The proxy's own SMPP listener port (SEC-055).
     port: 2775
+    # Bind-adjudication budget (Story 2.2 T7): RequestContext.deadline = now + this, handed to the
+    # BindCredentialVerifier via the ScopedValue (AD-5/AD-12). 4s = the PERF-3-flavored bind-latency
+    # budget; zero/negative refuses startup (compact-ctor guard). The relay-side timeout arm is RELAY-020.
+    adjudication-deadline: 4s
 
   # AD-30 direct-memory budget. PROBLEM IT SOLVES: Netty allocates SMPP PDU buffers off-heap (direct
   # memory); without a deliberate -XX:MaxDirectMemorySize cap the process OOMs at scale rather than

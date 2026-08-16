@@ -1,5 +1,7 @@
 package smpp.companion.proxy.config;
 
+import java.time.Duration;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -219,6 +221,16 @@ class CompanionConfigMatrixTest {
                 "SEC-055 bind port " + badPort, "bind.port");
     }
 
+    @ParameterizedTest(name = "AD-17: adjudication-deadline {0} (not positive) -> refuse")
+    @ValueSource(strings = {"0s", "-5s", "PT0S"})
+    @DisplayName("AD-17: a zero/negative companion.bind.adjudication-deadline -> refuse (T7 owner FIXME)")
+    void nonPositiveAdjudicationDeadlineRefuses(String badDeadline) {
+        // The specific INVALID value is BOUND (not the key removed — the null-vs-blank trap): the Bind
+        // record's compact-ctor guard must refuse it at refresh, naming the key (AD-17 fail-fast).
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.bind.adjudication-deadline", badDeadline),
+                "adjudication-deadline " + badDeadline, "adjudication-deadline");
+    }
+
     @ParameterizedTest(name = "SEC-055: SMSC port {0} (out of range) -> refuse")
     @ValueSource(strings = {"0", "-1", "70000"})
     @DisplayName("SEC-055: bad SMSC port -> refuse")
@@ -359,7 +371,7 @@ class CompanionConfigMatrixTest {
         // an empty list PASSES @NotNull (non-null) and would be silently accepted without this guard.
         var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
         var props = new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775),
+                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -557,7 +569,7 @@ class CompanionConfigMatrixTest {
     private static ProxyCompanionProperties forwardAProps(String certPath,
                                                           List<ProxyCompanionProperties.RoutingEntry> routing) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775),
+                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -575,7 +587,7 @@ class CompanionConfigMatrixTest {
     /** Minimal valid reverse-A props for the pure-HV path. */
     private static ProxyCompanionProperties reverseAProps(String trustStorePath) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775),
+                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
