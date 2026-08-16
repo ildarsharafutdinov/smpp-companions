@@ -3,12 +3,12 @@ baseline_commit: b7927b2
 epic: 2
 story: 2
 story_key: 2-2-stateless-relay-and-a1-session-affinity-smoke
-status: in-progress
+status: review
 ---
 
 # Story 2.2: Stateless Relay Splice + A-1 Session-Affinity Smoke (plaintext, always-allow adjudication)
 
-Status: in-progress
+Status: review
 
 > **Epic 2's core deliverable — the relay that retires assumption A-1.** Story 2.1 ratified the `proxy/security/`
 > port contract against real ROPC; this story builds the **stateless Netty relay** (`proxy/relay/`) that splices
@@ -251,10 +251,10 @@ behind unchanged interfaces.
   - [x] Optional reuse: a jSMPP alternate-ESME client can also drive the RELAY-002/008 sequence-integrity paths — not required for AC6. *(NOT exercised — this subtask's own text marks it optional / not-required-for-AC6; the plain-socket clients + the jSMPP server-side oracle carry AC6. Recorded here so the checkbox is not mistaken for work done.)*
   - [x] RED-on-neuter: neuter the coupling → OBS-038 goes RED (the DLR lands on the wrong bind). *(N1: `RelayHandler.splice()` write redirected to `self` instead of the peer → OBS-038 RED at the A-leg DLR read (`SocketTimeoutException` — the submit echoes back toward the SMSC, client A never receives the DLR; the bind stage correctly stayed GREEN — binds do not traverse `splice`); restored byte-exact from `/tmp/t10-backups`, marker-grep clean, full `clean build` GREEN after. See Debug Log.)*
 
-- [ ] **Task 11 (AC: 9) — RED-on-neuter mutation pass + green build (AI-1).**
-  - [ ] For every guard listed in AC9: neuter (comment out / invert) → run the matching test → confirm RED → revert → confirm GREEN. Record each in the Completion Notes (cite the test). Assertion bodies that can throw release latches/`EmbeddedChannel` resources in `finally`.
-  - [ ] `./gradlew clean build` green on JDK 25 + `--enable-preview`. No test `@Disabled`/removed to pass. ArchUnit RELAY-025 + RELAY-026 stay green.
-  - [ ] jqwik trap: any `@Property` carries NO Jupiter annotations (`@DisplayName`/`@Tag`) — class-level only (silent-skip → green-build hazard, Epic-1 retro).
+- [x] **Task 11 (AC: 9) — RED-on-neuter mutation pass + green build (AI-1).**
+  - [x] For every guard listed in AC9: neuter (comment out / invert) → run the matching test → confirm RED → revert → confirm GREEN. Record each in the Completion Notes (cite the test). Assertion bodies that can throw release latches/`EmbeddedChannel` resources in `finally`. *(35 mutations on integrated HEAD — the 4 AC9-named guards (AD-32 bare-close, non-ROK teardown, AD-30 self-check, AD-25 flip re-check) + the flipper + exactly-once CAS first-hand inline; the remaining 29 guards via a worktree-isolated agent sweep. Full ledger in Completion Notes.)*
+  - [x] `./gradlew clean build` green on JDK 25 + `--enable-preview`. No test `@Disabled`/removed to pass. ArchUnit RELAY-025 + RELAY-026 stay green. *(BUILD SUCCESSFUL — 296 tests, 0 failures, 0 errors, 0 skipped, XML-aggregated == T10's count; zero `@Disabled` in codec+proxy sources; RELAY-025/026 run green in-suite.)*
+  - [x] jqwik trap: any `@Property` carries NO Jupiter annotations (`@DisplayName`/`@Tag`) — class-level only (silent-skip → green-build hazard, Epic-1 retro). *(Verified: 10 `@Property` methods across the 3 codec property classes, zero method-level Jupiter annotations; none in proxy.)*
 
 ## Dev Notes
 
@@ -378,7 +378,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7) + RelayHandler/AC3+AC7 (T8); Task 9 — the in-JVM mock SMSC + RELAY-011 A-1 smoke + REL-1 roundtrip + OBS-035/036/037 ops-plan docs; Task 10 — the jSMPP 3.0.2 independent A-1 conformance oracle OBS-038 + the owner-FIXME 3-agent investigation; T11 pending).
+glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7) + RelayHandler/AC3+AC7 (T8); Task 9 — the in-JVM mock SMSC + RELAY-011 A-1 smoke + REL-1 roundtrip + OBS-035/036/037 ops-plan docs; Task 10 — the jSMPP 3.0.2 independent A-1 conformance oracle OBS-038 + the owner-FIXME 3-agent investigation; Task 11 — the consolidated 35-mutation RED-on-neuter pass + green build: 6 guards first-hand inline + 29 worktree-isolated verifier agents, workflow `wf_529b1174-f33`).
 
 ### Debug Log References
 
@@ -912,6 +912,38 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   `splice`). Full `./gradlew clean build` GREEN — **296 tests, 0 failures, 0 skipped** (proxy 214 = 213 + 1;
   codec 82 unchanged).
 
+- **T11 design — the consolidated pass ran as TWO complementary sweeps on integrated HEAD d0ea8ac (35 mutations
+  total).** (a) SIX first-hand inline mutations in the main tree (the load-bearing AC3/AC8 guards): T8-N1 flipper,
+  T8-N2 AD-32 bare-close seam, T8-N3 flip re-check conjunct, T8-N4 exactly-once CAS, T8-N5 non-ROK teardown, T5a
+  `validate()` guard — each with the house discipline (unique `/tmp/t11-backups` master → neuter → RED → restore →
+  `git diff` empty → GREEN re-run). (b) TWENTY-NINE worktree-isolated agents (workflow `wf_529b1174-f33`, batches of
+  6, 29 agents / 0 errors): every remaining guard from T1–T10 re-proved on the FINAL integrated code — T7's N1–N6
+  had last run against the pre-T8 `BindInterceptor`; T5's against the pre-T5b shape; the T6-review M-A…M-H2 set had
+  been execution-verified per-task but never re-run together on the integrated tree. Each agent: fresh git worktree →
+  apply the specified neuter → run the biter class → capture RED evidence (failing methods + key lines) →
+  `git checkout --` revert (`git status --short` empty) → GREEN re-run → structured report. All 29 reported
+  RED + GREEN-confirmed, 0 problems; all worktrees auto-cleaned (`git worktree list` = main tree only); the main
+  tree stayed byte-identical to HEAD throughout (verified after every inline restore and again at the end).
+- **T11 honest deltas vs the per-task records (fresh counts on integrated HEAD).** (1) **T7-N1** (deny synthesis
+  neutered to bare `close()`) now kills SIX deny-dependent tests, not the T7-era five — the verifier-EXCEPTION
+  fail-closed test is also deny-synthesis-dependent and correctly joins the biter set. (2) **T1b** (Test-JVM
+  `--enable-preview` removed) REDs via the preview-marked CLASS-LOAD failure ("Preview features are not enabled …
+  class file version 69.65535") aborting the test executor during discovery — `EnablePreviewArgTest
+  .jvmLaunchedWithEnablePreview` never records its own assertion failure because `compileTestJava` still flags the
+  whole test compilation preview-marked; this is exactly the second kill mechanism the gate's javadoc documents, and
+  the post-revert GREEN re-run executes BOTH gate tests (1/1 each, XML-verified). (3) **T5a-context** kills FOUR
+  tests (the mode-b/forward/null-cell refusals + the warn-banner test, which needs the gate's exception to banner).
+  (4) **T2's** mutation drops `SHUTDOWN_DRAIN` (zero main references — verified by grep), NOT the T2-era `OTHER`
+  (referenced 5× by `RelayHandler`): deleting a referenced constant would break compilation instead of biting the
+  shape test. (5) **T6-M-C / T6-M-F / T6-M-H1** share the options-substrate biter — each option's absence REDs the
+  same `ingressChildOptions…` pin, which asserts ALL the substrate options at once.
+- **T11 jqwik/@Disabled static checks (subtask 3).** Zero `@Disabled`/removed tests (grep across codec+proxy
+  sources; the XML-aggregated suite count 296 == T10's). Ten `@Property` methods across the 3 codec property
+  classes (`SmppCodecOpaquePropertyTest` 3, `SmppCodecForwardingPropertyTest` 3, `SmppFrameDecoderPropertyTest` 4) —
+  ZERO method-level Jupiter annotations (class-level `@Tag`/`@DisplayName` only, the allowed pattern; the gotcha is
+  javadoc'd in-file, and `SmppFrameDecoderPropertyTest` carries the explicit "omitted here for that reason" note);
+  zero `@Property` in proxy.
+
 ### Completion Notes List
 
 - **T1 DONE — AI-8 `--enable-preview` bootstrap gate via compiler enforcement (owner-approved alternative
@@ -1329,6 +1361,72 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   independent oracle (T10); the genuine real-carrier falsification remains the non-CI plan
   (`docs/a-1-carrier-test-plan.md`).** (T11 remains open — story stays in-progress.)
 
+- **T11 DONE — AC9 consolidated RED-on-neuter mutation pass + green build (standing gate AI-1). 35 mutations on
+  integrated HEAD d0ea8ac, every one RED under neuter on its named biter(s) → reverted → GREEN after restore;
+  `./gradlew clean build` GREEN — 296 tests, 0 failures, 0 errors, 0 skipped (proxy 214 + codec 82,
+  XML-aggregated, == T10's count — no test added/removed/`@Disabled`); RELAY-025/026 scans green in-suite; jqwik
+  `@Property` trap verified clean (class-level Jupiter annotations only). The full ledger (guard → biter(s)):**
+
+  **Inline, first-hand in the main tree (`/tmp/t11-backups` masters; restore diff-verified, GREEN re-run each):**
+  1. **T8-N1 single-flipper** (`if (entry.flipSpliced())` → `if (false)`) → `RelayHandlerTest` ×5 — the
+     RELAY-001a/e named biter (`flipsOnlyOnDecodedRokBindResp…`) + RELAY-008/009/010 + the AC5 exactly-once test
+     (all require a spliced pair).
+  2. **T8-N2 AD-32 bare-close seam** (`teardownForPreCoupleViolation` immediate-return) → exactly the 2 RELAY-002
+     tests (mid-adjudication + post-egress) — no close, no cancelHttp, no zeroize.
+  3. **T8-N3 AD-25 flip re-check conjunct dropped** (`entry == null || entry.tearingDown()` → `entry == null`) →
+     exactly the re-check biter (a late `bind_resp` on a cached tearing-down entry wrongly FLIPS).
+  4. **T8-N4 exactly-once CAS neutered** (always fire) → exactly `connectionClosedFiresExactlyOncePerChannel`.
+  5. **T8-N5 non-ROK teardown dropped** (forward only) → exactly 2 tests (RelayHandlerTest's RELAY-001b/AC3 guard +
+     BindInterceptorTest's evolved RELAY-002c).
+  6. **T5a AD-30 `validate()` guard** (`if (false)`) → `DirectMemoryBudgetValidatorTest` "budget strictly above the
+     ceiling throws DirectMemoryBudgetException".
+
+  **Worktree-isolated sweep (workflow `wf_529b1174-f33`; 29 agents, 0 errors; each neuter → RED → revert → GREEN):**
+  7. **T1a** COMPILE preview wiring removed → `:proxy:compileTestJava` BUILD FAILED, 13 preview-API errors across
+     `PreviewFeatureCompileGateTest` + `RopcSlice` (compile-gate RED; GREEN = compile succeeds after restore).
+  8. **T1b** TEST preview wiring removed → `:proxy:test` FAILED at the preview-marked class-load
+     (class file version 69.65535), executor aborted during discovery (see Debug Log delta).
+  9. **T2** `SHUTDOWN_DRAIN` dropped → `SpliceObserverShapeTest.closeReasonIsClosedSixteenValueSet` (hasSize 16→15).
+  10. **T3a** codec toString override deleted → `SmppBindRequestTest.toStringRedactsPassword` (codec) +
+      `NoStringFromPasswordTest.smppBindRequestDeclaresToStringOverride` (proxy) — both modules RED.
+  11. **T3b** Rule-1 probe (`req.password().toString()`) → `NoStringFromPasswordTest.noStringFromPassword`.
+  12. **T3c** Rule-2 probe (`Password p; p.value().toString()`) → the same scan RED.
+  13. **T4** `beginTearingDown()` CAS neutered (always-win) → `ConnectionRegistryTest.beginTearingDownIsCasOnce`.
+  14. **T4/RELAY-025** probe (`Map<String, SystemId> messageIdIndex` injected) →
+      `Relay025StatelessnessScanTest` RED (both forbid-rules).
+  15. **T5a-context** (same validate neuter, context biters) → 4 RED: the mode-b / forward-A / null-cell refusals +
+      the warn-banner test (no exception → no banner).
+  16. **T5b-M2** mode-b guard reintroduced → `forwardAWithHugeBudgetRefusesToStart` (unconditionality bites).
+  17. **T5b-M3a** (`== WARN` → `!= FAIL`) → exactly `nullBudgetCheckBehavesAsFailOnOverCeilingBudget`.
+  18. **T5b-M3b** (`== WARN` → `== FAIL`) → 3 RED (the warn-banner boots test + both FAIL-path refusals).
+  19. **T6-M-A** forward-cell guard deleted → `forwardCellLeavesAcceptorUnstarted`.
+  20. **T6-M-B** stop callback removed → `stopInvokesCallbackAndReleasesPort`.
+  21. **T6-M-C** AUTO_READ childOption removed → `ingressChildOptionsCarryTheSubstrate`.
+  22. **T6-M-D** watermark clamp removed (`(int) high`) → `watermarkHighClampsAtIntegerMaxValueOnPathologicalDepth`.
+  23. **T6-M-E** phase → `Integer.MAX_VALUE` → `relayAcceptorStopsBeforeTheAppLifecycle`.
+  24. **T6-M-F** ALLOCATOR childOption removed → the options-substrate pin.
+  25. **T6-M-G** sync-bind dropped → `bindFailureFailsStartupFailFast`.
+  26. **T6-M-H1** SO_REUSEADDR removed → the ingress SO_REUSEADDR pin.
+  27. **T6-M-H2** stop() body emptied → the full-boot `isRunning` pin + the direct stop test.
+  28. **T7-N1** deny synthesis → bare `close()` → SIX deny-dependent tests (the T7-era five + the
+      verifier-exception fail-closed test — Debug Log delta).
+  29. **T7-N2** continuation `finally`-zeroize removed → the ALLOW-path zeroize biter
+      (`allowForwardsTheOriginalFrameVerbatimToTheConfiguredEgress`).
+  30. **T7-N3** `applyToEgress` dropped → the egress-bootstrap wiring pin.
+  31. **T7-N4** `.handler(egressInitializer)` dropped → the same wiring pin.
+  32. **T7-N5** verdict re-check removed (`if (false)`) → both late-verdict no-op tests
+      (`ingressVanishingMidAdjudication…` + `retriedBindWhileAdjudicationInFlight…`).
+  33. **T7-N6** adjudication-deadline positivity guard → `if (false)` → the 3 matrix refusal cells
+      (`0s`/`-5s`/`PT0S`).
+  34. **T9/T10 splice coupling** (`peer.writeAndFlush` → `self`) → `RelayA1SmokeTest` (RELAY-011
+      `SocketTimeoutException` + REL-1) AND `JsmppA1OracleTest` (OBS-038 DLR read timeout) — both RED, bind stages
+      correctly GREEN.
+  35. **T9 docs plan blanked** → all 3 `A1CarrierPlanDocsTest` gates RED (the existence assert first).
+
+  Zero residue: `grep T11-MUTATION` = 0 across codec/proxy/buildSrc/docs; all agent worktrees auto-cleaned; the
+  main tree byte-identical to HEAD before the final `clean build` (`git diff` empty). **With T11 closed, ALL
+  tasks are complete — story status → review.**
+
 ### File List
 
 - `proxy/src/test/java/smpp/companion/proxy/bootstrap/PreviewFeatureCompileGateTest.java` — **added**: the
@@ -1676,6 +1774,12 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   `proxy/.../relay/RelayHandler.java` — `splice()`'s write redirected to `self` (T10-MUTATION N1: the
   coupling neuter) then restored byte-exact from the unique `/tmp/t10-backups` master; marker-grep
   clean and the full `clean build` ran AFTER the restore.
+
+- *(T11 mutation pass — ZERO net change; NO file added/modified/deleted):* the 6 inline main-tree mutations
+  (`RelayHandler.java` ×4 sites, `BindInterceptor.java` ×1, `DirectMemoryBudgetValidator.java` ×1) were applied
+  against unique `/tmp/t11-backups` masters and restored byte-exact (`git diff` empty; `grep T11-MUTATION` = 0);
+  the 29 sweep mutations ran in throwaway git worktrees (workflow `wf_529b1174-f33`, all auto-cleaned). T11's
+  only artifact is this story file (Tasks/Dev Agent Record/Change Log/Status).
 
 ## Change Log
 
@@ -2119,3 +2223,15 @@ review) — T11's consolidated pass re-runs all.
   restored byte-exact. Full `./gradlew clean build` GREEN — **296 tests, 0 failures, 0 skipped**
   (proxy 214 = 213 + 1). AC6 now complete in CI on both proofs (RELAY-011 + OBS-038); real-carrier
   falsification stays the non-CI plan. (T11 remains open — story stays in-progress.)
+
+- 2026-08-16 — **Story 2.2 Task 11 (AC9 / standing gate AI-1): the consolidated RED-on-neuter mutation pass +
+  green build.** 35 mutations on integrated HEAD d0ea8ac — the 6 load-bearing AC3/AC8 guards first-hand in the
+  main tree (`/tmp/t11-backups` discipline; AC9's named four — AD-32 bare-close, non-ROK teardown, AD-25 flip
+  re-check, AD-30 self-check — plus the single-flipper and the exactly-once CAS) + the 29 remaining guards
+  T1–T10 introduced via a worktree-isolated agent sweep (workflow `wf_529b1174-f33`; 29 agents, 0 errors; every
+  mutation: neuter → RED on its named biter(s) → revert → GREEN; full ledger in Completion Notes). Fresh-count
+  deltas vs the per-task records logged honestly (T7-N1 → 6 biters; T1b's class-load kill mechanism; T5a-context
+  → 4). jqwik `@Property` trap verified clean (class-level Jupiter annotations only, 10 methods / 3 codec
+  classes); zero `@Disabled`/removed tests. `./gradlew clean build` GREEN — **296 tests, 0 failures, 0 errors,
+  0 skipped** (proxy 214 + codec 82); RELAY-025/026 green; zero marker residue (`grep T11-MUTATION` = 0);
+  worktrees auto-cleaned; main tree byte-identical to HEAD. **ALL TASKS COMPLETE — story status → review.**
