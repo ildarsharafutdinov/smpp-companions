@@ -39,6 +39,12 @@ dependencies {
     // are unaffected.
     testImplementation("org.testcontainers:testcontainers")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
+    // Story 2.2 T10 (OBS-038): jSMPP 3.0.2 server-side mock — the INDEPENDENT A-1 conformance oracle
+    // (shares NEITHER the production codec's bugs NOR its A-1 assumption; AD-24). testImplementation
+    // ONLY (never the production codec — the mirror of codec/build.gradle.kts:38): stays off the main
+    // compile/runtime classpaths, so OBS-013 runtime purity / SEC-099 floors (main-configuration
+    // gates) are unaffected.
+    testImplementation("org.jsmpp:jsmpp:3.0.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // T7-c (AC8): let the proxy ArchUnit jmh-isolation test analyze the compiled JMH benchmark classes.
     // Pulls ONLY the jmh source-set output (compiled by `compileJmhJava` — plain javac, no JMH bytecode-
