@@ -244,12 +244,12 @@ behind unchanged interfaces.
   - [x] **A-1 ops-plan docs (OBS-035/036/037):** author `docs/` A-1 real-carrier test plan with explicit PASS criterion (≥2 concurrent binds, same `system_id`, both ROK on the real carrier), explicit FAIL criterion + DLR-affinity assertion (submit on bind A → `deliver_sm` on bind A's socket, not B), and naming the real carrier/conformance SMSC as the oracle (explicitly excluding the in-JVM mock). Docs-gate tests scan for the criterion shape (regex/AssertJ presence). *(Landed as `docs/a-1-carrier-test-plan.md` + `A1CarrierPlanDocsTest` — 3 gate tests, one per OBS id; normalized lowercased/backtick-stripped/whitespace-collapsed text so prose tweaks never false-RED; the doc's existence is asserted FIRST and loudly.)*
   - [x] RED-on-neuter: neuter the coupling (e.g. forward `deliver_sm` to the wrong ingress) → RELAY-011 goes RED. *(N1: splice forwarded to `self` instead of the peer → RELAY-011 RED on `SocketTimeoutException` (the tagged deliver_sm never reaches client A) AND REL-1 RED (`awaitPdus` unreached — the submits echo back); the teardown test correctly stayed GREEN (no spliced PDUs). N2: blanked ops-plan doc → all 3 docs-gate tests RED. Both restored byte-exact from `/tmp/t9-backups`; full `clean build` GREEN after.)*
 
-- [ ] **Task 10 (AC: 6) — jSMPP independent A-1 conformance oracle (OBS-038).**
-  - [ ] Add `org.jsmpp:jsmpp:3.0.2` to `proxy` testImplementation (test-only — never the production codec; mirror the codec module's coordinate, `codec/build.gradle.kts:38`).
-  - [ ] Build a **jSMPP 3.0.2 server-side mock** as the SMSC — the independent oracle (shares NEITHER the production codec's bugs NOR its A-1 assumption). Server-side API: `org.jsmpp.session.SMPPServerSessionListener` (bind to a port; `accept()` yields one `SMPPServerSession` per TCP connection, each delivering a `BindRequest` to a `ServerMessageReceiverListener` — see `org.jsmpp.examples.SMPPServerSimulator`). SMPP is one-bind-per-connection by spec, so the affinity scenario is N separate connections sharing one `system_id` (exactly AC6): the mock accepts N concurrent connections and ROKs each `bind_transceiver` regardless of `system_id`, then emits `deliver_sm` on the session that received the bind (carrier-side affinity).
-  - [ ] **OBS-038 (load-bearing):** ≥2 concurrent binds under ONE `system_id` through the relay to the jSMPP server mock → both `bind_*_resp` ROK; `submit_sm` on bind A → the resulting `deliver_sm` (DLR) arrives on bind A's coupled channel, NOT bind B (capturing `SpliceObserver` per ingress; AssertJ). The strongest CI approximation of A-1 (test-coverage-scenarios.md:1267–1271).
-  - [ ] Optional reuse: a jSMPP alternate-ESME client can also drive the RELAY-002/008 sequence-integrity paths — not required for AC6.
-  - [ ] RED-on-neuter: neuter the coupling → OBS-038 goes RED (the DLR lands on the wrong bind).
+- [x] **Task 10 (AC: 6) — jSMPP independent A-1 conformance oracle (OBS-038).**
+  - [x] Add `org.jsmpp:jsmpp:3.0.2` to `proxy` testImplementation (test-only — never the production codec; mirror the codec module's coordinate, `codec/build.gradle.kts:38`). *(Mirrored verbatim in `proxy/build.gradle.kts` with the CODEC-031-style comment; stays off the main compile/runtime classpaths so OBS-013/SEC-099 gates are unaffected.)*
+  - [x] Build a **jSMPP 3.0.2 server-side mock** as the SMSC — the independent oracle (shares NEITHER the production codec's bugs NOR its A-1 assumption). Server-side API: `org.jsmpp.session.SMPPServerSessionListener` (bind to a port; `accept()` yields one `SMPPServerSession` per TCP connection, each delivering a `BindRequest` to a `ServerMessageReceiverListener` — see `org.jsmpp.examples.SMPPServerSimulator`). SMPP is one-bind-per-connection by spec, so the affinity scenario is N separate connections sharing one `system_id` (exactly AC6): the mock accepts N concurrent connections and ROKs each `bind_transceiver` regardless of `system_id`, then emits `deliver_sm` on the session that received the bind (carrier-side affinity). *(Landed as `JsmppSmscServer`: blocking daemon accept loop → per-session handler on a daemon worker pool (`waitForBind(10s)` → `accept("jsmpp-smpp", IF_34)` ROK regardless of `system_id`); `onAcceptSubmitSm` captures the (session, short_message) pair and AUTO-delivers a tagged DLR on THAT SAME session via `deliverShortMessage` — scheduled on the fixture worker, never jSMPP's PDU-reader thread (`deliverShortMessage` blocks for the `deliver_sm_resp`); `anomalies()` queue asserts a healthy run explains away nothing. Two jSMPP portability facts baked into the fixture + javadoc: `getPort()` returns the CONFIGURED port not the bound one (probe-first — see Debug Log), and quiet timers (`enquire_link` 60s / transaction 5s) so no proactive SMSC `enquire_link` races the zero-cross-bleed assertions.)*
+  - [x] **OBS-038 (load-bearing):** ≥2 concurrent binds under ONE `system_id` through the relay to the jSMPP server mock → both `bind_*_resp` ROK; `submit_sm` on bind A → the resulting `deliver_sm` (DLR) arrives on bind A's coupled channel, NOT bind B (capturing `SpliceObserver` per ingress; AssertJ). The strongest CI approximation of A-1 (test-coverage-scenarios.md:1267–1271). *(Landed as `JsmppA1OracleTest` on the REAL acceptor via the T9 `ModeBRelayHarness` (egress → the oracle's port): two binds written to both sockets before either response is read, both `bind_resp` ROK with matching sequences; the oracle's own view of A-1's premise asserted (two `BoundSession`s under the ONE `system_id`); submit on A → `submit_sm_resp` (ROK, sequence-integrity through the relay) + the DLR `deliver_sm` on A ONLY (classified — the resp/DLR wire order per pair is a fixture-internal race), then the symmetric leg for B; zero cross-bleed asserted on the OTHER socket each time; the well-behaved `deliver_sm_resp` answer completes the DLR roundtrip through the splice; observer pins 2× `onBindAccept` under one `SystemId` + 8 `onFramedPdu` (4 INGRESS / 4 EGRESS, counts-not-order) + 0 rejects; registry stays 2; `anomalies()` empty. The oracle bit the test TWICE during development — malformed §4.4.1 submit_sm and a wrong `deliver_sm` command_id literal — see the Debug Log; both are exactly the independence AC6(b) buys.)*
+  - [x] Optional reuse: a jSMPP alternate-ESME client can also drive the RELAY-002/008 sequence-integrity paths — not required for AC6. *(NOT exercised — this subtask's own text marks it optional / not-required-for-AC6; the plain-socket clients + the jSMPP server-side oracle carry AC6. Recorded here so the checkbox is not mistaken for work done.)*
+  - [x] RED-on-neuter: neuter the coupling → OBS-038 goes RED (the DLR lands on the wrong bind). *(N1: `RelayHandler.splice()` write redirected to `self` instead of the peer → OBS-038 RED at the A-leg DLR read (`SocketTimeoutException` — the submit echoes back toward the SMSC, client A never receives the DLR; the bind stage correctly stayed GREEN — binds do not traverse `splice`); restored byte-exact from `/tmp/t10-backups`, marker-grep clean, full `clean build` GREEN after. See Debug Log.)*
 
 - [ ] **Task 11 (AC: 9) — RED-on-neuter mutation pass + green build (AI-1).**
   - [ ] For every guard listed in AC9: neuter (comment out / invert) → run the matching test → confirm RED → revert → confirm GREEN. Record each in the Completion Notes (cite the test). Assertion bodies that can throw release latches/`EmbeddedChannel` resources in `finally`.
@@ -378,7 +378,7 @@ SmppCommandIds.BIND_FAMILY (6 ids) / isBindFamily(int) / isResponse(int) / reque
 
 ### Agent Model Used
 
-glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7) + RelayHandler/AC3+AC7 (T8); Task 9 — the in-JVM mock SMSC + RELAY-011 A-1 smoke + REL-1 roundtrip + OBS-035/036/037 ops-plan docs; T10–T11 pending).
+glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + password hygiene/CODEC-024 P2 + ConnectionRegistry/AD-8 + shared allocator/AD-30 (T5/T5b) + Netty pipelines/SmartLifecycle substrate (T6) + BindInterceptor/AC2 (T7) + RelayHandler/AC3+AC7 (T8); Task 9 — the in-JVM mock SMSC + RELAY-011 A-1 smoke + REL-1 roundtrip + OBS-035/036/037 ops-plan docs; Task 10 — the jSMPP 3.0.2 independent A-1 conformance oracle OBS-038 + the owner-FIXME 3-agent investigation; T11 pending).
 
 ### Debug Log References
 
@@ -863,6 +863,55 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   full `./gradlew clean build` GREEN (182 proxy tests, 0 failures; only the 3 pre-existing RpcSlice
   warnings).
 
+- **T10 jSMPP portability facts (bytecode-verified, `javap` on the cached 3.0.2 jar).** (1) **`SMPPServerSessionListener.getPort()`
+  returns the CONFIGURED port, not the live bound one** — `new SMPPServerSessionListener(0)` binds an ephemeral
+  port yet keeps reporting 0, so the fixture's first draft pointed the relay's egress at port 0 → refused connect →
+  the AD-33 egress-establishment-fail collapse (the client read a SYNTHESIZED `ESME_RBINDFAIL 0x0000000D`
+  `bind_resp` — which is ALSO the relay's own AD-33 code, initially misread as a jSMPP rejection; a jar-wide scan
+  found ZERO jSMPP references to `STAT_ESME_RBINDFAIL`). Fix: `RelayTestFixtures.freePort()` probe-first (the
+  documented TOCTOU-accepted practice). (2) **The initiation `SO_TIMEOUT=5000` (set by `accept()`) is overwritten
+  INSIDE the `SMPPServerSession` constructor** — `BoundSessionStateListener.onStateChange` fires at the
+  CLOSED→OPEN transition and re-applies `setSoTimeout(enquireLinkTimer)`; with the fixture's 60s timer a bound
+  session's read idles for a minute, and a read timeout only triggers an `enquire_link` (no close). The "5s
+  initiation-timer kills the session" theory is refuted (also empirically: repro E6 held a bind 6s past the
+  window — late ROK, healthy submit).
+- **T10 — the oracle bit the test TWICE (the AC6(b) independence, working as designed).** (1) **The hand-authored
+  `submit_sm` was malformed:** the §4.4.1 body needs `schedule_delivery_time` + `validity_period` (empty C-octets)
+  and `replace_if_present_flag` — the first draft omitted all three AND double-counted `sm_length` in the length
+  formula (52 bytes where 54 belong). jSMPP's strict `DefaultDecomposer.submitSm` walked its field cursor into
+  `short_message` territory: it read `sm_length` at offset 40 = ASCII `'B'` (0x42=66) of `"SUBMIT-FROM-A"`, then
+  `System.arraycopy(41, 66)` → **`last source index 107 out of bounds for byte[52]`** (41+66=107 — the JVM message
+  matches the arithmetic exactly). The uncaught AIOOBE killed jSMPP's `PDUProcessServerTask` BEFORE any
+  `submit_sm_resp` — no response, no close — so the client's 4s read timed out. `MockSmsc` could NEVER catch this:
+  it splices submits opaquely (T9's REL-1 "submits" were also wire-shape-agnostic). (2) **The `DELIVER_SM` literal
+  was wrong:** the test pinned `0x00000105` (a NON-EXISTENT id); the spec's actual `deliver_sm = 0x00000005`
+  (§5.1.2.1, verified against the repo PDF — `deliver_sm_resp = 0x80000005`). jSMPP's CONSTRUCTED DLR arrived with
+  `0x00000005` and the assertion found 0 matches. T9 never caught this either — its "deliver_sm" frames are opaque
+  tag-carriers where any non-bind id works. **Note for the record:** `RelayA1SmokeTest` still carries the
+  `0x00000105` literal as an opaque tag id — harmless in its scope (never parsed, no contract asserted on the id),
+  left untouched (T9 is closed); the corrected literals + the §4.4.1 field walk live in `JsmppA1OracleTest` with
+  javadoc naming both traps.
+- **T10 — the owner FIXME ("concurrent bindB closes bindA's socket before bind_resp") — investigated and RESOLVED
+  as non-reproducing on HEAD.** A 3-agent adversarial workflow (jSMPP-internals bytecode analysis + relay
+  close-path enumeration + a 6-experiment standalone repro matrix through the REAL relay) converged, all
+  high-confidence: (a) jSMPP 3.0.2 has NO sub-10s self-close path for an idle OPEN session (see the portability
+  facts above); (b) the relay has NO cross-pair close path — every pre-`bind_resp` egress close is keyed to THIS
+  pair's ingress (registry `ChannelId` keys, per-channel handlers, per-pair `EgressLeg`) — and NO timer at all
+  (`adjudicationDeadline` is only stamped into `RequestContext`, never read back); (c) the repro matrix: real
+  relay + real fixture, 3/3 concurrent AND sequential binds ROK in ~90ms; the only HEAD mechanism with the
+  observed wire shape is the **AD-32 pre-couple bare-close when a non-bind PDU hits an ingress leg pre-flip**
+  (repro E5c: bind+submit coalesced pre-flip → bare EOF, SMSC-side socket dead ~7ms in — the relay's DESIGNED
+  response, not a defect). Reconciliation of the original observation: it matches the pre-port-fix state (egress →
+  port 0 → refused connect → AD-33 deny + close, jSMPP never seeing a socket) or an E5c-shaped interleaving from
+  the debugging session. The FIXME is removed; 9 consecutive green runs + the workflow's matrix back the
+  non-reproduction.
+- **T10 RED-on-neuter — N1 PROVEN (unique `/tmp/t10-backups` master, restored byte-exact, marker-grep = 0, full
+  `clean build` GREEN after the restore).** `RelayHandler.splice()`'s write redirected to `self` instead of the
+  peer → `JsmppA1OracleTest` RED at the A-leg DLR read (`SocketTimeoutException` — A's submit echoes back toward
+  the SMSC, the DLR never reaches client A; the bind stage correctly stayed GREEN: binds do not traverse
+  `splice`). Full `./gradlew clean build` GREEN — **296 tests, 0 failures, 0 skipped** (proxy 214 = 213 + 1;
+  codec 82 unchanged).
+
 ### Completion Notes List
 
 - **T1 DONE — AI-8 `--enable-preview` bootstrap gate via compiler enforcement (owner-approved alternative
@@ -1254,6 +1303,32 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   `submit_sm_resp` (the splice scenarios need one-way flows; conformance breadth is Story 2.3);
   (c) session→client mapping is content-matched (bind bytes), not accept-order — see Debug Log.
 
+- **T10 DONE — AC6(b) OBS-038: the jSMPP independent A-1 conformance oracle.** `org.jsmpp:jsmpp:3.0.2`
+  added to `proxy` testImplementation (the codec module's CODEC-031 coordinate mirrored; test-only, main
+  purity gates unaffected). NEW `JsmppSmscServer` (test fixture): the jSMPP 3.0.2 server-side mock —
+  `SMPPServerSessionListener` accept loop (daemon), per-session `waitForBind` → `accept(..., IF_34)` ROK
+  **regardless of `system_id`** (A-1's premise accepted by the independent stack), `onAcceptSubmitSm`
+  capture + AUTO `deliverShortMessage` DLR on the SAME session (carrier-side affinity; emitted from the
+  fixture worker, never the PDU-reader thread), quiet 60s/5s timers, an `anomalies()` queue the test
+  asserts empty. NEW `JsmppA1OracleTest` (1 test, REAL sockets through the REAL acceptor via the T9
+  `ModeBRelayHarness`): two CONCURRENT binds under ONE `system_id` both ROK (the oracle PARSED the relay's
+  AD-14-forwards — independence from the production codec); submit on A → `submit_sm_resp` (ROK, sequence
+  integrity through the relay) + the jSMPP-CONSTRUCTED DLR on A's channel ONLY, symmetric leg for B, zero
+  cross-bleed each way, well-behaved `deliver_sm_resp` answers riding the splice back; observer pins
+  (2× `onBindAccept` one `SystemId`, 8 `onFramedPdu` — 4/4 INGRESS/EGRESS counts, 0 rejects), registry 2
+  throughout, `anomalies()` empty. The oracle bit the test twice mid-development (malformed §4.4.1
+  submit_sm → jSMPP decomposer AIOOBE; wrong `deliver_sm` literal `0x00000105` vs the spec's `0x00000005`)
+  — both are precisely the independent-stack bites AC6(b) exists for and are javadoc'd at the corrected
+  builders; `MockSmsc`'s opaque path can never catch either. The optional jSMPP alternate-ESME-client
+  reuse subtask was NOT exercised (explicitly not-required-for-AC6). RED-on-neuter N1 (splice→self) RED
+  at the DLR read, restored byte-exact. Owner FIXME (concurrent-binds bind-stage close) investigated via
+  a 3-agent adversarial workflow + 6-experiment repro matrix — NOT reproducible on HEAD (relay/jSMPP both
+  exonerated; the only matching HEAD mechanism is the DESIGNED AD-32 pre-couple bare-close, E5c);
+  FIXME removed. Full `./gradlew clean build` GREEN — **296 tests, 0 failures, 0 skipped** (proxy 214 =
+  213 + 1). **AC6 is now complete in CI on both proofs: RELAY-011 mechanics (T9) + the OBS-038
+  independent oracle (T10); the genuine real-carrier falsification remains the non-CI plan
+  (`docs/a-1-carrier-test-plan.md`).** (T11 remains open — story stays in-progress.)
+
 ### File List
 
 - `proxy/src/test/java/smpp/companion/proxy/bootstrap/PreviewFeatureCompileGateTest.java` — **added**: the
@@ -1580,6 +1655,27 @@ glm-5.2[1m] (Tasks 1–8 — bootstrap gate + observability contract seed + pass
   `docs/a-1-carrier-test-plan.md` (N2: blanked) — neutered then restored from unique
   `/tmp/t9-backups` masters; restored files diff-verified byte-exact, `grep T9-MUTATION` = 0, and
   the full `clean build` ran AFTER the restores.
+
+- `proxy/build.gradle.kts` — **modified** (T10): + `testImplementation("org.jsmpp:jsmpp:3.0.2")` — the
+  OBS-038 independent A-1 oracle, test-only (the mirror of `codec/build.gradle.kts:38`, CODEC-031's
+  interop-oracle coordinate); off the main compile/runtime classpaths, so OBS-013 runtime purity /
+  SEC-099 floors are unaffected.
+- `proxy/src/test/java/smpp/companion/proxy/relay/JsmppSmscServer.java` — **added** (T10): the jSMPP
+  3.0.2 server-side mock SMSC — the INDEPENDENT oracle (parses everything the relay splices onto the
+  egress sockets, constructs everything the legacy clients read back); accept loop + per-session
+  ROK-any-`system_id` bind answering, submit capture + tagged-DLR auto-emission on the SAME session
+  (carrier-side affinity), quiet timers, `anomalies()` bookkeeping; javadoc carries the honest-scope
+  caveat (CI approximation of A-1, not the real-carrier falsification) + the jSMPP portability facts.
+- `proxy/src/test/java/smpp/companion/proxy/relay/JsmppA1OracleTest.java` — **added** (T10): the
+  OBS-038 load-bearing test — two concurrent binds under one `system_id` through the REAL relay to the
+  oracle, both ROK; submit→resp+DLR on the owning bind ONLY (both legs exercised, zero cross-bleed);
+  hand-authored §4.4.1-complete bind/submit builders + the corrected `deliver_sm`/`deliver_sm_resp`
+  command-id literals (0x00000005/0x80000005, §5.1.2.1) with javadoc naming the two oracle-bite traps;
+  observer + registry + `anomalies()` pins.
+- *(mutation-pass only, ZERO net change — not listed as modified):*
+  `proxy/.../relay/RelayHandler.java` — `splice()`'s write redirected to `self` (T10-MUTATION N1: the
+  coupling neuter) then restored byte-exact from the unique `/tmp/t10-backups` master; marker-grep
+  clean and the full `clean build` ran AFTER the restore.
 
 ## Change Log
 
@@ -2003,3 +2099,23 @@ review) — T11's consolidated pass re-runs all.
   (`SocketTimeoutException`) + REL-1; N2 (blanked doc) RED on all 3 gates; both restored
   byte-exact. Full `./gradlew clean build` GREEN — 295 tests, 0 failures, 0 skipped (proxy 213 =
   207 + 6). (T10–T11 remain open — story stays in-progress.)
+
+- 2026-08-16 — **Story 2.2 Task 10:** AC6(b) OBS-038 — the jSMPP 3.0.2 independent A-1 conformance
+  oracle. `org.jsmpp:jsmpp:3.0.2` on `proxy` testImplementation (test-only, the codec's CODEC-031
+  coordinate mirrored); NEW `JsmppSmscServer` (server-side mock: ROK-any-`system_id` binds,
+  submit-triggered tagged DLR on the SAME session = carrier-side affinity, `anomalies()` bookkeeping)
+  + NEW `JsmppA1OracleTest` (two CONCURRENT binds under ONE `system_id` through the REAL relay → both
+  ROK; submit → `submit_sm_resp` + DLR on the owning bind ONLY, symmetric leg for B, zero cross-bleed;
+  observer/registry/anomalies pins). **The oracle bit the test twice mid-flight** (malformed §4.4.1
+  `submit_sm` → jSMPP decomposer AIOOBE with zero response; wrong `deliver_sm` literal `0x00000105` vs
+  the spec's `0x00000005` §5.1.2.1) — the exact independence AC6(b) buys; `MockSmsc`'s opaque path
+  cannot catch either. Owner FIXME (concurrent-binds bind-stage close) investigated via a 3-agent
+  adversarial workflow + 6-experiment repro matrix — NOT reproducible on HEAD (jSMPP + relay both
+  exonerated; bytecode: the initiation SO_TIMEOUT is overwritten by `enquireLinkTimer` in the session
+  ctor, and a read timeout only enquire_links; relay: no cross-pair close path, no timer at all; the
+  only matching HEAD mechanism is the DESIGNED AD-32 pre-couple bare-close — E5c); FIXME removed.
+  jSMPP portability fact baked into the fixture: `getPort()` returns the CONFIGURED port (probe-first,
+  else the egress aims at port 0 → AD-33 deny). RED-on-neuter N1 (splice→self) RED at the DLR read,
+  restored byte-exact. Full `./gradlew clean build` GREEN — **296 tests, 0 failures, 0 skipped**
+  (proxy 214 = 213 + 1). AC6 now complete in CI on both proofs (RELAY-011 + OBS-038); real-carrier
+  falsification stays the non-CI plan. (T11 remains open — story stays in-progress.)
