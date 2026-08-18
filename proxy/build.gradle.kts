@@ -68,6 +68,10 @@ jmh {
 }
 tasks.named("test") {
     dependsOn("compileJmhJava")
+    // A1CarrierPlanDocsTest reads this doc at runtime — declare it as a test input so a docs-only edit
+    // cannot leave the task UP-TO-DATE and silently skip the OBS-035/036/037 falsifiability gate
+    // (the runtime-file-read Gradle trap; 2.2 review F17, 2026-08-17).
+    inputs.file(layout.projectDirectory.file("../docs/a-1-carrier-test-plan.md"))
 }
 
 // SEC-091: OWASP dependency-check CI lane. Deliberately NOT wired into `check`, so `./gradlew build`

@@ -83,12 +83,11 @@ class NoStringFromPasswordTest {
                 .as("codec main source root must exist (test CWD = proxy module; codec is sibling)").isTrue();
         assertThat(Files.exists(PROXY_SECURITY))
                 .as("proxy/security source root must exist").isTrue();
+        assertThat(Files.exists(PROXY_RELAY))
+                .as("proxy/relay source root must exist (relay code landed at 2.2 T7/T8; review F6)").isTrue();
 
         List<String> offenders = new ArrayList<>();
         for (Path root : new Path[] {CODEC_MAIN, PROXY_SECURITY, PROXY_RELAY}) {
-            if (!Files.exists(root)) {
-                continue; // proxy/relay may be package-info-only or absent early; scanned once relay code lands.
-            }
             try (Stream<Path> walk = Files.walk(root)) {
                 for (Path file : walk.filter(p -> p.toString().endsWith(".java")).toList()) {
                     String code = stripComments(Files.readString(file));

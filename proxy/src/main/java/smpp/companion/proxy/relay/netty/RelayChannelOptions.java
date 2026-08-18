@@ -29,8 +29,12 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * water mark bounds that outbound buffer at
  * {@code MAX_COMMAND_LENGTH × companion.memory.max-inbound-depth}; the PER-CHANNEL INBOUND bound is
  * emergent from it: T8's write-completes-gates-read (AD-2) arms the peer leg's reads only while this
- * leg stays writable, so at most {@code max-inbound-depth} max-sized framed PDUs are admitted into the
- * spliced pair before writability trips and reads stop. This ties
+ * leg stays writable, so read demand stops once writability trips. The bound is steady-state, not
+ * exact: a single read cycle may deliver several framed PDUs and one write may already be in flight
+ * when writability trips, and {@code read()} under {@code AUTO_READ=false} is an idempotent
+ * interest-arm (re-arms coalesce into the same armed state — they do not queue extra reads), so the
+ * standing inbound bytes are bounded by the high water mark plus one read cycle's worth, not by
+ * precisely {@code max-inbound-depth} frames. This ties
  * the per-channel byte bound to the SAME depth input the AD-30 budget formula multiplies by
  * ({@code MemoryBudget.compute}), so the per-channel bound, the watermark, and the direct-memory
  * budget cannot drift apart. The gating behavior itself lives in the T8 {@code RelayHandler} (reads
@@ -85,7 +89,8 @@ public final class RelayChannelOptions {
 
     /**
      * Low = one max frame (re-arm threshold); high = {@code max-inbound-depth} max frames (the OUTBOUND
-     * bound the T8 gate turns into the per-channel inbound ceiling). Computed as long, clamped to
+     * bound the T8 gate turns into the per-channel inbound bound's high mark — the realized inbound
+     * bound is the high mark plus one read cycle; see the class javadoc). Computed as long, clamped to
      * {@code Integer.MAX_VALUE} (see class javadoc); {@code low == high} (a depth-1 minimal config) is
      * legal — the writability signal then trips and re-arms at the same byte count.
      */
