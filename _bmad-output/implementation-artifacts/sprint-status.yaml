@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-08-16
+last_updated: 2026-08-17
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -79,7 +79,7 @@ development_status:
   # --- Epic 2: Transit SMPP end-to-end — stateless relay with the A-1 session-affinity smoke test ---
   epic-2: in-progress
   2-1-security-port-contract-validation-slice: done
-  2-2-stateless-relay-and-a1-session-affinity-smoke: review
+  2-2-stateless-relay-and-a1-session-affinity-smoke: done
   epic-2-retrospective: optional
 
   # --- Epic 3: Secure the transit — TLS modes A/B/C and OIDC ROPC password-grant adjudication ---

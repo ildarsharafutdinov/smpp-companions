@@ -12,6 +12,9 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   referenced directly (RELAY-026 single-source; guarded by `Relay026ConstantContractTest`).
 - **CODEC-039 / SEC-090 ArchUnit rules have no positive control today** — scaffold form accepted by AC3/AC7 ("locks the boundary before code exists"); SEC-090 (PKIX / `javax.net.ssl`, not just `sun.security`) tightens in Epic 3. [codec/proxy ArchUnit tests]
 - **`--enable-preview` COMPILE/RUN not runtime-verified** — wiring present in `smpp.java-conventions`; only the test-JVM path is asserted. Future TestKit compile-arg hardening. [proxy/src/test/.../bootstrap/EnablePreviewArgTest.java]
+  **↳ 2026-08-17 refresh (2.2 code review F2):** the COMPILE half is superseded by Story 2.2 T1's
+  compiler-enforced gate (`PreviewFeatureCompileGateTest`). The RUN half (`bootRun`/`JavaExec`) remains
+  ungated by owner-approved T1 deviation — ledgered below under the 2.2 review heading.
 - **`CompanionProperties` has no `tls` / `tls.protocols` null guards** — only `role` is fail-fast-guarded (AC9's one-smoke scope); a tls-absent NPE is a Story 1.3 concern. [proxy/src/main/java/.../config/CompanionProperties.java]
   **✅ RESOLVED 2026-08-03 (Story 1.3 T1):** `tls` is `@NotNull` (clear message) and the class-level
   `CompanionConfigValidator.validateTls` null-guards `tls`/`protocols` before deref — a missing `tls`
@@ -247,6 +250,11 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   (`AUTO_READ=false`, no handler): an unauthenticated, unbounded socket sink on every interface for a real
   mode-b boot. **Deferred to Epic 3**: the slice is in-JVM/loopback until then; Epic 3 adds bind-host +
   listener hardening (including the connection-cap decision) when it wires the production acceptors.
+  **↳ 2026-08-17 refresh (2.2 code review F13):** the "inert" rationale is stale as written — post-T7/T8 an
+  uncapped accept creates a LIVE coupled pair (registry entry + adjudication + SMSC egress connection + pooled
+  buffers per bind), not an inert socket, so the unbounded-accept sink now allocates real per-connection
+  resources. The Epic-3 deferral itself STANDS (owner 2026-08-15); this note only sharpens its weight — the
+  connection-cap decision should account for coupled-pair memory residency (AD-30), not just socket count.
 
 ## Deferred from: owner notes during Story 2.2 T7 + owner-FIXME round (2026-08-16)
 
@@ -386,3 +394,63 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   idempotence + no-orphan pins survive; the CAS-once triggers (`onBindAccept` at the flip,
   `onConnectionClosed` exactly-once) stay exactly-once; RELAY-007 jcstress (nightly) targets the
   manager unchanged if the registry survives as storage.
+
+## Deferred from: code review of 2-2-stateless-relay-and-a1-session-affinity-smoke (2026-08-17)
+
+- **Relay-side adjudication-deadline enforcement (verdict-timeout arm) [F14|low]** — the relay computes and
+  ships `companion.bind.adjudication-deadline: 4s` (fail-fast positivity guard included) but arms no timeout:
+  its only consumer is `RequestContext.deadline` (`BindInterceptor.java:242-244`), so a never-settling verifier
+  future pins the registry entry, the original bind frame, and the legacy client's socket until the client
+  disconnects/rebinds/violates. Owner-deferred in story T7 honest-scope note (c) (2026-08-16, "the
+  RequestContext deadline … is the verifier's budget"). Ledgered here under its own name because the catalog's
+  RELAY-020 tag (`test-coverage-scenarios.md:435`) names a DIFFERENT scenario — post-Allow egress
+  connect-refused no-hang — which T7 already implemented. Design fork when picked up:
+  complete-exceptionally-at-deadline vs deny+teardown, and whether that obligates `VerdictRequest` to promise
+  settlement on `cancelHttp()` (interlocks with review finding F7's frame-ownership question). Natural home:
+  the later Epic-2 story / Epic 4 alongside RELAY-020/021 (story Out of scope :339).
+
+- **Ingress-leg `bind_*_resp` handling [F1|medium]** — a decoded bind response arriving on the INGRESS leg is
+  released and dropped (`BindInterceptor.java:188-197`): no AD-32 bare-close pre-flip, no splice post-flip
+  ("never a silent drop", spine :80 / AC7 :136); no test covers either window. **Owner (2026-08-17): defer** —
+  the drop is kept (it incidentally seals the client-forged-ROK flip window: a forwarded pre-flip ROK would
+  flip the pair without SMSC consent via `Relayer.channelRead:126-137`, so any future fix must bare-close
+  pre-flip, not forward); the AD-32 letter + post-flip splice question rides with RELAY-020/021 in the later
+  Epic-2 story.
+- **Verdict-future frame ownership on cancellation [F7|medium]** — the `whenComplete` continuation is the only
+  releaser of the in-flight `req.originalFrame()` (`BindInterceptor.java:271-274`); the four teardown arms'
+  `cancelAndWipePending` (:336-347) never releases it, and the ratified port (`VerdictRequest.java:26-30`) does
+  not promise `future()` settles on `cancelHttp()` — a never-settling cancelled verdict leaks one pooled direct
+  buffer per abandoned adjudication (also: `eventLoop().execute()` rejection during loop shutdown strands the
+  closure). **Owner (2026-08-17): defer to Epic 3** — latent under AlwaysAllow (pre-completed future); decide
+  port-amendment (promise settlement on cancel — touches the AC8 ratified-immutable port) vs relay-side
+  ownership (release at teardown, CAS/flag against the onVerdict racer arm :289) when the ROPC adapter can
+  actually strand a future.
+- **Egress connect-phase bounding (blackholed SMSC) [F10|medium]** — the per-bind egress `Bootstrap` sets no
+  `CONNECT_TIMEOUT_MILLIS` (`BindInterceptor.java:400-406`): a blackholed endpoint (SYN drop) hangs the legacy
+  socket ~30s (Netty default, pinned 4.2.16.Final) while the 4s `adjudication-deadline` never bounds TCP
+  establishment (~7.5x PERF-3's 2-5s fail-closed budget); RELAY-020-as-written (connect-refused, RST fails
+  fast) passes without the option. **Owner (2026-08-17): defer** — folds into the RELAY-020/021 timeout work
+  in the later Epic-2 story; ~30s worst case accepted for the plaintext test-tier slice.
+- **`EGRESS_CONNECT_FAILED` / `BIND_REJECTED` CloseReasons never fire [F9|low]** — `denyAndTeardown`
+  (`BindInterceptor.java:321-333`) stashes no reason and `ConnectionRegistry` clears the entry attr before
+  close, so deny/connect-fail closes surface as `OTHER` (the other 5 dead values are documented
+  not-fired-by-design in the 2.2 Debug Log :742-757). **Owner (2026-08-17): defer to Epic 4** — firing
+  semantics decided when the metrics observer consumes the taxonomy (needs hoisting the RelayHandler-private
+  CLOSE_REASON key `RelayHandler.java:83-84` + a deny-variant→value mapping; may amend the ratified
+  not-a-must-fire-list contract).
+- **`onFramedPdu` pre-couple firing vs seam contract [F11|low]** — the interface javadoc says "pre- or
+  post-couple" (`SpliceObserver.java:30-36`) but the sole fire site is post-flip
+  (`RelayHandler.java:197`); the AD-14 verbatim bind forward (`BindInterceptor.java:427`) and the `bind_resp`
+  forward (:511) cross uncounted (deny-synthesis + generic_nack forward likewise). **Owner (2026-08-17): defer
+  to Epic 4** — folds into the PDU-count metric semantics decision (fire at the handshakes — flips three pinned
+  tests RED — vs amend the javadoc to post-couple-only).
+- **RELAY-014 backpressure behavioral test (re-affirmed) [F16|low]** — the writability CONDITION and the
+  `channelWritabilityChanged` low-water body (`RelayHandler.java:200,219-231`) have no behavioral test (the
+  re-arm happy path IS exercised on real sockets — multi-roundtrip traffic needs it; the forward itself is
+  unconditional). **Owner (2026-08-17): RELAY-014 deferral re-affirmed** (catalog
+  `test-coverage-scenarios.md:405-409`); ledgered here so it stops living only in the story's Out-of-scope.
+- **AC9/AI-8 RUN-half `--enable-preview` gate deviation [F2|low]** — owner-approved T1 deviation
+  (`PreviewFeatureCompileGateTest.java:29-33`; story Completion Notes :961-967): the RUN wiring
+  (`bootRun`/`JavaExec`) is intentionally ungated; COMPILE + TEST are compiler-enforced. **Owner (2026-08-17):
+  ledger here** (this entry); AC9 text left as-is with the story Completion Note as the recorded deviation;
+  the stale pre-2.2 ledger line refreshed (see the ↳ note above).

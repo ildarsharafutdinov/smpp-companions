@@ -439,6 +439,43 @@ class BindInterceptorTest {
         }
     }
 
+    @Test
+    @DisplayName("a null-returning verify() (port-contract violation) denies fail-closed AND releases the "
+            + "original frame — no NPE escape, no pooled-buffer leak (review F12)")
+    void nullReturningVerifierFailsClosedAndReleasesTheFrame() {
+        BindCredential[] seen = new BindCredential[1];
+        ProxyCompanionProperties properties = RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1);
+        BindInterceptor nulling = new BindInterceptor(
+                new BindCredentialVerifier() {
+                    @Override
+                    public VerdictRequest verify(BindCredential cred, ScopedValue<RequestContext> ctx) {
+                        seen[0] = cred;
+                        return null; // violates the port's never-null contract (BindCredentialVerifier)
+                    }
+                },
+                registry, observer, properties, egressInitializer,
+                new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT), connector);
+        EmbeddedChannel nullingIngress = new EmbeddedChannel(
+                DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), nulling,
+                new RelayHandler(registry, observer, Direction.INGRESS));
+        try {
+            ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 13, "legacy1", "pw123456"));
+            nullingIngress.writeInbound(frame);
+            ByteBuf deny = nullingIngress.readOutbound();
+            assertThat(deny).as("fail-closed: a null VerdictRequest DENIES like a verifier blow-up (AD-11)").isNotNull();
+            assertThat(deny.getInt(8)).isEqualTo(ESME_RBINDFAIL);
+            assertThat(deny.getInt(12)).isEqualTo(13);
+            assertThat(observer.bindRejects()).as("null is not a returned Verdict — no onBindReject (AD-27)").isEmpty();
+            assertThat(nullingIngress.isOpen()).isFalse();
+            assertThat(registry.size()).isZero();
+            assertThat(zeroized(seen[0].password().value()))
+                    .as("the never-adjudicated secret is zeroized exactly once (this arm's explicit wipe)").isTrue();
+            assertThat(frame.refCnt()).as("the original frame is released — no pooled-buffer leak").isZero();
+        } finally {
+            nullingIngress.finishAndReleaseAll();
+        }
+    }
+
     // ---------- fixtures ----------
 
     /** Completes the Allow path with a fake (Embedded) egress leg carrying the REAL T6 egress pipeline. */

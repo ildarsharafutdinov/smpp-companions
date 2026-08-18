@@ -266,6 +266,18 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             cred.password().zeroize();
             return;
         }
+        if (verdictRequest == null) {
+            // A null VerdictRequest violates the port's never-null contract (BindCredentialVerifier) —
+            // treat it exactly like a synchronous verifier blow-up above (AD-11 fail-closed): same generic
+            // deny, no onBindReject (null is not a returned Verdict, AD-27), and the single explicit
+            // zeroize is this arm's wipe of the never-adjudicated secret. Without this arm the future()
+            // dereference below would NPE OUTSIDE the try — the pair still tears down via exceptionCaught,
+            // but the original frame's pooled buffer leaks (review F12, 2026-08-17).
+            req.originalFrame().release();
+            denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
+            cred.password().zeroize();
+            return;
+        }
         pendingVerdict = verdictRequest;
         pendingPassword = cred.password();
         verdictRequest.future().whenComplete((verdict, error) ->
