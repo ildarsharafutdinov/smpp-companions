@@ -22,6 +22,7 @@ import io.netty.buffer.PooledByteBufAllocator;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,10 +68,10 @@ class DirectMemoryBudgetStartupCheckTest {
 
     @Test
     @DisplayName("mode-b with a budget under the live ceiling starts silently, and the AD-21 allocator bean is the shared DEFAULT")
-    void modeBWithSmallBudgetStartsAndSelfCheckPasses(CapturedOutput out) {
+    void modeBWithSmallBudgetStartsAndSelfCheckPasses(@TempDir Path dir, CapturedOutput out) throws IOException {
         // Memory overrides are passed as command-line args to run(...) — HIGHEST precedence, so they beat
         // application.yml's companion.memory.* defaults (see modeBBuilder javadoc for why .properties() cannot).
-        try (ConfigurableApplicationContext ctx = modeBBuilder().run(
+        try (ConfigurableApplicationContext ctx = modeBBuilder(dir).run(
                 "--companion.memory.max-inbound-depth=1",
                 "--companion.memory.concurrent-pairs=1",
                 "--companion.memory.safety-factor=1.0",
@@ -95,7 +96,7 @@ class DirectMemoryBudgetStartupCheckTest {
 
     @Test
     @DisplayName("mode-b with a budget exceeding the live ceiling refuses to start (AD-17 fail-fast, default policy)")
-    void modeBBudgetExceedingLiveCeilingRefusesToStart(CapturedOutput out) {
+    void modeBBudgetExceedingLiveCeilingRefusesToStart(@TempDir Path dir, CapturedOutput out) throws IOException {
         // concurrent-pairs=1_000_000 → budget ≈ 6.29 TB / 5.72 TiB (a valid long; MemoryBudget.compute
         // does not overflow — 6.3e12 ≪ Long.MAX_VALUE), exceeding any realistic JVM direct-memory
         // ceiling. The huge value is BOUND as a command-line arg (not the memory key removed) — removing
@@ -104,7 +105,7 @@ class DirectMemoryBudgetStartupCheckTest {
         // full-app boot loads yml); the absent/null⇒FAIL cell is bitten by the direct-construction unit
         // test below.
         assertThatThrownBy(() -> {
-            ConfigurableApplicationContext ctx = modeBBuilder().run("--companion.memory.concurrent-pairs=1000000");
+            ConfigurableApplicationContext ctx = modeBBuilder(dir).run("--companion.memory.concurrent-pairs=1000000");
             // RED-on-neuter exception-safety: if the guard was neutered the context STARTS instead of
             // throwing — close it so the unexpectedly-started context cannot outlive the assertion failure.
             ctx.close();
@@ -136,12 +137,12 @@ class DirectMemoryBudgetStartupCheckTest {
 
     @Test
     @DisplayName("budget-check=warn: an over-ceiling budget emits the loud accepted-risk banner and STARTS")
-    void budgetCheckWarnOverCeilingStartsWithLoudBanner(CapturedOutput out) {
+    void budgetCheckWarnOverCeilingStartsWithLoudBanner(@TempDir Path dir, CapturedOutput out) throws IOException {
         // Same over-ceiling budget as the refusal test, but the operator explicitly opted in:
         // no DirectMemoryBudgetException — the Mode-B-pattern banner on System.err (captured), then boot.
         // try-with-resources closes the context even if the banner assertion fails (RED-on-neuter
         // exception-safety — a neutered warn arm that still throws leaves nothing to close and fails RED).
-        try (ConfigurableApplicationContext ctx = modeBBuilder().run(
+        try (ConfigurableApplicationContext ctx = modeBBuilder(dir).run(
                 "--companion.memory.concurrent-pairs=1000000",
                 "--companion.memory.budget-check=warn",
                 "--companion.bind.port=" + BIND_PORT)) {
@@ -155,12 +156,12 @@ class DirectMemoryBudgetStartupCheckTest {
 
     @Test
     @DisplayName("budget-check=warn with a budget UNDER the ceiling starts with NO banner (bites the over-budget conjunct)")
-    void budgetCheckWarnUnderCeilingStartsWithoutBanner(CapturedOutput out) {
+    void budgetCheckWarnUnderCeilingStartsWithoutBanner(@TempDir Path dir, CapturedOutput out) throws IOException {
         // The (warn, under-ceiling) cell of the policy×budget matrix: warn ALONE must not banner — only
         // the over-budget trip does. Dropping the `budget > ceiling &&` conjunct would print the
         // ACCEPTED-RISK/"allocation can fail" banner on every adequately-provisioned warn boot; this test
         // goes RED under exactly that mutation (review round 2).
-        try (ConfigurableApplicationContext ctx = modeBBuilder().run(
+        try (ConfigurableApplicationContext ctx = modeBBuilder(dir).run(
                 "--companion.memory.max-inbound-depth=1",
                 "--companion.memory.concurrent-pairs=1",
                 "--companion.memory.safety-factor=1.0",
@@ -190,7 +191,8 @@ class DirectMemoryBudgetStartupCheckTest {
                 new ProxyCompanionProperties.Reverse(
                         null,
                         new ProxyCompanionProperties.ReverseModeB(
-                                new ProxyCompanionProperties.Smsc("smsc.example", 2775), true),
+                                new ProxyCompanionProperties.Smsc("smsc.example", 2775), true,
+                                RelayTestFixtures.testOidc()),
                         null));
         assertThatThrownBy(() -> new DirectMemoryBudgetStartupCheck(props).afterPropertiesSet())
                 .isInstanceOf(DirectMemoryBudgetException.class);
@@ -200,36 +202,47 @@ class DirectMemoryBudgetStartupCheckTest {
      * A reverse.mode-b boot builder. The mode-b branch (SMSC endpoint + plaintext opt-in ack, SEC-052/059)
      * is supplied via {@code .properties()} as <em>default</em> properties (lowest precedence) — that is
      * fine because {@code application.yml} has every branch COMMENTED OUT, so these are the only source
-     * for the branch and they bind cleanly (same pattern as {@code BootstrapLifecycleTest}). The
-     * {@code companion.memory.*} overrides, by contrast, MUST beat {@code application.yml}'s live memory
-     * defaults (max-inbound-depth=64, concurrent-pairs=1024, safety-factor=1.5 → a ~6 GiB budget), so
-     * callers pass them as command-line args to {@code run(...)} (highest precedence).
+     * for the branch and they bind cleanly (same pattern as {@code BootstrapLifecycleTest}). Story 3.2
+     * (AD-12 amended 2026-08-18): reverse cells adjudicate — the oidc node is REQUIRED here too
+     * (stand-in provider-url + fixture-CA IdP trust store + the three budget keys at the yml-template
+     * defaults). The {@code companion.memory.*} overrides, by contrast, MUST beat
+     * {@code application.yml}'s live memory defaults (max-inbound-depth=64, concurrent-pairs=1024,
+     * safety-factor=1.5 → a ~6 GiB budget), so callers pass them as command-line args to
+     * {@code run(...)} (highest precedence).
      */
-    private static SpringApplicationBuilder modeBBuilder() {
+    private static SpringApplicationBuilder modeBBuilder(Path dir) throws IOException {
+        Path secret = Files.createFile(dir.resolve("oidc-client-secret"));
+        Path idpTrustStore = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
                         "companion.reverse.mode-b.smsc.host=smsc.example",
                         "companion.reverse.mode-b.smsc.port=2775",
-                        "companion.reverse.mode-b.acknowledged=true");
+                        "companion.reverse.mode-b.acknowledged=true",
+                        "companion.reverse.mode-b.oidc.provider-url=" + OidcDiscoveryStandIn.url(),
+                        "companion.reverse.mode-b.oidc.client-id=smpp-client-confidential",
+                        "companion.reverse.mode-b.oidc.client-secret-path=" + secret,
+                        "companion.reverse.mode-b.oidc.trust-store.path=" + idpTrustStore,
+                        "companion.reverse.mode-b.oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
+                        "companion.reverse.mode-b.oidc.timeout=4s",
+                        "companion.reverse.mode-b.oidc.max-in-flight=64",
+                        "companion.reverse.mode-b.oidc.jwks-cache-ttl=5m");
     }
 
     /**
      * A forward.mode-a boot builder (mirrors {@code BootstrapLifecycleTest.builder}): empty temp files for
      * the cell-required secret paths (existence+readability is what validation checks; the cert/key
-     * content is a runtime TLS concern, Epic 3).
+     * content is a runtime TLS concern, later Epic 3 tasks). NO oidc keys — the forward role is a
+     * trusted-side relay (AD-12 amended 2026-08-18); the reverse role adjudicates.
      */
     private static SpringApplicationBuilder forwardABuilder(Path dir) throws IOException {
         Path cert = Files.createFile(dir.resolve("server.crt"));
         Path key = Files.createFile(dir.resolve("server.key"));
-        Path cred = Files.createFile(dir.resolve("oidc-cred"));
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
                         "companion.forward.mode-a.server-cert.cert-path=" + cert,
                         "companion.forward.mode-a.server-cert.key-path=" + key,
-                        "companion.forward.mode-a.oidc.provider-url=https://idp.example.com",
-                        "companion.forward.mode-a.oidc.client-credential-path=" + cred,
                         "companion.forward.mode-a.routing[0].system-id=carrierOne",
                         "companion.forward.mode-a.routing[0].host=reverse.internal",
                         "companion.forward.mode-a.routing[0].port=2776");

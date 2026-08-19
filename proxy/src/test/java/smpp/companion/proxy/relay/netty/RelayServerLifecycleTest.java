@@ -28,6 +28,7 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
+import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,11 +56,11 @@ class RelayServerLifecycleTest {
 
     @Test
     @DisplayName("mode-b full boot: acceptor binds, serves TCP, runs on named platform threads, stop releases the port")
-    void modeBFullAppBootsAcceptorBindsAndStopsCleanly() throws IOException {
+    void modeBFullAppBootsAcceptorBindsAndStopsCleanly(@TempDir Path dir) throws IOException {
         int port = RelayTestFixtures.freePort();
         EventLoopGroup group;
         RelayServerLifecycle relay;
-        try (ConfigurableApplicationContext ctx = modeBBuilder().run(minimalMemory(port))) {
+        try (ConfigurableApplicationContext ctx = modeBBuilder(dir).run(minimalMemory(port))) {
             relay = ctx.getBean(RelayServerLifecycle.class);
             assertThat(relay.isRunning()).as("the relay acceptor lifecycle must be running").isTrue();
             group = ctx.getBean(EventLoopGroup.class);
@@ -200,28 +201,44 @@ class RelayServerLifecycleTest {
                 "--companion.bind.port=" + port};
     }
 
-    /** A reverse.mode-b boot builder (the branch is supplied as default properties — yml has it commented out, so these are the only source — T5 pattern). */
-    private static SpringApplicationBuilder modeBBuilder() {
+    /**
+     * A reverse.mode-b boot builder (the branch is supplied as default properties — yml has it
+     * commented out, so these are the only source — T5 pattern). Story 3.2 (AD-12 amended
+     * 2026-08-18): reverse cells adjudicate — the oidc node is REQUIRED here too (stand-in
+     * provider-url + fixture-CA IdP trust store + the three budget keys at the yml-template defaults).
+     */
+    private static SpringApplicationBuilder modeBBuilder(Path dir) throws IOException {
+        Path secret = Files.createFile(dir.resolve("oidc-client-secret"));
+        Path idpTrustStore = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
                         "companion.reverse.mode-b.smsc.host=smsc.example",
                         "companion.reverse.mode-b.smsc.port=2775",
-                        "companion.reverse.mode-b.acknowledged=true");
+                        "companion.reverse.mode-b.acknowledged=true",
+                        "companion.reverse.mode-b.oidc.provider-url=" + OidcDiscoveryStandIn.url(),
+                        "companion.reverse.mode-b.oidc.client-id=smpp-client-confidential",
+                        "companion.reverse.mode-b.oidc.client-secret-path=" + secret,
+                        "companion.reverse.mode-b.oidc.trust-store.path=" + idpTrustStore,
+                        "companion.reverse.mode-b.oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
+                        "companion.reverse.mode-b.oidc.timeout=4s",
+                        "companion.reverse.mode-b.oidc.max-in-flight=64",
+                        "companion.reverse.mode-b.oidc.jwks-cache-ttl=5m");
     }
 
-    /** A forward.mode-a boot builder (mirrors BootstrapLifecycleTest.builder — the non-relay cell). */
+    /**
+     * A forward.mode-a boot builder (mirrors BootstrapLifecycleTest.builder — the non-relay cell).
+     * NO oidc keys — the forward role is a trusted-side relay (AD-12 amended 2026-08-18); the
+     * reverse role adjudicates.
+     */
     private static SpringApplicationBuilder forwardABuilder(Path dir) throws IOException {
         Path cert = Files.createFile(dir.resolve("server.crt"));
         Path key = Files.createFile(dir.resolve("server.key"));
-        Path cred = Files.createFile(dir.resolve("oidc-cred"));
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
                         "companion.forward.mode-a.server-cert.cert-path=" + cert,
                         "companion.forward.mode-a.server-cert.key-path=" + key,
-                        "companion.forward.mode-a.oidc.provider-url=https://idp.example.com",
-                        "companion.forward.mode-a.oidc.client-credential-path=" + cred,
                         "companion.forward.mode-a.routing[0].system-id=carrierOne",
                         "companion.forward.mode-a.routing[0].host=reverse.internal",
                         "companion.forward.mode-a.routing[0].port=2776");

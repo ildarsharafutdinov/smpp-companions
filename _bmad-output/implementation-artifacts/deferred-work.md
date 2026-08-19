@@ -454,3 +454,13 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   (`bootRun`/`JavaExec`) is intentionally ungated; COMPILE + TEST are compiler-enforced. **Owner (2026-08-17):
   ledger here** (this entry); AC9 text left as-is with the story Completion Note as the recorded deviation;
   the stale pre-2.2 ledger line refreshed (see the ↳ note above).
+
+## Deferred from: code review of 3-2-oidc-ropc-bind-adjudicator (2026-08-19)
+
+- **Hostless OIDC provider-url passes the scheme-only `isHttps` check [low|pre-existing]** —
+  `https://` or `https://:8443` binds and boots; `CompanionConfigValidator.requireOidc`
+  (proxy/src/main/java/smpp/companion/proxy/config/CompanionConfigValidator.java:295-297) checks
+  scheme only, never `URI.create(...).getHost() == null`. 2.1-era guard re-hung on the reverse
+  validators by story 3.2 T1 (not introduced there). T2's discovery/HttpClient build fails
+  confusingly on the hostless URL — add the host check when T2 lands (story 3.2 Task 2) or 3.3.
+  Found by code review 2026-08-19 (Edge Case Hunter layer).

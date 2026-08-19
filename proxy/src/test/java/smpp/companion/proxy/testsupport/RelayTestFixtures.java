@@ -1,8 +1,12 @@
 package smpp.companion.proxy.testsupport;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.List;
 
@@ -32,6 +36,47 @@ public final class RelayTestFixtures {
      * the direct-construction fixtures so they stay uniform with real boots (Story 2.2 T7 owner FIXME).
      */
     public static final Duration DEFAULT_ADJUDICATION_DEADLINE = Duration.ofSeconds(4);
+
+    /**
+     * PKCS12 password of the Keycloak fixture's {@code truststore.p12} / {@code client-keystore.p12}
+     * ({@code keycloak/certs/} — see {@code KeycloakFixture.STORE_PASSWORD}; restated here because
+     * that constant is package-private to {@code security/}). NOT a production secret.
+     */
+    public static final String IDP_STORE_PASSWORD = "smpp-test";
+
+    /**
+     * A minimal VALID {@link ProxyCompanionProperties.Oidc} for direct-construction test fixtures
+     * (Story 3.2; the oidc node lives on the REVERSE cells per the AD-12 amendment of 2026-08-18).
+     * Stand-in provider-url; dummy paths — these fixtures feed relay-level tests that never run the
+     * config validator, so the files need not exist. Budget values are the yml-template defaults.
+     */
+    public static ProxyCompanionProperties.Oidc testOidc() {
+        return new ProxyCompanionProperties.Oidc(
+                OidcDiscoveryStandIn.url(), "smpp-client-confidential",
+                "/run/secrets/oidc-client-secret",
+                new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
+                Duration.ofSeconds(4), 64, Duration.ofMinutes(5));
+    }
+
+    /**
+     * Copies the Keycloak fixture's IdP trust store ({@code keycloak/certs/truststore.p12}, the
+     * minimal single-CA anchor — AD-13, never JDK cacerts) to {@code target} and returns it: the
+     * {@code companion.reverse.mode-*.oidc.trust-store.path} fixture for reverse-cell configs
+     * (Story 3.2 T1). Anchoring the fixture CA — rather than a random generated cert — is what lets
+     * the same config keep passing from T2 on, when the adapter's discovery/SSLContext build actually
+     * handshakes with the shared {@link OidcDiscoveryStandIn} (its server cert chains to that CA).
+     */
+    public static Path idpTrustStoreFixture(Path target) {
+        try (InputStream in = RelayTestFixtures.class.getResourceAsStream("/keycloak/certs/truststore.p12")) {
+            if (in == null) {
+                throw new IllegalStateException("fixture resource missing: /keycloak/certs/truststore.p12");
+            }
+            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+            return target;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
 
     /**
      * Probes a free ephemeral port (bound then immediately released). Probe-then-use carries an
@@ -72,7 +117,7 @@ public final class RelayTestFixtures {
                 new ProxyCompanionProperties.Reverse(
                         null,
                         new ProxyCompanionProperties.ReverseModeB(
-                                new ProxyCompanionProperties.Smsc(smscHost, smscPort), true),
+                                new ProxyCompanionProperties.Smsc(smscHost, smscPort), true, testOidc()),
                         null));
     }
 

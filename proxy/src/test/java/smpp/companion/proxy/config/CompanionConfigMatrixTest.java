@@ -199,17 +199,17 @@ class CompanionConfigMatrixTest {
     // --- AC4 OIDC + ports --------------------------------------------------------------------
 
     @Test
-    @DisplayName("SEC-053: forward with a non-https OIDC provider URL -> refuse")
+    @DisplayName("SEC-053: reverse with a non-https OIDC provider URL -> refuse")
     void sec053_nonHttpsOidcProviderRefuses() {
-        assertRefused(TestCompanionConfigs.forwardA(dir)
-                        .put("companion.forward.mode-a.oidc.provider-url", "http://idp.example.com"),
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.provider-url", "http://idp.example.com"),
                 "SEC-053", "SEC-053");
     }
 
     @Test
-    @DisplayName("SEC-054: forward with an absent OIDC provider URL -> refuse")
+    @DisplayName("SEC-054: reverse with an absent OIDC provider URL -> refuse")
     void sec054_absentOidcProviderRefuses() {
-        assertRefused(TestCompanionConfigs.forwardA(dir).remove("companion.forward.mode-a.oidc.provider-url"),
+        assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.oidc.provider-url"),
                 "SEC-054", "SEC-054");
     }
 
@@ -250,11 +250,13 @@ class CompanionConfigMatrixTest {
 
     static Stream<Arguments> requiredSecretTypes() {
         // The trust store is validated by the deeper SEC-050 (5-state) + SEC-096 (cell) checks, not
-        // requireReadableFile; it is omitted here and covered by those scenarios.
+        // requireReadableFile; it is omitted here and covered by those scenarios. The oidc
+        // client-secret-path is option-TYPED since 3.2 T1 (the exactly-one-of client-auth pair), so
+        // REMOVING it no longer refuses — its missing-file case binds a bad path instead (see
+        // ac8_clientSecretMissingFileRefuses).
         return Stream.of(
                 Arguments.of("server cert (forward A)", "forwardA", "companion.forward.mode-a.server-cert.cert-path"),
                 Arguments.of("server key (forward A)", "forwardA", "companion.forward.mode-a.server-cert.key-path"),
-                Arguments.of("oidc client credential (forward A)", "forwardA", "companion.forward.mode-a.oidc.client-credential-path"),
                 Arguments.of("client cert (reverse C)", "reverseC", "companion.reverse.mode-c.client-cert.cert-path"),
                 Arguments.of("client key (reverse C)", "reverseC", "companion.reverse.mode-c.client-cert.key-path"));
     }
@@ -326,6 +328,120 @@ class CompanionConfigMatrixTest {
                 Arguments.of("zero trustedCertEntry", "zero-entries", "SEC-050"));
     }
 
+    // --- Story 3.2 T1 (AC8; re-targeted to the reverse role by the AD-12 amendment of 2026-08-18 —
+    //     every reverse cell adjudicates, forward cells carry no oidc node): the reshaped oidc.*
+    //     surface. Structural conformance is annotation-level (@NotNull requiredness — the three
+    //     budget keys are required, their defaults live in the application.yml reverse template;
+    //     @Min(1) on max-in-flight, @NotBlank on client-id, @DurationMin(nanos=1) on jwks-cache-ttl
+    //     — the HV annotation because jakarta @Positive cannot validate Duration, HV000030); the
+    //     validator adds FILE EXISTENCE for every configured path. The
+    //     timeout window (2s..5s, PERF-3) and the deeper material checks (trust-store PKIX load) are
+    //     deliberately NOT validated here — they are an operator contract (yml comment) and the
+    //     T2+ adapter's SSLContext build
+    //     (fail-closed bean-init refusal) respectively. ---
+
+    @Test
+    @DisplayName("AD-12 amendment: a stray companion.forward.mode-a.oidc.* key is rejected (node is structurally gone)")
+    void amendment_strayForwardOidcKeyRefuses() {
+        // The forward role is a trusted-side relay — no OIDC. ForwardModeA has no oidc component, so
+        // any companion.forward.mode-a.oidc.* key is an unknown nested field; ignoreUnknownFields=false
+        // refuses it at bind time (fail-closed — the pre-amendment shape cannot silently return).
+        runner(TestCompanionConfigs.forwardA(dir)
+                .put("companion.forward.mode-a.oidc.provider-url", "https://idp.example.com"))
+                .run(ctx -> {
+                    assertThat(ctx).as("a stray forward oidc key must refuse startup").hasFailed();
+                    assertThat(chainMessages(ctx.getStartupFailure()))
+                            .as("the refusal must reference the unknown forward oidc property")
+                            .anyMatch(msg -> msg.contains("oidc"));
+                });
+    }
+
+    @Test
+    @DisplayName("AC8: an absent OIDC client-id -> refuse (@NotNull)")
+    void ac8_absentOidcClientIdRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.oidc.client-id"),
+                "AC8 absent client-id", "client-id is required");
+    }
+
+    @ParameterizedTest(name = "AD-12: oidc.client-id \"{0}\" -> refuse (@NotBlank)")
+    @ValueSource(strings = {"", "   "})
+    @DisplayName("AD-12: a blank/whitespace oidc.client-id -> refuse (binds the exact blank value)")
+    void ac8_blankOidcClientIdRefuses(String bad) {
+        // null-vs-blank rule: @NotNull (above) catches the absent key; @NotBlank catches the BOUND
+        // empty/whitespace value — a blank client_id would boot T1 and send "" toward the provider at T2.
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.client-id", bad),
+                "AC8 blank client-id", "client-id must not be blank");
+    }
+
+    @ParameterizedTest(name = "AC8: absent oidc.{0} -> refuse (required budget key, @NotNull)")
+    @ValueSource(strings = {"timeout", "max-in-flight", "jwks-cache-ttl"})
+    @DisplayName("AC8: an absent oidc budget key -> refuse (the defaults ship in the yml template, not the record)")
+    void ac8_absentOidcBudgetKeyRefuses(String key) {
+        assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.oidc." + key),
+                "AC8 absent " + key, key + " is required");
+    }
+
+    @ParameterizedTest(name = "AD-28(4): oidc.max-in-flight {0} -> refuse (@Min(1))")
+    @ValueSource(strings = {"0", "-3"})
+    @DisplayName("AD-28(4): oidc.max-in-flight below 1 -> refuse (binds the exact invalid value)")
+    void ac8_oidcMaxInFlightBelowOneRefuses(String bad) {
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.max-in-flight", bad),
+                "AC8 max-in-flight " + bad, "max-in-flight must be >= 1");
+    }
+
+    @Test
+    @DisplayName("AD-28(4): oidc.max-in-flight=1 (the @Min boundary) boots")
+    void ac8_oidcMaxInFlightBoundaryBoots() {
+        runner(TestCompanionConfigs.reverseA(dir).put("companion.reverse.mode-a.oidc.max-in-flight", "1"))
+                .run(ctx -> assertThat(ctx).as("max-in-flight=1 is the legal floor").hasNotFailed());
+    }
+
+    @ParameterizedTest(name = "AD-28(2): oidc.jwks-cache-ttl {0} -> refuse (@DurationMin(nanos=1))")
+    @ValueSource(strings = {"0s", "-30s"})
+    @DisplayName("AD-28(2): a non-positive oidc.jwks-cache-ttl -> refuse (binds the exact invalid value)")
+    void ac8_oidcJwksCacheTtlNonPositiveRefuses(String bad) {
+        // zero/negative TTL would spin or throw in the T2 refresh-ahead scheduler — refuse at bind.
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.jwks-cache-ttl", bad),
+                "AC8 jwks-cache-ttl " + bad, "jwks-cache-ttl must be positive");
+    }
+
+    @Test
+    @DisplayName("SEC-060: a missing oidc.client-secret-path file -> refuse (binds the bad path)")
+    void ac8_clientSecretMissingFileRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.client-secret-path", "/no/such/oidc-client-secret"),
+                "AC8 missing client secret", "does not exist");
+    }
+
+    @Test
+    @DisplayName("AC8: an absent oidc.client-secret-path -> refuse (@NotNull — the sole provider client auth)")
+    void ac8_absentClientSecretPathRefuses() {
+        // 2026-08-19: the RFC 8705 client-mtls-keystore arm was removed — client-secret-path is the
+        // sole provider client auth, so its absence refuses (@NotNull, the absent-budget-key pattern).
+        assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.oidc.client-secret-path"),
+                "AC8 absent client secret", "client-secret-path is required");
+    }
+
+    @Test
+    @DisplayName("AC8: a missing oidc.trust-store file -> refuse (IdP trust is file-backed, AD-13)")
+    void ac8_idpTrustStoreMissingFileRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.trust-store.path", "/no/such/idp-truststore.p12"),
+                "AC8 missing IdP trust store", "does not exist");
+    }
+
+    @Test
+    @DisplayName("AC8: an absent oidc.trust-store node -> refuse (@NotNull)")
+    void ac8_absentIdpTrustStoreRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .remove("companion.reverse.mode-a.oidc.trust-store.path")
+                        .remove("companion.reverse.mode-a.oidc.trust-store.password"),
+                "AC8 absent IdP trust store", "trust-store is required");
+    }
+
     // --- Review hardening (code review 2026-08-04): biting tests for guards that previously lacked coverage ---
 
     @Test
@@ -380,8 +496,7 @@ class CompanionConfigMatrixTest {
                 new ProxyCompanionProperties.Forward(
                         new ProxyCompanionProperties.ForwardModeA(
                                 new ProxyCompanionProperties.ServerCert("/run/secrets/server.crt", "/run/secrets/server.key"),
-                                List.of(), // explicitly empty routing list
-                                new ProxyCompanionProperties.Oidc("https://idp.example.com", "/run/secrets/oidc")),
+                                List.of()), // explicitly empty routing list
                         null),
                 null);
         var violations = validator.validate(props);
@@ -472,10 +587,10 @@ class CompanionConfigMatrixTest {
     }
 
     @Test
-    @DisplayName("SEC-054: forward with a blank OIDC provider-url -> refuse (bites the providerUrl.isBlank guard)")
+    @DisplayName("SEC-054: reverse with a blank OIDC provider-url -> refuse (bites the providerUrl.isBlank guard)")
     void sec054_blankOidcProviderUrlRefuses() {
-        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.forward.mode-a.oidc.provider-url", ""),
-                "SEC-054 blank provider-url", "provider-url is required for the forward role");
+        assertRefused(TestCompanionConfigs.reverseA(dir).put("companion.reverse.mode-a.oidc.provider-url", ""),
+                "SEC-054 blank provider-url", "provider-url is required for the reverse role");
     }
 
     @Test
@@ -578,8 +693,7 @@ class CompanionConfigMatrixTest {
                 new ProxyCompanionProperties.Forward(
                         new ProxyCompanionProperties.ForwardModeA(
                                 new ProxyCompanionProperties.ServerCert(certPath, "/run/secrets/server.key"),
-                                routing,
-                                new ProxyCompanionProperties.Oidc("https://idp.example.com", "/run/secrets/oidc")),
+                                routing),
                         null),
                 null);
     }
@@ -597,7 +711,11 @@ class CompanionConfigMatrixTest {
                 new ProxyCompanionProperties.Reverse(
                         new ProxyCompanionProperties.ReverseModeA(
                                 new ProxyCompanionProperties.Smsc("smsc.carrier.example", 2775),
-                                new ProxyCompanionProperties.TrustStore(trustStorePath, null)),
+                                new ProxyCompanionProperties.TrustStore(trustStorePath, null),
+                                new ProxyCompanionProperties.Oidc("https://idp.example.com", "smpp-client",
+                                        "/run/secrets/oidc-client-secret",
+                                        new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
+                                        Duration.ofSeconds(4), 64, Duration.ofMinutes(5))),
                         null, null));
     }
 

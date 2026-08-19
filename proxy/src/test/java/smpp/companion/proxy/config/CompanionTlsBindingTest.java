@@ -41,17 +41,15 @@ class CompanionTlsBindingTest {
         // comes from application.yml — catching a field-name/yml-key drift an inspection-only check misses.
         // The memory overrides are run() args (highest precedence): since T5b the AD-30 self-check is
         // unconditional, and yml's realistic budget (≈ 6 GiB) exceeds the test JVM's direct-memory ceiling.
+        // NO oidc keys — the forward role is a trusted-side relay (AD-12 amended 2026-08-18).
         Path cert = Files.createFile(dir.resolve("server.crt"));
         Path key = Files.createFile(dir.resolve("server.key"));
-        Path cred = Files.createFile(dir.resolve("oidc-cred"));
         try (ConfigurableApplicationContext ctx =
                      new SpringApplicationBuilder(ProxyCompanionApplication.class)
                              .web(WebApplicationType.NONE)
                              .properties(
                                      "companion.forward.mode-a.server-cert.cert-path=" + cert,
                                      "companion.forward.mode-a.server-cert.key-path=" + key,
-                                     "companion.forward.mode-a.oidc.provider-url=https://idp.example.com",
-                                     "companion.forward.mode-a.oidc.client-credential-path=" + cred,
                                      "companion.forward.mode-a.routing[0].system-id=carrierOne",
                                      "companion.forward.mode-a.routing[0].host=reverse.internal",
                                      "companion.forward.mode-a.routing[0].port=2776")

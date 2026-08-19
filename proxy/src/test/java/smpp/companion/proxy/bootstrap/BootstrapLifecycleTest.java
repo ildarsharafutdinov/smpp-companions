@@ -70,19 +70,17 @@ class BootstrapLifecycleTest {
      * A forward+A boot: the common keys come from application.yml (except the memory overrides passed as
      * run() args — see MINIMAL_MEMORY); the forward.mode-a branch supplies the cell-required material.
      * The secret paths point at empty files under the temp dir (existence+readability is what 1.3
-     * validates; the cert/key content is a runtime TLS concern, Epic 3).
+     * validates; the cert/key content is a runtime TLS concern, Epic 3). NO oidc keys — the forward
+     * role is a trusted-side relay (AD-12 amended 2026-08-18); the reverse role adjudicates.
      */
     private static SpringApplicationBuilder builder(Path dir) throws IOException {
         Path cert = Files.createFile(dir.resolve("server.crt"));
         Path key = Files.createFile(dir.resolve("server.key"));
-        Path cred = Files.createFile(dir.resolve("oidc-cred"));
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
                         "companion.forward.mode-a.server-cert.cert-path=" + cert,
                         "companion.forward.mode-a.server-cert.key-path=" + key,
-                        "companion.forward.mode-a.oidc.provider-url=https://idp.example.com",
-                        "companion.forward.mode-a.oidc.client-credential-path=" + cred,
                         "companion.forward.mode-a.routing[0].system-id=carrierOne",
                         "companion.forward.mode-a.routing[0].host=reverse.internal",
                         "companion.forward.mode-a.routing[0].port=2776");

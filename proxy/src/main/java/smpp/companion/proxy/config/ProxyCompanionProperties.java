@@ -4,7 +4,10 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+
+import org.hibernate.validator.constraints.time.DurationMin;
 
 import java.time.Duration;
 import java.util.List;
@@ -121,56 +124,65 @@ public record ProxyCompanionProperties(
     }
 
     /**
-     * forward × A: server cert+key + routing + OIDC (SMSC NOT required, SEC-097).
+     * forward × A (internet leg, one-way TLS): internet-leg server cert+key + routing. NO OIDC — the
+     * forward role is a trusted-side relay (AD-12 amended 2026-08-18: the reverse role adjudicates).
+     * SMSC NOT required (SEC-097).
      */
     public record ForwardModeA(
             @NotNull(message = "companion.forward.mode-a.server-cert is required (forward A/C, SEC-056) — refusing to start.")
             @Valid ServerCert serverCert,
             @NotNull(message = "companion.forward.mode-a.routing is required and must be non-empty (AD-29, SEC-058) — refusing to start.")
-            @Valid List<RoutingEntry> routing,
-            @NotNull(message = "companion.forward.mode-a.oidc is required (forward performs OIDC, AD-12, SEC-054) — refusing to start.")
-            @Valid Oidc oidc
+            @Valid List<RoutingEntry> routing
     ) {
     }
 
     /**
-     * forward × C: forward-A material + trust store (mTLS to the reverse proxy).
+     * forward × C (internet leg, mTLS): forward-A material + trust store validating the reverse
+     * proxy's client cert. NO OIDC — trusted-side relay (AD-12 amended 2026-08-18).
      */
     public record ForwardModeC(
             @NotNull(message = "companion.forward.mode-c.server-cert is required (forward A/C, SEC-056) — refusing to start.")
             @Valid ServerCert serverCert,
             @NotNull(message = "companion.forward.mode-c.routing is required and must be non-empty (AD-29, SEC-058) — refusing to start.")
             @Valid List<RoutingEntry> routing,
-            @NotNull(message = "companion.forward.mode-c.oidc is required (forward performs OIDC, AD-12, SEC-054) — refusing to start.")
-            @Valid Oidc oidc,
             @NotNull(message = "companion.forward.mode-c.trust-store is required (forward C mTLS, SEC-050) — refusing to start.")
             @Valid TrustStore trustStore
     ) {
     }
 
     /**
-     * reverse × A: SMSC endpoint + client trust store (forward/SMSC server-cert anchor, SEC-096).
+     * reverse × A (internet leg, one-way TLS): SMSC endpoint (plaintext trusted SMSC leg) + client
+     * trust store anchoring the forward proxy's internet-leg server cert (SEC-096) + OIDC — the
+     * reverse role adjudicates every bind before the SMSC (AD-12 amended 2026-08-18).
      */
     public record ReverseModeA(
             @NotNull(message = "companion.reverse.mode-a.smsc is required (reverse, SEC-059) — refusing to start.")
             @Valid Smsc smsc,
             @NotNull(message = "companion.reverse.mode-a.trust-store is required (reverse A, SEC-096) — refusing to start.")
-            @Valid TrustStore trustStore
+            @Valid TrustStore trustStore,
+            @NotNull(message = "companion.reverse.mode-a.oidc is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
+            @Valid Oidc oidc
     ) {
     }
 
     /**
-     * reverse × B: plaintext. {@code acknowledged} MUST be true to start (SEC-052 warn+ack+start).
+     * reverse × B (plaintext internet leg, direct client→reverse — no forward proxy exists).
+     * {@code acknowledged} MUST be true to start (SEC-052 warn+ack+start) + OIDC — the reverse still
+     * adjudicates in Mode B ("plaintext + ROPC"; AD-12 amended 2026-08-18).
      */
     public record ReverseModeB(
             @NotNull(message = "companion.reverse.mode-b.smsc is required (reverse, SEC-059) — refusing to start.")
             @Valid Smsc smsc,
-            boolean acknowledged   // companion.reverse.mode-b.acknowledged — validated to be true
+            boolean acknowledged,   // companion.reverse.mode-b.acknowledged — validated to be true
+            @NotNull(message = "companion.reverse.mode-b.oidc is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
+            @Valid Oidc oidc
     ) {
     }
 
     /**
-     * reverse × C: SMSC + client cert+key (mTLS, SEC-057) + trust store.
+     * reverse × C (internet leg, mTLS): SMSC endpoint (plaintext trusted SMSC leg) + client cert+key
+     * presented to the forward proxy (SEC-057) + trust store (internet leg) + OIDC (AD-12 amended
+     * 2026-08-18).
      */
     public record ReverseModeC(
             @NotNull(message = "companion.reverse.mode-c.smsc is required (reverse, SEC-059) — refusing to start.")
@@ -178,7 +190,9 @@ public record ProxyCompanionProperties(
             @NotNull(message = "companion.reverse.mode-c.client-cert is required (reverse C mTLS, SEC-057) — refusing to start.")
             @Valid ClientCert clientCert,
             @NotNull(message = "companion.reverse.mode-c.trust-store is required (reverse C, SEC-050) — refusing to start.")
-            @Valid TrustStore trustStore
+            @Valid TrustStore trustStore,
+            @NotNull(message = "companion.reverse.mode-c.oidc is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
+            @Valid Oidc oidc
     ) {
     }
 
@@ -195,13 +209,81 @@ public record ProxyCompanionProperties(
     }
 
     /**
-     * OIDC provider (the forward role performs OIDC, AD-12).
+     * OIDC provider (the reverse role performs OIDC &mdash; sole enforcement point before the SMSC;
+     * AD-12 amended 2026-08-18) &mdash; the Epic-3 ROPC adapter's whole
+     * config surface (Story 3.2 AC8). The old {@code client-credential-path} key is REPLACED by the
+     * required {@code client-secret-path} &mdash; a pre-release rename, no transition shim.
+     * (2026-08-19: the optional RFC 8705 {@code client-mtls-keystore} arm was removed pre-release
+     * &mdash; {@code client_secret} is the sole provider client auth.)
+     *
+     * <p><b>Budget keys are REQUIRED</b> ({@code timeout}, {@code max-in-flight},
+     * {@code jwks-cache-ttl} are all {@code @NotNull}; there is NO compact-ctor normalization and no
+     * default constants). <b>Structural note &mdash; why branch keys cannot carry live yml
+     * defaults:</b> the yml branch templates are commented, and any uncommented
+     * {@code companion.<role>.<mode>} key binds that branch for EVERY deployment, so every other
+     * cell's boot refuses ("found 2", AD-17 single-branch). yml is therefore a DOCUMENTATION
+     * surface: the reverse template carries the documented values ({@code 4s} / {@code 64} /
+     * {@code 5m}) an operator copies when uncommenting, while a hand-rolled config that omits a
+     * budget key refuses startup &mdash; the {@code companion.bind.adjudication-deadline} pattern
+     * (runner/test configs state them explicitly; runner boots do not load application.yml).
+     *
+     * <p><b>Operator guidance (AC4):</b> prefer JWT-issuing providers. The opaque-token RFC 7662
+     * introspection fallback is online-only (every opaque bind hits the introspection endpoint) with
+     * no offline cryptographic backstop, and introspection results are never cached (AD-12). A
+     * docs-time preference, not a runtime warning.
+     *
+     * @param providerUrl the OIDC provider's base URL ({@code https} required, SEC-053/054); discovery
+     *        ({@code /.well-known/openid-configuration}) and the token/introspection endpoints are
+     *        derived from it (AC7/AC4) &mdash; no per-endpoint override keys.
+     * @param clientId the OAuth {@code client_id} the proxy authenticates as toward the provider
+     *        (AD-12).
+     * @param clientSecretPath file path of the OAuth {@code client_secret} (AD-18 &mdash; a path,
+     *        never an inline value) &mdash; the sole provider client auth, required.
+     * @param trustStore the dedicated IdP trust store (AD-13/AD-26: never JDK {@code cacerts});
+     *        file existence/readability at bind time &mdash; the full 5-state PKIX load is the T2+
+     *        adapter's SSLContext build (fail-closed bean-init refusal), not the config validator.
+     * @param timeout the per-call HTTP budget for one provider round trip (token endpoint or
+     *        introspection). NOT validator-enforced: the inclusive window [2s, 5s] (PERF-3) and the
+     *        {@code <= companion.bind.adjudication-deadline} relation are an OPERATOR CONTRACT
+     *        documented in application.yml (the OIDC_TIMEOUT comment) &mdash; the per-call budget
+     *        must fit inside the whole-adjudication budget the relay hands the verifier. Required
+     *        key; the yml reverse template documents {@code 4s} (matching the adjudication-deadline
+     *        default) &mdash; there is no in-record default.
+     * @param maxInFlight the admission cap on CONCURRENT bind adjudications (AD-28(4)). The adapter
+     *        owns a single bounded virtual-thread executor of exactly this capacity, guarded by an
+     *        admission semaphore: each adjudication holds one permit for its whole lifetime, and a
+     *        bind arriving when all permits are held is refused fail-closed
+     *        ({@code DenyIndeterminate}) WITHOUT starting any wire call to the provider. It is a
+     *        REJECTION threshold, not a queue depth &mdash; nothing waits, nothing queues (AD-4: no
+     *        unbounded admission). Size it comfortably above the expected concurrent bind rate so
+     *        saturation means a provider stall, not normal load. Required key; the yml reverse
+     *        template documents {@code 64} &mdash; no in-record default.
+     * @param jwksCacheTtl how long the locally cached JWKS is served before the background refresh
+     *        swaps it (AD-28(2)); must be positive. Refresh-ahead keeps verification offline in the
+     *        common case; a kid miss triggers an immediate background refresh but never a
+     *        foreground refresh-and-retry on the bind path. Positivity is annotation-enforced
+     *        ({@code @DurationMin(nanos = 1)} &mdash; strictly positive; the HV-specific annotation
+     *        because jakarta {@code @Positive} has no Duration validator, HV000030); the yml
+     *        reverse template documents {@code 5m} &mdash; no in-record default.
      */
     public record Oidc(
-            @NotNull(message = "OIDC provider-url is required (forward performs OIDC, AD-12, SEC-054) — refusing to start.")
+            @NotNull(message = "OIDC provider-url is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
             String providerUrl,                   // .provider-url (https required, SEC-053/054)
-            @NotNull(message = "OIDC client-credential-path is required (forward, AD-18, SEC-060) — refusing to start.")
-            String clientCredentialPath           // .client-credential-path (file path, SEC-060)
+            @NotNull(message = "OIDC client-id is required (reverse performs OIDC, AD-12) — refusing to start.")
+            @NotBlank(message = "OIDC client-id must not be blank (reverse performs OIDC, AD-12) — refusing to start.")
+            String clientId,                      // .client-id (@NotNull catches null, @NotBlank catches "" / "   ")
+            @NotNull(message = "OIDC client-secret-path is required (AD-18, SEC-060) — refusing to start.")
+            String clientSecretPath,              // .client-secret-path (file path, SEC-060; sole provider client auth)
+            @NotNull(message = "OIDC trust-store is required (IdP trust never falls back to cacerts, AD-13/AD-26) — refusing to start.")
+            @Valid TrustStore trustStore,         // .trust-store (file-existence at bind; 5-state PKIX load at the T2+ adapter bean init)
+            @NotNull(message = "OIDC timeout is required (reverse, PERF-3) — refusing to start.")
+            Duration timeout,                     // .timeout (2s..5s window + <= adjudication-deadline = documented operator contract, NOT validated; yml documents 4s)
+            @NotNull(message = "OIDC max-in-flight is required (reverse, AD-28(4)) — refusing to start.")
+            @Min(value = 1, message = "oidc.max-in-flight must be >= 1 — refusing to start (AD-28(4)).")
+            Integer maxInFlight,                  // .max-in-flight (admission cap; yml documents 64 — no in-record default)
+            @NotNull(message = "OIDC jwks-cache-ttl is required (reverse, AD-28(2)) — refusing to start.")
+            @DurationMin(nanos = 1, message = "oidc.jwks-cache-ttl must be positive (AD-28(2)) — refusing to start.")
+            Duration jwksCacheTtl                 // .jwks-cache-ttl (@DurationMin(nanos=1) = strictly positive; jakarta @Positive cannot validate Duration; yml documents 5m — no in-record default)
     ) {
     }
 
