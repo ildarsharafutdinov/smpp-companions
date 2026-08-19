@@ -120,6 +120,19 @@ public final class OidcDiscoveryStandIn {
                 """.formatted(base, realm, realm, realm);
     }
 
+    /**
+     * The fixture-cert server-side TLS context, shared with ad-hoc test HTTPS servers that need the
+     * same trust story as the shared stand-in (their certs chain to the fixture CA the reverse-cell
+     * configs anchor) — Story 3.2 T2's discovery failure-matrix servers.
+     */
+    public static SSLContext fixtureServerSslContext() {
+        try {
+            return serverSslContext();
+        } catch (IOException e) {
+            throw new IllegalStateException("could not build the fixture server SSLContext", e);
+        }
+    }
+
     /** Server-side TLS context from the fixture's PEM cert + PKCS#8 key; no client auth. */
     private static SSLContext serverSslContext() throws IOException {
         try {

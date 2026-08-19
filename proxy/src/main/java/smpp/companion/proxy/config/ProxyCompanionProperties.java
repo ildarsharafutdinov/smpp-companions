@@ -9,6 +9,7 @@ import jakarta.validation.constraints.NotNull;
 
 import org.hibernate.validator.constraints.time.DurationMin;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -232,9 +233,13 @@ public record ProxyCompanionProperties(
      * no offline cryptographic backstop, and introspection results are never cached (AD-12). A
      * docs-time preference, not a runtime warning.
      *
-     * @param providerUrl the OIDC provider's base URL ({@code https} required, SEC-053/054); discovery
-     *        ({@code /.well-known/openid-configuration}) and the token/introspection endpoints are
-     *        derived from it (AC7/AC4) &mdash; no per-endpoint override keys.
+     * @param providerUrl the OIDC provider's base URL as a {@link URI} ({@code https} + a host required,
+     *        SEC-053/054 &mdash; checked by the validator; a string that is not a URI at all refuses at
+     *        BIND time, conversion failure); discovery ({@code /.well-known/openid-configuration}) and
+     *        the token/introspection endpoints are derived from it (AC7/AC4) &mdash; no per-endpoint
+     *        override keys. The compact constructor strips exactly one trailing {@code '/'} so the
+     *        well-known-path join never doubles a slash (canonicalization only &mdash; no value is ever
+     *        invented; the amendment-1 no-defaulting rule concerns the budget keys).
      * @param clientId the OAuth {@code client_id} the proxy authenticates as toward the provider
      *        (AD-12).
      * @param clientSecretPath file path of the OAuth {@code client_secret} (AD-18 &mdash; a path,
@@ -268,7 +273,7 @@ public record ProxyCompanionProperties(
      */
     public record Oidc(
             @NotNull(message = "OIDC provider-url is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
-            String providerUrl,                   // .provider-url (https required, SEC-053/054)
+            URI providerUrl,                      // .provider-url (URI-typed; https + host checked by the validator, SEC-053/054)
             @NotNull(message = "OIDC client-id is required (reverse performs OIDC, AD-12) — refusing to start.")
             @NotBlank(message = "OIDC client-id must not be blank (reverse performs OIDC, AD-12) — refusing to start.")
             String clientId,                      // .client-id (@NotNull catches null, @NotBlank catches "" / "   ")
@@ -285,6 +290,27 @@ public record ProxyCompanionProperties(
             @DurationMin(nanos = 1, message = "oidc.jwks-cache-ttl must be positive (AD-28(2)) — refusing to start.")
             Duration jwksCacheTtl                 // .jwks-cache-ttl (@DurationMin(nanos=1) = strictly positive; jakarta @Positive cannot validate Duration; yml documents 5m — no in-record default)
     ) {
+
+        /**
+         * Construction-time canonicalization (the 2026-08-19 T2 FIXME pass): strip exactly ONE
+         * trailing {@code '/'} from the bound base URL, so joining
+         * {@code <issuer>/.well-known/openid-configuration} never doubles a slash and the discovered
+         * {@code issuer} equality compares slash-free forms. The compact ctor is the only config-layer
+         * place a record can rewrite its own value &mdash; a Bean-Validation constraint can only accept
+         * or reject, never normalize. Null-tolerant by necessity: binding instantiates the record
+         * BEFORE validation runs (an absent key, or an empty string &mdash; which converts to null for
+         * non-String targets &mdash; arrives here as null), and the component {@code @NotNull} is what
+         * refuses it; a ctor null guard would preempt that message with a bare NPE (the same reason
+         * no other component carries one).
+         */
+        public Oidc {
+            if (providerUrl != null) {
+                String url = providerUrl.toString();
+                if (url.endsWith("/")) {
+                    providerUrl = URI.create(url.substring(0, url.length() - 1));
+                }
+            }
+        }
     }
 
     /**

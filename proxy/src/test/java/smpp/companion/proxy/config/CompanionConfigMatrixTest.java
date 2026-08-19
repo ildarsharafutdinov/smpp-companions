@@ -207,6 +207,18 @@ class CompanionConfigMatrixTest {
     }
 
     @Test
+    @DisplayName("SEC-053: reverse with a HOSTLESS OIDC provider URL (https://:8443) -> refuse")
+    void sec053_hostlessOidcProviderUrlRefuses() {
+        // The exact bad value is BOUND through real Spring binding (never the key removed — the
+        // null-vs-blank trap): a scheme-only URL parses as a URI with NO host. The 2026-08-19 T2
+        // FIXME pass made provider-url a URI and moved the host check out of the discovery build
+        // into this config-layer validator (the deferred 2.1-era scheme-only gap's final home).
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.provider-url", "https://:8443"),
+                "SEC-053 hostless", "SEC-053");
+    }
+
+    @Test
     @DisplayName("SEC-054: reverse with an absent OIDC provider URL -> refuse")
     void sec054_absentOidcProviderRefuses() {
         assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.oidc.provider-url"),
@@ -587,10 +599,14 @@ class CompanionConfigMatrixTest {
     }
 
     @Test
-    @DisplayName("SEC-054: reverse with a blank OIDC provider-url -> refuse (bites the providerUrl.isBlank guard)")
+    @DisplayName("SEC-054: reverse with a blank OIDC provider-url -> refuse (collapses into the absent arm)")
     void sec054_blankOidcProviderUrlRefuses() {
+        // The exact bad value ("") is BOUND, never the key removed — the null-vs-blank discipline.
+        // Since provider-url became URI-typed (2026-08-19 T2 FIXME pass), an empty string converts
+        // to NULL at bind time (non-String target), so blank and absent collapse into the SAME
+        // component-@NotNull refusal — one arm fewer, the same fail-closed outcome.
         assertRefused(TestCompanionConfigs.reverseA(dir).put("companion.reverse.mode-a.oidc.provider-url", ""),
-                "SEC-054 blank provider-url", "provider-url is required for the reverse role");
+                "SEC-054 blank provider-url", "OIDC provider-url is required");
     }
 
     @Test
@@ -712,7 +728,7 @@ class CompanionConfigMatrixTest {
                         new ProxyCompanionProperties.ReverseModeA(
                                 new ProxyCompanionProperties.Smsc("smsc.carrier.example", 2775),
                                 new ProxyCompanionProperties.TrustStore(trustStorePath, null),
-                                new ProxyCompanionProperties.Oidc("https://idp.example.com", "smpp-client",
+                                new ProxyCompanionProperties.Oidc(java.net.URI.create("https://idp.example.com"), "smpp-client",
                                         "/run/secrets/oidc-client-secret",
                                         new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
                                         Duration.ofSeconds(4), 64, Duration.ofMinutes(5))),

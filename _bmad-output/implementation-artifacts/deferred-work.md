@@ -464,3 +464,31 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   validators by story 3.2 T1 (not introduced there). T2's discovery/HttpClient build fails
   confusingly on the hostless URL — add the host check when T2 lands (story 3.2 Task 2) or 3.3.
   Found by code review 2026-08-19 (Edge Case Hunter layer).
+  **✅ RESOLVED 2026-08-19 (Story 3.2 T2 user-directed FIXME pass):** `Oidc.providerUrl` is now
+  URI-typed and `requireOidc` refuses hostless URLs at bind time (SEC-053/054 message,
+  `sec053_hostlessOidcProviderUrlRefuses` binds the exact bad value); the discovery build no
+  longer validates shape at all.
+
+## Deferred from: owner note during Story 3.2 T2 FIXME pass (2026-08-19)
+
+- **Evaluate an OIDC-discovery/parsing library to replace the hand-rolled
+  `OidcStartupDiscovery.{probe,parseDocument}` [low|working-and-tested, but decide BEFORE T4/T5]** —
+  the current probe parses the discovery document with raw Nimbus `JSONObjectUtils` string-get
+  (proxy/src/main/java/smpp/companion/proxy/security/OidcStartupDiscovery.java `parseDocument`).
+  Preferred candidate: `com.nimbusds:oauth2-oidc-sdk` — `OIDCProviderMetadata.parse(json)` (typed
+  issuer/endpoints/grant-types, same vendor as the pinned nimbus-jose-jwt 10.9.1, a superset of
+  it). Timing: decide before T4 (JWKS) and T5 (RFC 7662 introspection) land — the same SDK ships
+  both, so adopting it once avoids three parallel hand-rolled parsers; after T4/T5 the migration
+  cost only grows. Constraints the swap must satisfy: (a) `probe` KEEPS the JDK
+  `java.net.http.HttpClient` + the `IdpSslContextFactory` TLS context/params (AD-36: no SDK HTTP
+  stack — `OIDCProviderMetadata.parse(String)` is a pure parser, use it for the document only);
+  (b) the fail-closed refusal matrix stays bit-for-bit (non-200 / unparseable / missing field /
+  unreachable → "(AD-12, fail-closed A-2)"; the T2 tests `OidcStartupDiscoveryTest` are the
+  contract); (c) the exact `issuer == provider-url` equality and the DAG warning survive; (d) NO
+  SDK type crosses the security/ boundary into port types (AC8-immutable port; the local
+  `OidcProviderMetadata` record stays the consumed surface — map from the SDK type inside the
+  bean); (e) `smpp.runtime-purity`, `smpp.dependency-floors` (needs a floor + CVE lane run), and
+  the `NoRolledCryptoArchitectureTest` package allowlist (`com.nimbusds..` already allowed — no
+  rule change expected); (f) Keycloak vendor SDKs remain banned regardless. Owner note 2026-08-19
+  (recorded verbatim intent: "find a library for oidc discovery or parsing to replace
+  OidcStartupDiscovery.{probe,parseDocument}").
