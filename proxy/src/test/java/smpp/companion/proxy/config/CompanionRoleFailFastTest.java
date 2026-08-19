@@ -73,7 +73,7 @@ class CompanionRoleFailFastTest {
                                 new Smsc("smsc.carrier.example", 2775),
                                 new ClientCert("/run/secrets/client.crt", "/run/secrets/client.key"),
                                 new TrustStore("/run/secrets/truststore.p12", "changeit"),
-                                new Oidc("https://idp.example.com", "smpp-client-confidential",
+                                new Oidc(java.net.URI.create("https://idp.example.com"), "smpp-client-confidential",
                                         "/run/secrets/oidc-client-secret",
                                         new TrustStore("/run/secrets/idp-truststore.p12", null),
                                         Duration.ofSeconds(4), 64, Duration.ofMinutes(5)))));

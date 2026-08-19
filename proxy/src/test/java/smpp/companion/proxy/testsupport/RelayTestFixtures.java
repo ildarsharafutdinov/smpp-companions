@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -52,7 +53,7 @@ public final class RelayTestFixtures {
      */
     public static ProxyCompanionProperties.Oidc testOidc() {
         return new ProxyCompanionProperties.Oidc(
-                OidcDiscoveryStandIn.url(), "smpp-client-confidential",
+                URI.create(OidcDiscoveryStandIn.url()), "smpp-client-confidential",
                 "/run/secrets/oidc-client-secret",
                 new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
                 Duration.ofSeconds(4), 64, Duration.ofMinutes(5));

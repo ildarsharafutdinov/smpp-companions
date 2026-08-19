@@ -283,16 +283,25 @@ public final class CompanionConfigValidator
     /**
      * {@code oidc} is {@code @NotNull} on reverse A/B/C → guaranteed non-null by the pre-pass; its
      * own {@code @NotNull}/{@code @NotBlank}/{@code @Min}/{@code @DurationMin} components are
-     * surfaced by the pre-pass the same way. This check owns the provider-url scheme plus FILE
-     * EXISTENCE only — every configured path must point at a real readable file (AD-18). Deeper
-     * material validation is the T2+ adapter's job (its SSLContext/discovery build refuses startup
-     * on a bad store, fail-closed).
+     * surfaced by the pre-pass the same way. This check owns the provider-url URI shape plus FILE
+     * EXISTENCE only — every configured path must point at a real readable file (AD-18). Since the
+     * 2026-08-19 T2 FIXME pass the component is {@link URI}-typed: a non-URI string refuses at BIND
+     * time (conversion failure), and the HOST + scheme checks live HERE ({@code https://:8443},
+     * {@code http://...}) — the config layer is the deferred 2.1-era scheme-only gap's final home
+     * (moved out of the discovery build). Blank and absent both bind to null and are refused by the
+     * component {@code @NotNull} (empty strings convert to null for non-String targets). Deeper
+     * material validation is the T2+
+     * adapter's job (its SSLContext/discovery build refuses startup on a bad store, fail-closed).
      */
     private void requireOidc(ProxyCompanionProperties.Oidc oidc, String prefix, List<String> v) {
-        String providerUrl = oidc.providerUrl();
-        if (providerUrl.isBlank()) {
-            v.add(prefix + ".provider-url is required for the reverse role (AD-12) — refusing to start (SEC-054).");
-        } else if (!isHttps(providerUrl)) {
+        URI providerUrl = oidc.providerUrl();
+        // Absent AND blank both bind to null (empty strings convert to null for non-String targets)
+        // and are refused by the component @NotNull in the pre-pass — blank and absent are ONE arm
+        // now, not two. This check owns the URI SHAPE only: host, then scheme.
+        if (providerUrl.getHost() == null || providerUrl.getHost().isBlank()) {
+            v.add(prefix + ".provider-url=" + providerUrl + " has no host (scheme://host[:port]/... required)"
+                    + " — refusing to start (SEC-053/054).");
+        } else if (!"https".equalsIgnoreCase(providerUrl.getScheme())) {
             v.add(prefix + ".provider-url must use the https scheme (AD-12/SEC-3) — refusing to start (SEC-053).");
         }
         requireReadableFile(oidc.clientSecretPath(), "OIDC client secret", prefix + ".client-secret-path", v);
@@ -497,13 +506,4 @@ public final class CompanionConfigValidator
     }
 
     // --- helpers ---------------------------------------------------------------------------
-
-    private static boolean isHttps(String url) {
-        try {
-            String scheme = URI.create(url).getScheme();
-            return "https".equalsIgnoreCase(scheme);
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
-    }
 }
