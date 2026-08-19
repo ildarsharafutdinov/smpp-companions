@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 /**
@@ -34,7 +35,7 @@ final class TestCompanionConfigs {
 
     private TestCompanionConfigs() {}
 
-    /** forward × A: server cert+key + routing + OIDC (no SMSC — SEC-097 positive). */
+    /** forward × A (internet leg, one-way TLS): server cert+key + routing — NO OIDC (trusted-side relay; SEC-097 positive: no SMSC). */
     static TestCompanionConfigs forwardA(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
@@ -44,8 +45,6 @@ final class TestCompanionConfigs {
         c.props.put(b + ".routing[0].system-id", "carrierOne");
         c.props.put(b + ".routing[0].host", "reverse.internal");
         c.props.put(b + ".routing[0].port", "2776");
-        c.props.put(b + ".oidc.provider-url", "https://idp.example.com");
-        c.props.put(b + ".oidc.client-credential-path", touch(secrets.resolve("oidc-cred")).toString());
         return c;
     }
 
@@ -61,7 +60,7 @@ final class TestCompanionConfigs {
         return c;
     }
 
-    /** reverse × A: SMSC + client trust store (forward/SMSC server-cert anchor, SEC-096). */
+    /** reverse × A (internet leg, one-way TLS): SMSC + client trust store (internet-leg anchor, SEC-096) + OIDC. */
     static TestCompanionConfigs reverseA(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
@@ -71,10 +70,11 @@ final class TestCompanionConfigs {
         Path ts = trustStoreFixture(secrets.resolve("truststore.p12"));
         c.props.put(b + ".trust-store.path", ts.toString());
         c.props.put(b + ".trust-store.password", "changeit");
+        c.oidcKeys(b, secrets);
         return c;
     }
 
-    /** reverse × B: plaintext. acknowledged=true so the base is valid (SEC-052 warn+ack+start). */
+    /** reverse × B: plaintext internet leg (direct client→reverse). acknowledged=true so the base is valid (SEC-052 warn+ack+start) + OIDC. */
     static TestCompanionConfigs reverseB(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
@@ -83,10 +83,11 @@ final class TestCompanionConfigs {
         c.props.put(b + ".smsc.host", "smsc.carrier.example");
         c.props.put(b + ".smsc.port", "2775");
         c.props.put(b + ".acknowledged", "true");
+        c.oidcKeys(b, secrets);
         return c;
     }
 
-    /** reverse × C: SMSC + client cert+key (mTLS, SEC-057) + trust store. */
+    /** reverse × C (internet leg, mTLS): SMSC + client cert+key (SEC-057) + trust store + OIDC. */
     static TestCompanionConfigs reverseC(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
@@ -98,6 +99,7 @@ final class TestCompanionConfigs {
         Path ts = trustStoreFixture(secrets.resolve("truststore.p12"));
         c.props.put(b + ".trust-store.path", ts.toString());
         c.props.put(b + ".trust-store.password", "changeit");
+        c.oidcKeys(b, secrets);
         return c;
     }
 
@@ -106,6 +108,28 @@ final class TestCompanionConfigs {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
         return c;
+    }
+
+    /**
+     * The Story 3.2 T1 oidc node (AC8; re-targeted to the reverse role by the AD-12 amendment of
+     * 2026-08-18 — every reverse cell adjudicates). provider-url defaults to the shared HTTPS
+     * discovery stand-in (its issuer echoes its base URL — what the T2 startup check requires);
+     * provider client auth is the required client_secret arm (the RFC 8705 mTLS arm was removed
+     * 2026-08-19); the IdP trust store anchors the fixture CA (which
+     * signed the stand-in's server cert, so the config stays valid from T2 on). The three budget keys
+     * are REQUIRED — stated explicitly at the yml-template defaults (the
+     * companion.bind.adjudication-deadline T7 pattern: runner boots don't load application.yml).
+     */
+    private void oidcKeys(String b, Path secrets) {
+        props.put(b + ".oidc.provider-url", OidcDiscoveryStandIn.url());
+        props.put(b + ".oidc.client-id", "smpp-client-confidential");
+        props.put(b + ".oidc.client-secret-path", touch(secrets.resolve("oidc-client-secret")).toString());
+        Path idpTrustStore = RelayTestFixtures.idpTrustStoreFixture(secrets.resolve("idp-truststore.p12"));
+        props.put(b + ".oidc.trust-store.path", idpTrustStore.toString());
+        props.put(b + ".oidc.trust-store.password", RelayTestFixtures.IDP_STORE_PASSWORD);
+        props.put(b + ".oidc.timeout", "4s");
+        props.put(b + ".oidc.max-in-flight", "64");
+        props.put(b + ".oidc.jwks-cache-ttl", "5m");
     }
 
     private void common() {

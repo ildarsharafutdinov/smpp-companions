@@ -59,8 +59,7 @@ class CompanionRoleFailFastTest {
                 new Forward(
                         new ForwardModeA(
                                 new ServerCert("/run/secrets/server.crt", "/run/secrets/server.key"),
-                                List.of(new RoutingEntry("carrierOne", "reverse.internal", 2776, null)),
-                                new Oidc("https://idp.example.com", "/run/secrets/oidc")),
+                                List.of(new RoutingEntry("carrierOne", "reverse.internal", 2776, null))),
                         null),
                 null);
         new ProxyCompanionProperties(
@@ -73,7 +72,11 @@ class CompanionRoleFailFastTest {
                         new ReverseModeC(
                                 new Smsc("smsc.carrier.example", 2775),
                                 new ClientCert("/run/secrets/client.crt", "/run/secrets/client.key"),
-                                new TrustStore("/run/secrets/truststore.p12", "changeit"))));
+                                new TrustStore("/run/secrets/truststore.p12", "changeit"),
+                                new Oidc("https://idp.example.com", "smpp-client-confidential",
+                                        "/run/secrets/oidc-client-secret",
+                                        new TrustStore("/run/secrets/idp-truststore.p12", null),
+                                        Duration.ofSeconds(4), 64, Duration.ofMinutes(5)))));
     }
 
     @Test

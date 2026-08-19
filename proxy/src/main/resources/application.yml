@@ -62,8 +62,8 @@ companion:
   # Every secret is a FILE PATH (AD-18); secrets never ship in-repo, so all branch material is
   # operator-supplied via env/args. Uncomment one block per instance.
   #
-  # forward:
-  #   mode-a:                       # one-way TLS; SMSC NOT required (SEC-097)
+  # forward:  (NO OIDC — trusted-side relay; the reverse role adjudicates. AD-12 amended 2026-08-18.)
+  #   mode-a:                       # internet leg, one-way TLS; SMSC NOT required (SEC-097)
   #     server-cert:
   #       cert-path: /run/secrets/server.crt
   #       key-path: /run/secrets/server.key
@@ -72,23 +72,41 @@ companion:
   #         host: reverse.internal
   #         port: 2776
   #         # tls-context-id: primary     # optional (AD-29)
-  #     oidc:                       # forward performs OIDC (AD-12); provider-url MUST be https (SEC-053/054)
-  #       provider-url: https://idp.example.com
-  #       client-credential-path: /run/secrets/oidc-client-credential
-  #   mode-c:                       # mTLS to the reverse proxy = forward-A material + trust store
+  #   mode-c:                       # internet leg, mTLS = forward-A material + trust store (reverse's client cert)
   #     server-cert: { cert-path: /run/secrets/server.crt, key-path: /run/secrets/server.key }
   #     routing: [ { system-id: carrierOne, host: reverse.internal, port: 2776 } ]
-  #     oidc: { provider-url: https://idp.example.com, client-credential-path: /run/secrets/oidc-client-credential }
   #     trust-store: { path: /run/secrets/truststore.p12, password: changeit }
   #
-  # reverse:
-  #   mode-a:                       # client trust store anchors the forward/SMSC server cert (SEC-096)
+  # reverse:  (performs OIDC — sole enforcement point before the SMSC; every reverse cell adjudicates.
+  #            Modes describe the INTERNET leg; the SMSC leg is always plaintext/trusted.)
+  #   mode-a:                       # internet leg, one-way TLS (trust store anchors the forward's server cert)
   #     smsc: { host: smsc.carrier.example, port: 2775 }
   #     trust-store: { path: /run/secrets/truststore.p12, password: changeit }
-  #   mode-b:                       # PLAINTEXT (reverse-only) — opt-in ack REQUIRED to start (SEC-052)
+  #     oidc:                       # reverse performs OIDC (AD-12); provider-url MUST be https (SEC-053/054)
+  #       provider-url: https://idp.example.com/realms/smpp-companions
+  #       client-id: smpp-client-confidential
+  #       client-secret-path: /run/secrets/oidc-client-secret   # sole provider client auth (AD-18; the
+  #                                  # RFC 8705 client-mtls-keystore arm was removed pre-release, 2026-08-19)
+  #       trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit }   # never cacerts (AD-13)
+  #       # The three adapter budgets (required keys; values below are the documented defaults):
+  #       timeout: 4s               # OIDC_TIMEOUT: per provider call, keep within 2s..5s (PERF-3) and
+  #                                  # <= companion.bind.adjudication-deadline — not validated, an operator contract
+  #       max-in-flight: 64         # concurrent-adjudication admission cap (AD-28(4)); saturated -> fail-closed
+  #                                  # DenyIndeterminate WITHOUT a wire call; a rejection threshold, not a queue
+  #       jwks-cache-ttl: 5m        # cached-JWKS TTL before background refresh (AD-28(2))
+  #   mode-b:                       # PLAINTEXT internet leg, direct client->reverse (no forward proxy);
+  #                                 # opt-in ack REQUIRED to start (SEC-052) — still adjudicates ("plaintext+ROPC")
   #     smsc: { host: smsc.carrier.example, port: 2775 }
   #     acknowledged: true
-  #   mode-c:                       # mTLS to the SMSC = client cert+key + trust store
+  #     oidc: { provider-url: https://idp.example.com/realms/smpp-companions, client-id: smpp-client-confidential,
+  #             client-secret-path: /run/secrets/oidc-client-secret,
+  #             trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit },
+  #             timeout: 4s, max-in-flight: 64, jwks-cache-ttl: 5m }
+  #   mode-c:                       # internet leg, mTLS = client cert+key presented to the forward + trust store
   #     smsc: { host: smsc.carrier.example, port: 2775 }
   #     client-cert: { cert-path: /run/secrets/client.crt, key-path: /run/secrets/client.key }
   #     trust-store: { path: /run/secrets/truststore.p12, password: changeit }
+  #     oidc: { provider-url: https://idp.example.com/realms/smpp-companions, client-id: smpp-client-confidential,
+  #             client-secret-path: /run/secrets/oidc-client-secret,
+  #             trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit },
+  #             timeout: 4s, max-in-flight: 64, jwks-cache-ttl: 5m }

@@ -38,7 +38,13 @@ import org.jspecify.annotations.Nullable;
  * https/present, SEC-059 SMSC host, SEC-050 trust-store 5-state PKIX load, SEC-052 Mode B opt-in ack,
  * plus the unconditional TLS floor + cipher intersection (AD-34/SEC-061) and the AD-30 finite-memory
  * guard. forward&times;B is enforced structurally (no forward.mode-b node) &mdash; SEC-051 is retired
- * from the runtime matrix.
+ * from the runtime matrix. Story 3.2 adds the OIDC <em>path</em> checks (AC8): file
+ * existence/readability for {@code client-secret-path} and the IdP {@code trust-store.path}.
+ * Structural conformance of the oidc node (requiredness, ranges) is carried by annotations; deeper
+ * material checks (the trust-store PKIX load) happen when the Epic-3 adapter builds its SSLContext
+ * &mdash; a bad store refuses startup at bean init, fail-closed. The {@code oidc.timeout} window
+ * (2s&ndash;5s, PERF-3) is deliberately NOT validated here &mdash; it is an operator contract
+ * documented in application.yml.
  *
  * <p><b>Pre-pass and why most defensive null guards were deleted.</b> {@link #isValid} first validates
  * each non-null nested record (bind/forward/memory/reverse/tls) with a cached {@link Validator}, which
@@ -178,35 +184,36 @@ public final class CompanionConfigValidator
     }
 
     private void validateForwardModeA(ProxyCompanionProperties.ForwardModeA ma, List<String> v) {
-        validateForwardBase(ma.serverCert(), ma.routing(), ma.oidc(), "companion.forward.mode-a", v);
+        validateForwardBase(ma.serverCert(), ma.routing(), "companion.forward.mode-a", v);
         // SEC-097 (positive): forward+A does NOT require an SMSC endpoint — intentionally no SMSC check.
+        // NO OIDC check: the forward role is a trusted-side relay (AD-12 amended 2026-08-18 — the
+        // reverse role adjudicates); the forward cells carry no oidc node at all.
     }
 
     private void validateForwardModeC(ProxyCompanionProperties.ForwardModeC mc, List<String> v) {
         String prefix = "companion.forward.mode-c";
-        validateForwardBase(mc.serverCert(), mc.routing(), mc.oidc(), prefix, v);
+        validateForwardBase(mc.serverCert(), mc.routing(), prefix, v);
         // forward+C validates the mTLS trust store at the full AD-13 depth (SEC-050).
         requireTrustStore(mc.trustStore(), prefix + ".trust-store", v);
     }
 
     /**
-     * Shared forward A/C content: server cert+key readability (SEC-056), routing (SEC-058), OIDC (SEC-053/054).
-     * All three records are {@code @NotNull} on ForwardModeA/C and thus guaranteed non-null by the pre-pass.
+     * Shared forward A/C content: server cert+key readability (SEC-056), routing (SEC-058). Both
+     * records are {@code @NotNull} on ForwardModeA/C and thus guaranteed non-null by the pre-pass.
      */
     private void validateForwardBase(ProxyCompanionProperties.ServerCert serverCert,
                                      List<ProxyCompanionProperties.RoutingEntry> routing,
-                                     ProxyCompanionProperties.Oidc oidc,
                                      String prefix, List<String> v) {
         requireReadableFile(serverCert.certPath(), "server certificate", prefix + ".server-cert.cert-path", v);
         requireReadableFile(serverCert.keyPath(), "server key", prefix + ".server-cert.key-path", v);
         requireRouting(routing, prefix + ".routing", v);
-        requireOidc(oidc, prefix + ".oidc", v);
     }
 
     private void validateReverseModeA(ProxyCompanionProperties.ReverseModeA ma, List<String> v) {
         String prefix = "companion.reverse.mode-a";
         requireSmsc(ma.smsc(), prefix + ".smsc", v);         // SEC-059: reverse requires the SMSC endpoint.
-        requireTrustStore(ma.trustStore(), prefix + ".trust-store", v); // SEC-096: forward/SMSC server-cert anchor.
+        requireTrustStore(ma.trustStore(), prefix + ".trust-store", v); // SEC-096: internet-leg server-cert anchor.
+        requireOidc(ma.oidc(), prefix + ".oidc", v);         // AD-12 amended: the reverse adjudicates.
     }
 
     private void validateReverseModeB(ProxyCompanionProperties.ReverseModeB mb, List<String> v) {
@@ -218,6 +225,7 @@ public final class CompanionConfigValidator
             v.add("companion.reverse.mode-b (plaintext) requires explicit opt-in ("
                     + prefix + ".acknowledged=true) — refusing to start (SEC-052/AD-17).");
         }
+        requireOidc(mb.oidc(), prefix + ".oidc", v);         // "plaintext + ROPC": Mode B still adjudicates.
     }
 
     private void validateReverseModeC(ProxyCompanionProperties.ReverseModeC mc, List<String> v) {
@@ -225,6 +233,7 @@ public final class CompanionConfigValidator
         requireSmsc(mc.smsc(), prefix + ".smsc", v);
         requireClientCert(mc.clientCert(), prefix + ".client-cert", v); // SEC-057: reverse+C client cert+key.
         requireTrustStore(mc.trustStore(), prefix + ".trust-store", v);
+        requireOidc(mc.oidc(), prefix + ".oidc", v);         // AD-12 amended: the reverse adjudicates.
     }
 
     /**
@@ -272,16 +281,22 @@ public final class CompanionConfigValidator
     }
 
     /**
-     * {@code oidc} is {@code @NotNull} on forward A/C → guaranteed non-null by the pre-pass.
+     * {@code oidc} is {@code @NotNull} on reverse A/B/C → guaranteed non-null by the pre-pass; its
+     * own {@code @NotNull}/{@code @NotBlank}/{@code @Min}/{@code @DurationMin} components are
+     * surfaced by the pre-pass the same way. This check owns the provider-url scheme plus FILE
+     * EXISTENCE only — every configured path must point at a real readable file (AD-18). Deeper
+     * material validation is the T2+ adapter's job (its SSLContext/discovery build refuses startup
+     * on a bad store, fail-closed).
      */
     private void requireOidc(ProxyCompanionProperties.Oidc oidc, String prefix, List<String> v) {
         String providerUrl = oidc.providerUrl();
         if (providerUrl.isBlank()) {
-            v.add(prefix + ".provider-url is required for the forward role (AD-12) — refusing to start (SEC-054).");
+            v.add(prefix + ".provider-url is required for the reverse role (AD-12) — refusing to start (SEC-054).");
         } else if (!isHttps(providerUrl)) {
             v.add(prefix + ".provider-url must use the https scheme (AD-12/SEC-3) — refusing to start (SEC-053).");
         }
-        requireReadableFile(oidc.clientCredentialPath(), "OIDC client credential", prefix + ".client-credential-path", v);
+        requireReadableFile(oidc.clientSecretPath(), "OIDC client secret", prefix + ".client-secret-path", v);
+        requireReadableFile(oidc.trustStore().path(), "IdP trust store", prefix + ".trust-store.path", v);
     }
 
     /**
