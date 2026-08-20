@@ -21,6 +21,8 @@ import java.nio.file.Path;
 import java.text.ParseException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Date;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -87,9 +89,21 @@ import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
  * defense-in-depth: the token-endpoint 200 is necessary but not sufficient, DENY wins on any local
  * failure. The verify is pure CPU against the <i>cached</i> set &mdash; the bind path NEVER fetches
  * JWKS in the foreground (a {@code kid} miss denies now and schedules a background refresh,
- * {@code AD-12}). A 200 body carrying an <b>opaque</b> token is NOT yet adjudicated: the RFC 7662
- * introspection fallback (T5) will claim it; until then it is unverifiable &rarr; fail-closed
- * {@code DenyIndeterminate} (AD-11).
+ * {@code AD-12}).
+ *
+ * <p><b>Opaque-token fallback (Story 3.2 T5, AC4).</b> A 200 body whose token is not a
+ * three-segment JWS is adjudicated by <b>RFC 7662 introspection</b>: a second wire arm to the
+ * <i>discovery-derived</i> introspection endpoint (no per-endpoint override keys), fired only after
+ * the token exchange completed and <b>registered in the same active-call slot</b> (F3 &mdash;
+ * {@code cancelHttp()} aborts round 2 exactly as it aborts the token exchange). ONLY HTTP 200 + a
+ * JSON body carrying <b>boolean</b> {@code active:true} yields {@code Allow}; every other outcome
+ * &mdash; {@code active:false}, a missing or non-boolean {@code active}, a non-JSON body, every
+ * non-200 status &mdash; is {@code DenyIndeterminate}: the introspection endpoint carries no
+ * positive-invalid signal for the <i>user's</i> credentials (a 401 there is client-auth/config
+ * trouble, never the token endpoint's 401 of AC2's {@code DenyInvalid} row). Introspection results
+ * are <b>never cached</b> (AD-12 &mdash; every bind re-introspects) and the path never touches the
+ * JWKS cache (F6) &mdash; operators should prefer JWT issuance (the {@code Oidc} config javadoc
+ * carries that guidance; introspection is online-only with no offline cryptographic backstop).
  */
 public final class RopcBindCredentialVerifier implements BindCredentialVerifier, AutoCloseable {
 
@@ -179,7 +193,9 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
 
         CompletableFuture<Verdict> pin = new CompletableFuture<>();
         // The in-flight exchange cancelHttp() can abort (AD-32). Null until sendAsync fires — the
-        // saturation/expired-budget paths start no wire call, so it stays null there by design.
+        // saturation/expired-budget paths start no wire call, so it stays null there by design. The
+        // T5 introspection round TAKES THE SLOT OVER once the token exchange completes (F3), so a
+        // cancel landing mid-round-2 aborts that exchange instead.
         AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall = new AtomicReference<>();
 
         // The adjudication deadline is the verifier's WHOLE budget (the relay arms no timeout of its own,
@@ -206,7 +222,7 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             // Publish the handle BEFORE verify() returns so cancelHttp() can abort the exchange race-free
             // (the relay only ever cancels the VerdictRequest it got back — after this line).
             activeCall.set(tokenExchange);
-            adjudicationPool.execute(() -> settleAdjudication(ctx, rc, tokenExchange, pin));
+            adjudicationPool.execute(() -> settleAdjudication(ctx, rc, tokenExchange, activeCall, pin));
         } catch (RejectedExecutionException | IllegalStateException e) {
             // Use-after-close hardening (deferred-work §2.1 item 2): the pool rejected the task (shut
             // down between acquire and execute) or the shared client is closed. Release the permit,
@@ -228,12 +244,14 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * released exactly once here (every early exit still runs the {@code finally}).
      */
     private void settleAdjudication(ScopedValue<RequestContext> ctx, RequestContext rc,
-            CompletableFuture<HttpResponse<byte[]>> tokenExchange, CompletableFuture<Verdict> pin) {
+            CompletableFuture<HttpResponse<byte[]>> tokenExchange,
+            AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
+            CompletableFuture<Verdict> pin) {
         try {
             if (pin.isDone()) {
                 return;   // cancelHttp() landed before this task started — exchange aborted, verdict settled
             }
-            Verdict verdict = ScopedValue.where(ctx, rc).call(() -> adjudicate(tokenExchange));
+            Verdict verdict = ScopedValue.where(ctx, rc).call(() -> adjudicate(tokenExchange, activeCall, rc));
             pin.complete(verdict);
         } catch (Throwable t) {
             pin.complete(new Verdict.DenyIndeterminate());   // fail-closed on any unexpected failure (AD-11)
@@ -245,17 +263,22 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     /**
      * The structured fan-out (AD-5). JEP 505 fifth-preview API — {@code open(Joiner)}, NOT the JDK
      * 21/22 {@code ShutdownOnFailure} subclass shape. The T4 JWT defense-in-depth needs no fork: it
-     * is pure CPU against the cached JWKS (AC3 forbids a foreground fetch on the bind path). T5's
-     * RFC 7662 introspection call will be the second WIRE arm forked into this same scope. The scope
-     * is what makes the adjudication shuttable from the teardown path (AD-25): {@code cancelHttp()}
-     * cancels the exchange &rarr; the forked {@code join} throws &rarr; {@code join()} fails &rarr;
-     * fail-closed below &rarr; {@code close()} unwinds the scope with the subtask.
+     * is pure CPU against the cached JWKS (AC3 forbids a foreground fetch on the bind path). The
+     * RFC 7662 introspection round (the opaque-token arm, T5) joins INLINE rather than as a second
+     * forked subtask: the fifth-preview scope is <b>single-join</b> — a second {@code join()} after
+     * the token arm's throws {@code IllegalStateException} ("Already joined or scope is closed",
+     * verified empirically on JDK 25) — so round 2 cannot re-join this scope. The scope is what
+     * makes the adjudication shuttable from the teardown path (AD-25): {@code cancelHttp()} cancels
+     * the exchange &rarr; the forked {@code join} throws &rarr; {@code join()} fails &rarr;
+     * fail-closed below &rarr; {@code close()} unwinds the scope with the subtask; round 2 is
+     * cancelled the same way through the F3-registered future (see {@link #introspect}).
      */
-    private Verdict adjudicate(CompletableFuture<HttpResponse<byte[]>> tokenExchange) {
+    private Verdict adjudicate(CompletableFuture<HttpResponse<byte[]>> tokenExchange,
+            AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall, RequestContext rc) {
         try (var scope = StructuredTaskScope.open(Joiner.awaitAllSuccessfulOrThrow())) {
             Subtask<HttpResponse<byte[]>> tokenTask = scope.fork(tokenExchange::join);
             scope.join();   // throws on timeout / network error / cancellation → fail-closed below
-            return mapTokenResponse(tokenTask.get());
+            return mapTokenResponse(activeCall, rc, tokenTask.get());
         } catch (Throwable t) {
             return new Verdict.DenyIndeterminate();   // timeout / network error / cancel → AD-11
         }
@@ -267,10 +290,11 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * {@code invalid_grant} (2-1 fixture finding #6), while rate-limit/config/authz 400s carry other
      * or absent error codes and are not credential verdicts.
      */
-    private Verdict mapTokenResponse(HttpResponse<byte[]> response) {
+    private Verdict mapTokenResponse(AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
+            RequestContext rc, HttpResponse<byte[]> response) {
         int status = response.statusCode();
         if (status == 200) {
-            return adjudicateIssuedToken(response.body());
+            return adjudicateIssuedToken(activeCall, rc, response.body());
         }
         if (status == 401) {
             // RFC 6749 §5.2: a bare 401 from a token endpoint IS the provider's positive auth-layer
@@ -298,13 +322,14 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     }
 
     /**
-     * The AC2/AC3 issued-token dispatch. A 200 body must carry an {@code access_token}; a
+     * The AC2/AC3/AC4 issued-token dispatch. A 200 body must carry an {@code access_token}; a
      * three-segment (JWS) token goes to local JWT defense-in-depth, anything else is an opaque token
-     * &mdash; the RFC 7662 introspection arm's territory (T5, not yet landed) &rarr; fail-closed until it
-     * arrives. This structural dispatch is what keeps the malformed-JWT row (three segments that do
-     * not parse) distinct from the opaque row after T5 lands.
+     * &rarr; the RFC 7662 introspection arm (AC4). This structural dispatch is what keeps the
+     * malformed-JWT row (three segments that do not parse &mdash; JWT territory, denied locally by
+     * {@link #verifyJwt}) distinct from the opaque row.
      */
-    private Verdict adjudicateIssuedToken(byte[] body) {
+    private Verdict adjudicateIssuedToken(AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
+            RequestContext rc, byte[] body) {
         String token = accessToken(body);
         if (token == null || token.isBlank()) {
             return new Verdict.DenyIndeterminate();   // no token issued (empty/HTML/no-field body) → unverifiable
@@ -316,7 +341,7 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             }
         }
         if (segments != 3) {
-            return new Verdict.DenyIndeterminate();   // opaque token → T5's introspection arm; fail-closed until then
+            return introspect(activeCall, rc, token);   // opaque token → RFC 7662 (AC4)
         }
         return verifyJwt(token);
     }
@@ -389,6 +414,91 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         } catch (Exception e) {
             return new Verdict.DenyIndeterminate();   // malformed JWT / non-RSA key / Nimbus failure → fail-closed
         }
+    }
+
+    /**
+     * RFC 7662 introspection &mdash; the opaque-token fallback (AC4): the second and last wire arm
+     * of an adjudication, fired only after the token exchange completed. The endpoint is the
+     * DISCOVERY-derived one (no per-endpoint override keys); the {@code sendAsync} future TAKES OVER
+     * the active-call slot (F3: the token exchange is done, so a {@code cancelHttp()} landing now
+     * aborts THIS exchange). The round-2 budget is re-clamped to the adjudication deadline's
+     * <i>remaining</i> time &mdash; the deadline is the verifier's WHOLE budget, not a per-round
+     * allowance. This path never touches the JWKS cache (F6) and its results are never cached
+     * (AD-12).
+     *
+     * <p>The join is INLINE on the pool thread (the ratified slice's shape), not a second forked
+     * subtask of the adjudication scope: the JEP 505 fifth-preview scope is <b>single-join</b> &mdash;
+     * a second {@code scope.join()} after the token arm's throws {@code IllegalStateException}
+     * ("Already joined or scope is closed", verified empirically on JDK 25). Cancellation still
+     * reaches round 2 exactly as it reaches the token arm: {@code cancelHttp()} cancels the
+     * F3-registered future above, the join throws. The join is uninterruptible, but the clamped
+     * request {@code timeout} bounds it &mdash; a lost cancel cannot park the pool thread forever.
+     */
+    private Verdict introspect(AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
+            RequestContext rc, String token) {
+        Duration remaining = Duration.between(Instant.now(), rc.deadline());
+        if (!remaining.isPositive()) {
+            return new Verdict.DenyIndeterminate();   // round-2 budget exhausted → no wire call
+        }
+        Duration budget = callTimeout.compareTo(remaining) < 0 ? callTimeout : remaining;
+        CompletableFuture<HttpResponse<byte[]>> intro = http.sendAsync(
+                introspectRequest(token, budget), HttpResponse.BodyHandlers.ofByteArray());
+        activeCall.set(intro);   // F3: the same slot the token exchange used — cancelHttp() aborts round 2 too
+        try {
+            return mapIntrospection(intro.join());
+        } catch (RuntimeException e) {   // CancellationException / HttpTimeoutException / IO failure
+            return new Verdict.DenyIndeterminate();   // fail-closed (AD-11) — never an exception out of the arm
+        }
+    }
+
+    /**
+     * The AC2 introspection rows: ONLY HTTP 200 + a JSON body carrying BOOLEAN {@code active:true}
+     * allows. A missing, non-boolean, or false {@code active}, a non-JSON body, and every non-200
+     * status deny indeterminately &mdash; none of them is a positive invalid-credential signal for
+     * the user's password (contrast the token endpoint's bare-401 row).
+     */
+    private static Verdict mapIntrospection(HttpResponse<byte[]> response) {
+        if (response.statusCode() != 200) {
+            return new Verdict.DenyIndeterminate();
+        }
+        try {
+            Map<String, Object> body = JSONObjectUtils.parse(new String(response.body(), StandardCharsets.UTF_8));
+            return JSONObjectUtils.getBoolean(body, "active")
+                    ? new Verdict.Allow()
+                    : new Verdict.DenyIndeterminate();
+        } catch (ParseException e) {
+            return new Verdict.DenyIndeterminate();   // not JSON / active absent / active not a boolean
+        }
+    }
+
+    /**
+     * Builds the RFC 7662 introspection request. Client auth is RFC 6749 &sect;2.3.1 Basic,
+     * assembled from RAW bytes &mdash; the plain secret is never materialized as a {@link String};
+     * only its base64 surface (the JDK client's sole header representation) leaves this method, and
+     * the concatenated raw buffer is wiped immediately after (AD-10). The token travels in the form
+     * body, percent-encoded by the same raw-octet encoder as the ROPC form (AC6: no {@code String}
+     * form buffers).
+     */
+    private HttpRequest introspectRequest(String token, Duration budget) {
+        byte[] clientIdBytes = clientId.getBytes(StandardCharsets.US_ASCII);
+        byte[] secretBytes = clientSecret.value();
+        byte[] basicRaw = new byte[clientIdBytes.length + 1 + secretBytes.length];
+        System.arraycopy(clientIdBytes, 0, basicRaw, 0, clientIdBytes.length);
+        basicRaw[clientIdBytes.length] = ':';
+        System.arraycopy(secretBytes, 0, basicRaw, clientIdBytes.length + 1, secretBytes.length);
+        String basic = Base64.getEncoder().encodeToString(basicRaw);
+        Arrays.fill(basicRaw, (byte) 0);   // AD-10: the base64 copy exists — wipe the concatenated raw pair
+
+        ByteArrayOutputStream form = new ByteArrayOutputStream(6 + 3 * token.length());
+        form.writeBytes("token=".getBytes(StandardCharsets.US_ASCII));
+        byte[] tokenBytes = token.getBytes(StandardCharsets.UTF_8);
+        urlEncode(form, tokenBytes, 0, tokenBytes.length);
+        return HttpRequest.newBuilder(metadata.introspectionEndpoint())
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Authorization", "Basic " + basic)
+                .timeout(budget)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(form.toByteArray()))
+                .build();
     }
 
     /**
