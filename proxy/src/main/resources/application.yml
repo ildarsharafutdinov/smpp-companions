@@ -94,6 +94,8 @@ companion:
   #       max-in-flight: 64         # concurrent-adjudication admission cap (AD-28(4)); saturated -> fail-closed
   #                                  # DenyIndeterminate WITHOUT a wire call; a rejection threshold, not a queue
   #       jwks-cache-ttl: 5m        # cached-JWKS TTL before background refresh (AD-28(2))
+  #       # Prefer a JWT-issuing provider: opaque tokens fall back to RFC 7662 introspection —
+  #       # online-only per bind, no offline cryptographic backstop, results never cached (AC4/AD-12)
   #   mode-b:                       # PLAINTEXT internet leg, direct client->reverse (no forward proxy);
   #                                 # opt-in ack REQUIRED to start (SEC-052) — still adjudicates ("plaintext+ROPC")
   #     smsc: { host: smsc.carrier.example, port: 2775 }

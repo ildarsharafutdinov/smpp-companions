@@ -63,6 +63,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * timeout, network error — is {@code DenyIndeterminate} (rate-limit/config/authz errors are not
  * credential verdicts). This supersedes the test slice's crude "4xx &rarr; DenyInvalid" shorthand.
  *
+ * <p><b>AC4 — the opaque-token RFC 7662 introspection fallback (T5).</b> A 200 body whose token is
+ * not a three-segment JWS goes to the DISCOVERY-derived introspection endpoint as a second wire arm
+ * in the SAME scope, registered in the active-call slot (F3 — {@code cancelHttp()} aborts it too).
+ * The only Allow row is 200 + JSON + <b>boolean</b> {@code active:true}; everything else —
+ * {@code active:false}, a missing or STRING-typed {@code active}, non-JSON bodies, and every non-200
+ * status (a 401 there is CLIENT-auth/config trouble, never the token endpoint's positive-invalid
+ * 401) — is {@code DenyIndeterminate}. Results are never cached (two binds hit the endpoint twice)
+ * and the path never requires the JWKS leg (F6).
+ *
  * <p><b>AC5 — admission, capture, hardening.</b> Saturation denies WITHOUT a wire call (F2:
  * {@code sendAsync} only after {@code tryAcquire} — asserted by the stand-in's request counter),
  * the context is captured on the caller's thread (an unbound handle fails CLOSED, never throws),
@@ -79,13 +88,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("unit")
 @Tag("security")
 @Tag("p1")
-@DisplayName("AD-12/AD-11 RopcBindCredentialVerifier — AC2 verdict table + AC5 admission/capture core")
+@DisplayName("AD-12/AD-11 RopcBindCredentialVerifier — AC2 verdict table + AC4 introspection + AC5 admission/capture core")
 class RopcBindCredentialVerifierTest {
 
     private static final String DISCOVERY_PATH = "/.well-known/openid-configuration";
     private static final String REALM_PATH = "/realms/smpp-companions/protocol/openid-connect";
     private static final String TOKEN_PATH = REALM_PATH + "/token";
     private static final String JWKS_PATH = REALM_PATH + "/certs";
+    private static final String INTROSPECTION_PATH = REALM_PATH + "/token/introspect";
 
     private static final ScopedValue<RequestContext> CTX = ScopedValue.newInstance();
 
@@ -381,25 +391,352 @@ class RopcBindCredentialVerifierTest {
     }
 
     @Test
-    @DisplayName("200 + three-segment-but-malformed token → DenyIndeterminate; opaque token → DenyIndeterminate (T5 boundary)")
-    void malformedAndOpaqueTokensYieldDenyIndeterminate(@TempDir Path dir) throws Exception {
-        AtomicInteger rotation = new AtomicInteger();
+    @DisplayName("200 + three-segment-but-malformed token → DenyIndeterminate WITHOUT introspection (the T5 boundary)")
+    void malformedJwtDeniesWithoutIntrospection(@TempDir Path dir) throws Exception {
+        AtomicInteger introHits = new AtomicInteger();
         HttpsServer server = standInIdP(
                 ex -> {
                     drain(ex);
-                    // "aaa.bbb.ccc" IS three segments but does not parse as a JWS; the opaque token is
-                    // zero-segment — the introspection arm's (T5, not yet landed) territory.
-                    respond(ex, 200, tokenBody(rotation.getAndIncrement() == 0 ? "aaa.bbb.ccc" : "opaque-secret-token"));
+                    // "aaa.bbb.ccc" IS three segments, so it is JWT territory: SignedJWT.parse fails
+                    // locally. The introspection endpoint is registered and counting — a malformed JWS
+                    // must never be sent there (that is the opaque arm's exclusive territory, AC4).
+                    respond(ex, 200, tokenBody("aaa.bbb.ccc"));
                 },
                 null,
-                null);
+                null,
+                ex -> {
+                    introHits.incrementAndGet();
+                    drain(ex);
+                    respond(ex, 200, "{\"active\":true}");   // would ALLOW — must never be reached
+                });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
-                    .as("a malformed JWT is unverifiable → DenyIndeterminate (AC2)")
+                    .as("a malformed JWT is locally unverifiable → DenyIndeterminate (AC2)")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(introHits.get())
+                    .as("a JWT-SHAPED token never reaches the introspection endpoint (the dispatch boundary)")
+                    .isEqualTo(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ── AC4: the opaque-token RFC 7662 introspection fallback (T5) ────────────────────────────
+
+    @Test
+    @DisplayName("200 + OPAQUE token → introspection 200 + JSON + boolean active:true → Allow (the only Allow row)")
+    void opaqueTokenIntrospectionActiveTrueYieldsAllow(@TempDir Path dir) throws Exception {
+        AtomicInteger introHits = new AtomicInteger();
+        HttpsServer server = opaqueIdP(introHandler(introHits, 200, "{\"active\":true}"));
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            // No awaitCachePopulated — the introspection path is cache-independent by design (F6 below
+            // pins that deliberately with a dead JWKS leg; this row must not depend on it either).
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("200 + JSON + boolean active:true is the ONLY introspection Allow row (AC2/AC4)")
+                    .isEqualTo(new Verdict.Allow());
+            assertThat(introHits.get())
+                    .as("the opaque arm must reach the DISCOVERED introspection endpoint (AC4)")
+                    .isEqualTo(1);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("introspection active:false → DenyIndeterminate (a negative answer, never a positive-invalid signal)")
+    void introspectionActiveFalseYieldsDenyIndeterminate(@TempDir Path dir) throws Exception {
+        AtomicInteger introHits = new AtomicInteger();
+        HttpsServer server = opaqueIdP(introHandler(introHits, 200, "{\"active\":false}"));
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("active:false means the provider could not vouch for the token — indeterminate (AC2)")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(introHits.get()).isEqualTo(1);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("introspection 200 with non-JSON / missing active / STRING active → DenyIndeterminate (boolean-only)")
+    void introspectionMalformedBodiesYieldDenyIndeterminate(@TempDir Path dir) throws Exception {
+        AtomicInteger rotation = new AtomicInteger();
+        HttpsServer server = opaqueIdP(ex -> {
+            drain(ex);
+            // A STRING "true" is not a BOOLEAN true — RFC 7662 types `active` as boolean, and a
+            // JSON-typed confusion must not verify (the AC2 "boolean active:true" wording, pinned).
+            respond(ex, 200, new String[] {"not-json", "{\"sub\":\"x\"}", "{\"active\":\"true\"}"}
+                    [rotation.getAndIncrement()]);
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("a non-JSON 200 is not an introspection verdict").isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("a body without an `active` member is not an introspection verdict")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
             assertThat(awaitVerdict(verify(adapter)))
-                    .as("an opaque token cannot be locally verified — fail-closed until T5 lands")
+                    .as("a string-typed `active` is not a boolean true — must not Allow")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(rotation.get()).as("all three rows reached the introspection endpoint").isEqualTo(3);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("introspection 401/404/500 → DenyIndeterminate, NEVER DenyInvalid (contrast: token 401 IS invalid)")
+    void introspectionNon200YieldsDenyIndeterminateNeverInvalid(@TempDir Path dir) throws Exception {
+        AtomicInteger rotation = new AtomicInteger();
+        HttpsServer server = opaqueIdP(ex -> {
+            drain(ex);
+            // A 401 from the INTROSPECTION endpoint is client-auth/config trouble on the proxy's own
+            // credentials — mapping it to DenyInvalid would falsely blame the USER's password.
+            respond(ex, new int[] {401, 404, 500}[rotation.getAndIncrement()], "{\"active\":false}");
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            for (int i = 0; i < 3; i++) {
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("introspection non-200 denies indeterminate — the endpoint carries no "
+                                + "positive-invalid signal for the user's credentials (AC2/AC4)")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+            }
+            assertThat(rotation.get()).isEqualTo(3);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("introspection timeout → DenyIndeterminate (a stalled round-2 exchange is not a verdict)")
+    void introspectionTimeoutYieldsDenyIndeterminate(@TempDir Path dir) throws Exception {
+        CountDownLatch hold = new CountDownLatch(1);
+        AtomicInteger introHits = new AtomicInteger();
+        HttpsServer server = opaqueIdP(ex -> {
+            introHits.incrementAndGet();
+            try {
+                drain(ex);
+                hold.await();
+                respond(ex, 200, "{\"active\":true}");
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            } catch (IOException ioe) {
+                // best-effort late write after release — not a verdict signal
+            }
+        });
+        try (RopcBindCredentialVerifier adapter =
+                adapter(properties(dir, server, Duration.ofMillis(250), 4))) {
+            try {
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("round-2 timeout → fail-closed indeterminate (AC2 timeout row, AC4)")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+            } finally {
+                hold.countDown();   // ALWAYS release the parked introspection handler
+            }
+            assertThat(introHits.get())
+                    .as("the timed-out exchange WAS the introspection round (not a token-endpoint artifact)")
+                    .isEqualTo(1);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("cancelHttp() during the introspection exchange aborts it, frees the permit, settles deny (F3/AC4)")
+    void cancelHttpAbortsTheIntrospectionExchange(@TempDir Path dir) throws Exception {
+        CountDownLatch introReceived = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        AtomicInteger tokenHits = new AtomicInteger();
+        // The F3 registration has TWO observable consequences, and the test pins both. (1) The pin
+        // settles fail-closed fast. (2) THE PERMIT IS FREED: cancel(true) on the registered future
+        // makes the pool thread's join throw immediately — with max-in-flight=1 a SECOND bind can
+        // then run to its own verdict. If the introspection future were NOT registered in the
+        // active-call slot, cancelHttp would cancel the long-completed token future (a no-op), the
+        // pool thread would stay parked in the UNINTERRUPTIBLE join holding the lone permit until
+        // the request timeout, and bind 2 would DENY BY SATURATION with no wire call. (The late
+        // handler write on the aborted connection is NOT observable — TCP half-close still accepts
+        // one local write; the wire-level CancellationException proof is T6's RecordingHttpClient.)
+        HttpsServer server = standInIdP(
+                ex -> {
+                    drain(ex);
+                    // bind 1 gets the opaque token (drives round 2); bind 2 gets a bare 401 — a
+                    // fast positive-invalid verdict that never touches the introspection endpoint.
+                    if (tokenHits.incrementAndGet() == 1) {
+                        respond(ex, 200, tokenBody("opaque-secret-token"));
+                    } else {
+                        respond(ex, 401, "{}");
+                    }
+                },
+                null,
+                null,
+                ex -> {
+                    drain(ex);
+                    introReceived.countDown();
+                    try {
+                        hold.await();   // round 2 parks mid-flight — only cancelHttp() can end it
+                        respond(ex, 200, "{\"active\":true}");
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    } catch (IOException ioe) {
+                        // best-effort late write after release — not a verdict signal
+                    }
+                });
+        try (RopcBindCredentialVerifier adapter =
+                adapter(properties(dir, server, Duration.ofSeconds(4), 1))) {   // max-in-flight = 1
+            VerdictRequest first = verify(adapter);
+            assertTrue(introReceived.await(5, TimeUnit.SECONDS),
+                    "bind 1 must reach the introspection endpoint before the cancel (the F3 window)");
+            long start = System.nanoTime();
+            first.cancelHttp();
+            assertThat(awaitVerdict(first))
+                    .as("cancelHttp settles fail-closed even while round 2 is the live exchange (F3)")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat((System.nanoTime() - start) / 1_000_000)
+                    .as("cancellation does not wait out the parked exchange")
+                    .isLessThan(2_000L);
+
+            // The permit must already be free: bind 2 ADMITS (no saturation) and runs to its own
+            // positive-invalid verdict — a saturated bind 2 (DenyIndeterminate, no wire call) is
+            // exactly what a missing F3 registration would produce.
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("the cancelled round 2 released the admission permit — bind 2 runs (F3)")
+                    .isInstanceOf(Verdict.DenyInvalid.class);
+            assertThat(tokenHits.get())
+                    .as("bind 2 reached the token endpoint (not saturated)")
+                    .isEqualTo(2);
+        } finally {
+            hold.countDown();   // ALWAYS release the parked handler (exception-safe cleanup)
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("the introspection path never requires JWKS (F6) — dead JWKS leg, opaque bind still Allows")
+    void introspectionDoesNotRequireJwks(@TempDir Path dir) throws Exception {
+        // No jwksHandler: the discovered jwks_uri 404s, so the cache stays COLD forever. The F6 rule
+        // (2-1): the introspection arm must not fork, require, or wait on anything JWKS-shaped —
+        // otherwise a down JWKS leg would deny every opaque-token bind.
+        HttpsServer server = standInIdP(
+                ex -> {
+                    drain(ex);
+                    respond(ex, 200, tokenBody("opaque-secret-token"));
+                },
+                null,
+                null,
+                ex -> {
+                    drain(ex);
+                    respond(ex, 200, "{\"active\":true}");
+                });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("an opaque bind Allows with a completely dead JWKS leg (F6)")
+                    .isEqualTo(new Verdict.Allow());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("introspection results are NEVER cached — every bind re-introspects (AD-12)")
+    void introspectionResultsAreNeverCached(@TempDir Path dir) throws Exception {
+        AtomicInteger introHits = new AtomicInteger();
+        AtomicReference<String> answer = new AtomicReference<>("{\"active\":false}");
+        HttpsServer server = opaqueIdP(ex -> {
+            introHits.incrementAndGet();
+            drain(ex);
+            respond(ex, 200, answer.get());
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("bind 1: the provider says active:false → deny")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            answer.set("{\"active\":true}");   // the provider flips its answer
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("bind 2 must SEE the flip — a cached verdict would still deny (AD-12)")
+                    .isEqualTo(new Verdict.Allow());
+            assertThat(introHits.get())
+                    .as("two binds, two introspection round trips (no result caching, AD-12)")
+                    .isEqualTo(2);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("introspection request: POST to the DISCOVERED endpoint, Basic auth, token= form body (raw-byte rule)")
+    void introspectionRequestShape(@TempDir Path dir) throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> authHeader = new AtomicReference<>();
+        AtomicReference<String> contentType = new AtomicReference<>();
+        AtomicReference<String> form = new AtomicReference<>();
+        HttpsServer server = opaqueIdP(ex -> {
+            method.set(ex.getRequestMethod());
+            path.set(ex.getRequestURI().getPath());
+            authHeader.set(ex.getRequestHeaders().getFirst("Authorization"));
+            contentType.set(ex.getRequestHeaders().getFirst("Content-Type"));
+            form.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(ex, 200, "{\"active\":true}");
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("the shape assertions ride a real Allow bind")
+                    .isEqualTo(new Verdict.Allow());
+            assertThat(method.get()).as("RFC 7662 introspection is a POST").isEqualTo("POST");
+            assertThat(path.get())
+                    .as("the request hits the DISCOVERY-derived endpoint (no per-endpoint override keys)")
+                    .isEqualTo(INTROSPECTION_PATH);
+            assertThat(contentType.get())
+                    .as("RFC 7662 body is application/x-www-form-urlencoded")
+                    .startsWith("application/x-www-form-urlencoded");
+            // Decode rather than compare base64 literals: the assertion pins the SEMANTICS (raw
+            // clientId:secret assembled from the same sources the token form uses).
+            String decoded = new String(java.util.Base64.getDecoder().decode(
+                    authHeader.get().substring("Basic ".length())), StandardCharsets.US_ASCII);
+            assertThat(authHeader.get()).startsWith("Basic ");
+            assertThat(decoded)
+                    .as("RFC 6749 §2.3.1 Basic client auth over the configured id:secret")
+                    .isEqualTo("smpp-client-confidential:smpp-confidential-secret");
+            assertThat(form.get())
+                    .as("the opaque token travels percent-encoded in the token= field (AC6: byte[] form)")
+                    .isEqualTo("token=opaque-secret-token");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("the introspection round-2 budget is clamped to the REMAINING adjudication deadline")
+    void introspectionBudgetClampedToRemainingDeadline(@TempDir Path dir) throws Exception {
+        CountDownLatch hold = new CountDownLatch(1);
+        AtomicInteger introHits = new AtomicInteger();
+        HttpsServer server = opaqueIdP(ex -> {
+            introHits.incrementAndGet();
+            try {
+                drain(ex);
+                hold.await();
+                respond(ex, 200, "{\"active\":true}");
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            } catch (IOException ioe) {
+                // best-effort late write after release — not a verdict signal
+            }
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {   // timeout = 4s
+            try {
+                long start = System.nanoTime();
+                Verdict verdict = awaitVerdict(verify(adapter, cred(), Instant.now().plusMillis(700)));
+                long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+                assertThat(verdict)
+                        .as("the parked round 2 times out within the adjudication budget")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+                assertThat(elapsedMs)
+                        .as("round 2 must inherit the REMAINING budget (~700ms), not the full 4s "
+                                + "oidc.timeout — the deadline is the verifier's whole budget (AC5)")
+                        .isLessThan(3_000L);
+            } finally {
+                hold.countDown();   // ALWAYS release the parked handler
+            }
+            assertThat(introHits.get()).isEqualTo(1);
         } finally {
             server.stop(0);
         }
@@ -817,16 +1154,23 @@ class RopcBindCredentialVerifierTest {
      * (the AC7 equality check) with the Keycloak realm endpoint layout, and {@code tokenEndpointBase}
      * (default: own base) controlling where the discovered {@code token_endpoint} points — a dead-port
      * base yields an unreachable token endpoint with a well-formed discovery document. The optional
-     * {@code jwksHandler} serves the discovered {@code jwks_uri} (the T4 refresh target). The CALLER
-     * owns {@code stop(0)} — always in a {@code finally}.
+     * {@code jwksHandler} serves the discovered {@code jwks_uri} (the T4 refresh target) and the
+     * optional {@code introHandler} the discovered {@code introspection_endpoint} (the T5 round-2
+     * target — the discovery document above always advertises it). The CALLER owns {@code stop(0)}
+     * — always in a {@code finally}.
      */
     private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase)
             throws IOException {
-        return standInIdP(tokenHandler, tokenEndpointBase, null);
+        return standInIdP(tokenHandler, tokenEndpointBase, null, null);
     }
 
     private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase,
             @Nullable HttpHandler jwksHandler) throws IOException {
+        return standInIdP(tokenHandler, tokenEndpointBase, jwksHandler, null);
+    }
+
+    private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase,
+            @Nullable HttpHandler jwksHandler, @Nullable HttpHandler introHandler) throws IOException {
         HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(OidcDiscoveryStandIn.fixtureServerSslContext()));
         // A real pool, not the default single dispatcher thread: several tests park ONE handler on a
@@ -856,8 +1200,32 @@ class RopcBindCredentialVerifierTest {
         if (jwksHandler != null) {
             server.createContext(JWKS_PATH, jwksHandler);
         }
+        if (introHandler != null) {
+            server.createContext(INTROSPECTION_PATH, introHandler);
+        }
         server.start();
         return server;
+    }
+
+    /** A stand-in IdP issuing an OPAQUE access token; {@code introHandler} serves round 2 (T5). */
+    private static HttpsServer opaqueIdP(HttpHandler introHandler) throws IOException {
+        return standInIdP(
+                ex -> {
+                    drain(ex);
+                    respond(ex, 200, tokenBody("opaque-secret-token"));
+                },
+                null,
+                null,
+                introHandler);
+    }
+
+    /** A counting introspection handler answering {@code status}/{@code body} on every hit. */
+    private static HttpHandler introHandler(AtomicInteger hits, int status, String body) {
+        return ex -> {
+            hits.incrementAndGet();
+            drain(ex);
+            respond(ex, status, body);
+        };
     }
 
     // ── AC3 fixtures: forged JWTs + the stand-in JWKS endpoint ─────────────────────────────────
