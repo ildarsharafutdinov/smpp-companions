@@ -24,8 +24,18 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.Authenticator;
+import java.net.CookieHandler;
 import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandler;
+import java.net.http.HttpResponse.BodySubscriber;
+import java.net.http.HttpResponse.PushPromiseHandler;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,11 +43,21 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
@@ -1036,6 +1056,213 @@ class RopcBindCredentialVerifierTest {
         }
     }
 
+    // ── AC5/AC6: cancellation + zeroization (T6 — the RecordingHttpClient proofs) ────────────
+
+    @Test
+    @DisplayName("cancelHttp() mid-token-exchange: SYNCHRONOUS DenyIndeterminate settlement (F7) + real wire abort + wiped form")
+    void cancelHttpSettlesSynchronouslyAbortsTheWireAndWipesTheForm(@TempDir Path dir) throws Exception {
+        CountDownLatch tokenReceived = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        HttpsServer server = standInIdP(ex -> {
+            tokenReceived.countDown();
+            drain(ex);
+            try {
+                hold.await(10, TimeUnit.SECONDS);   // park: the token exchange is in-flight at cancel time
+                respond(ex, 401, "{}");   // released by the test — bind 2 reads it; the aborted bind 1 never does
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (IOException e) {
+                // best-effort late write on the torn connection — not a verdict signal
+            }
+        }, null);
+        try {
+            ProxyCompanionProperties props = properties(dir, server, Duration.ofSeconds(4), 1);   // max-in-flight = 1
+            RecordingHttpClient recording = recordingClient(props);
+            try (RopcBindCredentialVerifier adapter = adapter(props, recording)) {
+                VerdictRequest request = verify(adapter);
+                assertTrue(tokenReceived.await(5, TimeUnit.SECONDS),
+                        "the token exchange must be in-flight when cancelHttp() fires");
+                RecordingHttpClient.Exchange token = recording.exchange(TOKEN_PATH);
+                assertThat(token.future.isDone())
+                        .as("the token exchange must still be in-flight (the cancel is meaningful)")
+                        .isFalse();
+
+                request.cancelHttp();
+
+                // F7 (this story's decision): settlement is SYNCHRONOUS with cancelHttp() — the pin is
+                // complete the moment the call returns. The guarantee is deliberately DOUBLE-COVERED
+                // (cancelHttp completes the pin AND every pool path settles fail-closed), so neutering
+                // either single arm is masked by the other — verified during the T6 mutation pass: a
+                // drop-the-completion mutation stays green across repeated runs because the pool task's
+                // unwind wins the race. This assertion pins the CONTRACT; the bite-able control for
+                // the cancel arm is the wire-abort assertions below.
+                assertThat(request.future().isDone())
+                        .as("cancelHttp() itself settles the future (the F7 guarantee, AC5)")
+                        .isTrue();
+                assertThat(request.future().getNow(null))
+                        .as("the guaranteed post-cancel verdict is fail-closed")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+
+                // The REAL wire exchange aborted — cancel(true) reached the JDK's sendAsync future
+                // (MinimalFuture → MultiExchange.cancel → connection close). isCancelled() is false by
+                // JDK design; a CancellationException anywhere in the cause chain is the abort signal.
+                assertThatThrownBy(() -> token.future.get(5, TimeUnit.SECONDS))
+                        .as("cancelHttp() must abort the underlying HttpClient exchange, not just the pin")
+                        .matches(t -> hasCauseInChain(t, CancellationException.class),
+                                "a CancellationException in the cause chain (the JDK wraps the abort)");
+
+                // The adjudication unwound (join threw → scope closed → task finally ran): the form is
+                // zeroized, and with max-in-flight=1 the freed permit admits bind 2 to a real verdict.
+                awaitCondition("the token form zeroized", () -> allZero(token.requestBody));
+                hold.countDown();
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("the cancelled adjudication released its permit — bind 2 runs (no saturation)")
+                        .isInstanceOf(Verdict.DenyInvalid.class);
+            }
+        } finally {
+            hold.countDown();   // exception-safe: never strand the parked handler thread
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("cancelHttp() during round 2 aborts the INTROSPECTION wire exchange (F3 — the T5-deferred cause-chain proof)")
+    void cancelHttpAbortsTheIntrospectionWireExchange(@TempDir Path dir) throws Exception {
+        CountDownLatch introReceived = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        AtomicInteger tokenHits = new AtomicInteger();
+        HttpsServer server = standInIdP(
+                ex -> {
+                    drain(ex);
+                    // bind 1 gets the opaque token (drives round 2); bind 2 gets a bare 401 — a fast
+                    // positive-invalid verdict that never touches the introspection endpoint.
+                    if (tokenHits.incrementAndGet() == 1) {
+                        respond(ex, 200, tokenBody("opaque-secret-token"));
+                    } else {
+                        respond(ex, 401, "{}");
+                    }
+                },
+                null,
+                null,
+                ex -> {
+                    drain(ex);
+                    introReceived.countDown();
+                    try {
+                        hold.await(10, TimeUnit.SECONDS);   // round 2 parks mid-flight — only cancelHttp() ends it
+                        respond(ex, 200, "{\"active\":true}");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch (IOException e) {
+                        // best-effort late write on the torn connection — not a verdict signal
+                    }
+                });
+        try {
+            ProxyCompanionProperties props = properties(dir, server, Duration.ofSeconds(4), 1);   // max-in-flight = 1
+            RecordingHttpClient recording = recordingClient(props);
+            try (RopcBindCredentialVerifier adapter = adapter(props, recording)) {
+                VerdictRequest first = verify(adapter);
+                assertTrue(introReceived.await(5, TimeUnit.SECONDS),
+                        "bind 1 must reach round 2 before the cancel (the F3 window)");
+                RecordingHttpClient.Exchange intro = recording.exchange(INTROSPECTION_PATH);
+                assertThat(intro.future.isDone())
+                        .as("the introspection exchange must still be in-flight (the cancel is meaningful)")
+                        .isFalse();
+
+                first.cancelHttp();
+
+                assertThat(first.future().isDone())
+                        .as("cancelHttp() itself settles the future (the F7 guarantee, AC5)")
+                        .isTrue();
+                assertThat(first.future().getNow(null)).isInstanceOf(Verdict.DenyIndeterminate.class);
+                assertThatThrownBy(() -> intro.future.get(5, TimeUnit.SECONDS))
+                        .as("the F3 registration routes cancel(true) to the LIVE round-2 exchange")
+                        .matches(t -> hasCauseInChain(t, CancellationException.class),
+                                "a CancellationException in the cause chain (the JDK wraps the abort)");
+
+                // BOTH rounds' forms wiped on the same completion path; the freed permit admits bind 2.
+                awaitCondition("the token form zeroized",
+                        () -> allZero(recording.exchange(TOKEN_PATH).requestBody));
+                awaitCondition("the introspection form zeroized", () -> allZero(intro.requestBody));
+                hold.countDown();
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("the cancelled round 2 released its permit — bind 2 runs (F3)")
+                        .isInstanceOf(Verdict.DenyInvalid.class);
+            }
+        } finally {
+            hold.countDown();   // exception-safe: never strand the parked handler thread
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("AC6 zeroization on the Allow path: the ROPC form and the access-token response body are wiped")
+    void buffersZeroizedOnAllow(@TempDir Path dir) throws Exception {
+        RSAKey signingKey = key("t6-allow");
+        HttpsServer server = jwtIdP(signingKey, null, null);
+        try {
+            ProxyCompanionProperties props = properties(dir, server);
+            RecordingHttpClient recording = recordingClient(props);
+            try (RopcBindCredentialVerifier adapter = adapter(props, recording)) {
+                awaitCachePopulated(adapter);
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("the JWT happy path allows (precondition)")
+                        .isInstanceOf(Verdict.Allow.class);
+
+                RecordingHttpClient.Exchange token = recording.exchange(TOKEN_PATH);
+                awaitCondition("the ROPC form zeroized after Allow", () -> allZero(token.requestBody));
+                awaitCondition("the access-token response body zeroized",
+                        () -> allZero(token.responseBody.get()));
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("AC6 zeroization on a deny row: the password-bearing form is wiped even on DenyInvalid")
+    void requestBufferZeroizedOnDenyInvalid(@TempDir Path dir) throws Exception {
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 401, "{}");
+        }, null);
+        try {
+            ProxyCompanionProperties props = properties(dir, server);
+            RecordingHttpClient recording = recordingClient(props);
+            try (RopcBindCredentialVerifier adapter = adapter(props, recording)) {
+                assertThat(awaitVerdict(verify(adapter))).isInstanceOf(Verdict.DenyInvalid.class);
+                awaitCondition("the ROPC form zeroized after the deny",
+                        () -> allZero(recording.exchange(TOKEN_PATH).requestBody));
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("AC6 zeroization on the introspection path: both forms and both response bodies are wiped")
+    void buffersZeroizedOnTheIntrospectionPath(@TempDir Path dir) throws Exception {
+        HttpsServer server = opaqueIdP(introHandler(new AtomicInteger(), 200, "{\"active\":true}"));
+        try {
+            ProxyCompanionProperties props = properties(dir, server);
+            RecordingHttpClient recording = recordingClient(props);
+            try (RopcBindCredentialVerifier adapter = adapter(props, recording)) {
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("the opaque-token happy path allows (precondition)")
+                        .isInstanceOf(Verdict.Allow.class);
+
+                awaitCondition("the token-endpoint response body zeroized (it carries the opaque token)",
+                        () -> allZero(recording.exchange(TOKEN_PATH).responseBody.get()));
+                RecordingHttpClient.Exchange intro = recording.exchange(INTROSPECTION_PATH);
+                awaitCondition("the introspection form zeroized (it carries the token)",
+                        () -> allZero(intro.requestBody));
+                awaitCondition("the introspection response body zeroized",
+                        () -> allZero(intro.responseBody.get()));
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
     // ── constructor fail-fast (the T2 bean pattern: a bad config refuses construction) ────────
 
     @Test
@@ -1343,5 +1570,196 @@ class RopcBindCredentialVerifierTest {
 
     private static void drain(HttpExchange exchange) throws IOException {
         exchange.getRequestBody().readAllBytes();
+    }
+
+    // ── T6 fixtures: the recording client (the 2-1 RopcSliceCancelTest pattern, production-tier)
+
+    /**
+     * Delegates to the real TLS-configured client but records every exchange the adapter fires,
+     * with three observables the T6 suites assert on: (a) the adapter's EXACT request-body array —
+     * {@link RopcBindCredentialVerifier.FormPublisher} publishes the form buffer itself, zero-copy,
+     * so the captured reference is the array the adjudication must wipe; (b) the UNWRAPPED JDK
+     * {@code sendAsync} future — {@code cancelHttp()}'s {@code cancel(true)} must reach the real
+     * exchange (a {@code CancellationException} in its cause chain is the abort proof); (c) the
+     * response {@code byte[]} BY REFERENCE — the handler-wrapping {@code thenApply} passes the
+     * same array the adapter's {@code response.body()} returns, i.e. the access-token bytes the
+     * wipe must clear. JWKS fetches flow through too (GET, no body) — callers filter by URI path.
+     */
+    private static final class RecordingHttpClient extends HttpClient {
+
+        private final HttpClient delegate;
+        final List<Exchange> exchanges = new CopyOnWriteArrayList<>();
+
+        RecordingHttpClient(HttpClient delegate) {
+            this.delegate = delegate;
+        }
+
+        /** The first recorded exchange whose request path matches (the adapter fires one per round). */
+        Exchange exchange(String path) {
+            return exchanges.stream()
+                    .filter(e -> e.uri.getPath().equals(path))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException("no recorded exchange for " + path));
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, BodyHandler<T> handler) {
+            byte[] body = null;   // null for body-less exchanges (the JWKS GET)
+            if (request.bodyPublisher().orElse(null)
+                    instanceof RopcBindCredentialVerifier.FormPublisher publisher) {
+                body = publisher.buffer();   // the adapter's exact form array, by reference
+            }
+            Exchange exchange = new Exchange(request.uri(), body);
+            BodyHandler<T> recording = responseInfo -> {
+                BodySubscriber<T> subscriber = handler.apply(responseInfo);
+                return new BodySubscriber<>() {
+                    @Override
+                    public void onSubscribe(Flow.Subscription subscription) {
+                        subscriber.onSubscribe(subscription);
+                    }
+
+                    @Override
+                    public void onNext(List<ByteBuffer> buffers) {
+                        subscriber.onNext(buffers);
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        subscriber.onError(throwable);
+                    }
+
+                    @Override
+                    public void onComplete() {
+                        subscriber.onComplete();
+                    }
+
+                    @Override
+                    public CompletionStage<T> getBody() {
+                        // Same reference the adapter's response.body() returns — the wipe target.
+                        return subscriber.getBody().thenApply(received -> {
+                            if (received instanceof byte[] bytes) {
+                                exchange.responseBody.set(bytes);
+                            }
+                            return received;
+                        });
+                    }
+                };
+            };
+            CompletableFuture<HttpResponse<T>> future = delegate.sendAsync(request, recording);
+            exchange.future = future;   // unwrapped: cancelHttp()'s cancel(true) reaches MultiExchange
+            exchanges.add(exchange);
+            return future;
+        }
+
+        @Override
+        public void close() {
+            delegate.close();
+        }
+
+        @Override
+        public <T> HttpResponse<T> send(HttpRequest request, BodyHandler<T> handler)
+                throws IOException, InterruptedException {
+            return delegate.send(request, handler);
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request, BodyHandler<T> handler, PushPromiseHandler<T> pushPromiseHandler) {
+            return delegate.sendAsync(request, handler, pushPromiseHandler);
+        }
+
+        @Override
+        public Optional<CookieHandler> cookieHandler() {
+            return delegate.cookieHandler();
+        }
+
+        @Override
+        public Optional<Duration> connectTimeout() {
+            return delegate.connectTimeout();
+        }
+
+        @Override
+        public Redirect followRedirects() {
+            return delegate.followRedirects();
+        }
+
+        @Override
+        public Optional<ProxySelector> proxy() {
+            return delegate.proxy();
+        }
+
+        @Override
+        public SSLContext sslContext() {
+            return delegate.sslContext();
+        }
+
+        @Override
+        public SSLParameters sslParameters() {
+            return delegate.sslParameters();
+        }
+
+        @Override
+        public Optional<Authenticator> authenticator() {
+            return delegate.authenticator();
+        }
+
+        @Override
+        public Version version() {
+            return delegate.version();
+        }
+
+        @Override
+        public Optional<Executor> executor() {
+            return delegate.executor();
+        }
+
+        /** One recorded adapter exchange: the exact request form, the wire future, the response body. */
+        private static final class Exchange {
+            final URI uri;
+            final byte[] requestBody;   // null for body-less exchanges (the JWKS GET)
+            final AtomicReference<byte[]> responseBody = new AtomicReference<>();
+            volatile CompletableFuture<?> future;
+
+            Exchange(URI uri, byte[] requestBody) {
+                this.uri = uri;
+                this.requestBody = requestBody;
+            }
+        }
+    }
+
+    /** A recording client around the factory's own build — the adapter's exact TLS posture. */
+    private static RecordingHttpClient recordingClient(ProxyCompanionProperties properties) {
+        return new RecordingHttpClient(new IdpSslContextFactory(properties).newClient());
+    }
+
+    /** The adapter over a recording client — the T6 seam ({@code verify} behaves identically). */
+    private static RopcBindCredentialVerifier adapter(ProxyCompanionProperties properties,
+            RecordingHttpClient recording) {
+        IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
+        return new RopcBindCredentialVerifier(tlsFactory,
+                new OidcStartupDiscovery(properties, tlsFactory), recording);
+    }
+
+    /** True if every byte is zero (a null buffer is "not wiped yet") — the AD-10(3) wipe state. */
+    private static boolean allZero(byte[] buffer) {
+        if (buffer == null) {
+            return false;
+        }
+        for (byte b : buffer) {
+            if (b != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** True if {@code type} appears anywhere in {@code t}'s cause chain (the JDK wraps cancel aborts). */
+    private static boolean hasCauseInChain(Throwable t, Class<? extends Throwable> type) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (type.isInstance(c)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

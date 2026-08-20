@@ -9,6 +9,7 @@ import javax.net.ssl.TrustManagerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
@@ -107,6 +108,24 @@ public final class IdpSslContextFactory {
     /** The resolved reverse-cell oidc node + its config-key prefix; {@code null} on forward cells. */
     public @Nullable ResolvedOidc resolvedOidc() {
         return resolvedOidc;
+    }
+
+    /**
+     * A provider-facing {@link HttpClient} with THIS factory's TLS posture — the single
+     * construction recipe (the adapter's 2-arg ctor builds its one shared client exactly here;
+     * the T6 recording-wrapper tests wrap the same build). Fails fast on forward cells via the
+     * accessors above; {@code connectTimeout} is the configured {@code oidc.timeout}
+     * (per-request budgets are the caller's business).
+     */
+    public HttpClient newClient() {
+        ResolvedOidc resolved = Objects.requireNonNull(resolvedOidc(),
+                "no IdP link on this cell — forward cells carry no companion.*.oidc node "
+                        + "(AD-12 amended 2026-08-18).");
+        return HttpClient.newBuilder()
+                .sslContext(sslContext())
+                .sslParameters(sslParameters())
+                .connectTimeout(resolved.oidc().timeout())
+                .build();
     }
 
     // --- construction steps ------------------------------------------------------------------
