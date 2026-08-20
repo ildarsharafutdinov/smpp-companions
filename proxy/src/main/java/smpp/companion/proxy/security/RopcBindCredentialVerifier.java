@@ -12,23 +12,26 @@ import io.netty.util.AsciiString;
 
 import org.jspecify.annotations.Nullable;
 
-import java.io.ByteArrayOutputStream;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.text.ParseException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Flow;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
@@ -81,7 +84,12 @@ import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
  * {@link String}. The <b>password's {@code zeroize()} is CALLER-OWNED</b> (the relay's
  * continuation {@code finally} + teardown wipe, settled 2.2 T7) — this adapter never wipes it:
  * it reads the password asynchronously while its future is pending. The adapter owns and wipes
- * its own material (the loaded client secret on {@link #close}).
+ * its own material on every completion path (AC6): each adjudication registers its form buffers,
+ * the introspection token bytes, and the parsed response bodies, and zeroizes them in its pool
+ * task's {@code finally} (the loaded client secret is wiped once at {@link #close}). The forms
+ * publish ZERO-COPY — {@link FormPublisher} hands the JDK the registered array itself
+ * ({@code BodyPublishers.ofByteArray} would copy the whole credential-bearing form into heap
+ * chunks no wipe can reach, JDK-source verified) — so the registered array is the one and only copy.
  *
  * <p><b>Issued-token adjudication (Story 3.2 T4).</b> A 200 body carrying a JWT is adjudicated
  * <b>locally</b> against {@link JwksCache}'s cached set (signature, {@code typ} per RFC 8725
@@ -106,8 +114,6 @@ import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
  * carries that guidance; introspection is online-only with no offline cryptographic backstop).
  */
 public final class RopcBindCredentialVerifier implements BindCredentialVerifier, AutoCloseable {
-
-    private static final char[] HEX = "0123456789ABCDEF".toCharArray();
 
     /**
      * Clock-skew tolerance for the JWT {@code exp}/{@code nbf} claim checks (the ratified slice's
@@ -137,14 +143,28 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     /**
      * Eager, fail-closed construction (the T2 bean pattern): the client-secret file is read here and a
      * bad one refuses startup; the TLS context/parameters and discovery metadata arrive pre-validated
-     * from the T2 beans (they fail the boot on their own).
+     * from the T2 beans (they fail the boot on their own). The one shared provider-facing client is
+     * {@link IdpSslContextFactory#newClient()} — this factory's TLS posture, single-sourced.
      *
      * @param tlsFactory the IdP TLS factory (context + AD-34 parameters + the resolved oidc node)
      * @param discovery  the startup discovery probe (must have run — {@code metadata()} fails fast if not)
      */
     public RopcBindCredentialVerifier(IdpSslContextFactory tlsFactory, OidcStartupDiscovery discovery) {
+        this(tlsFactory, discovery, tlsFactory.newClient());
+    }
+
+    /**
+     * Direct client injection: the shared provider-facing {@link HttpClient} arrives built. The
+     * 2-arg ctor passes {@link IdpSslContextFactory#newClient()} — the single TLS-posture recipe;
+     * the T6 cancellation/zeroization suites pass a recording wrapper around the same build (to
+     * observe the real {@code sendAsync} futures and the adapter's exact request buffers), so every
+     * construction path is injection, with the recipe owned by the factory.
+     */
+    RopcBindCredentialVerifier(IdpSslContextFactory tlsFactory, OidcStartupDiscovery discovery,
+            HttpClient http) {
         Objects.requireNonNull(tlsFactory, "tlsFactory");
         Objects.requireNonNull(discovery, "discovery");
+        this.http = Objects.requireNonNull(http, "http");
         IdpSslContextFactory.@Nullable ResolvedOidc resolved = tlsFactory.resolvedOidc();
         if (resolved == null) {
             throw new IllegalStateException("no IdP link on this cell — the ROPC adapter is wired on "
@@ -164,11 +184,6 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         this.clientSecret = ClientSecret.load(
                 Path.of(oidc.clientSecretPath()), resolved.keyPrefix() + ".oidc.client-secret-path");
         this.callTimeout = Objects.requireNonNull(oidc.timeout(), "timeout");
-        this.http = HttpClient.newBuilder()
-                .sslContext(tlsFactory.sslContext())
-                .sslParameters(tlsFactory.sslParameters())
-                .connectTimeout(oidc.timeout())
-                .build();
         this.jwks = new JwksCache(this.http, metadata.jwksUri(),
                 Objects.requireNonNull(oidc.jwksCacheTtl(), "jwksCacheTtl"), this.callTimeout);
         this.adjudicationPool = Executors.newThreadPerTaskExecutor(
@@ -191,20 +206,15 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             return settledDeny();
         }
 
-        CompletableFuture<Verdict> pin = new CompletableFuture<>();
-        // The in-flight exchange cancelHttp() can abort (AD-32). Null until sendAsync fires — the
-        // saturation/expired-budget paths start no wire call, so it stays null there by design. The
-        // T5 introspection round TAKES THE SLOT OVER once the token exchange completes (F3), so a
-        // cancel landing mid-round-2 aborts that exchange instead.
-        AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall = new AtomicReference<>();
+        Adjudication adj = new Adjudication(rc);
 
         // The adjudication deadline is the verifier's WHOLE budget (the relay arms no timeout of its own,
         // F14): clamp the per-round-trip budget to the time actually left, and deny without a wire call
         // when none is.
         Duration remaining = Duration.between(Instant.now(), rc.deadline());
         if (!remaining.isPositive()) {
-            pin.complete(new Verdict.DenyIndeterminate());
-            return new RopcVerdictRequest(pin, activeCall);
+            adj.pin.complete(new Verdict.DenyIndeterminate());
+            return new RopcVerdictRequest(adj.pin, adj.activeCall);
         }
         Duration budget = callTimeout.compareTo(remaining) < 0 ? callTimeout : remaining;
 
@@ -212,51 +222,53 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         // fires only after tryAcquire succeeds, so a denied bind never transmits the password-bearing
         // form to the provider (the pre-fix shape leaked exactly that).
         if (!admission.tryAcquire()) {
-            pin.complete(new Verdict.DenyIndeterminate());
-            return new RopcVerdictRequest(pin, activeCall);
+            adj.pin.complete(new Verdict.DenyIndeterminate());
+            return new RopcVerdictRequest(adj.pin, adj.activeCall);
         }
 
         try {
             CompletableFuture<HttpResponse<byte[]>> tokenExchange = http.sendAsync(
-                    tokenRequest(cred, budget), HttpResponse.BodyHandlers.ofByteArray());
+                    tokenRequest(cred, budget, adj), HttpResponse.BodyHandlers.ofByteArray());
             // Publish the handle BEFORE verify() returns so cancelHttp() can abort the exchange race-free
             // (the relay only ever cancels the VerdictRequest it got back — after this line).
-            activeCall.set(tokenExchange);
-            adjudicationPool.execute(() -> settleAdjudication(ctx, rc, tokenExchange, activeCall, pin));
+            adj.activeCall.set(tokenExchange);
+            adjudicationPool.execute(() -> settleAdjudication(ctx, adj, tokenExchange));
         } catch (RejectedExecutionException | IllegalStateException e) {
             // Use-after-close hardening (deferred-work §2.1 item 2): the pool rejected the task (shut
             // down between acquire and execute) or the shared client is closed. Release the permit,
-            // abort whatever fired, settle fail-closed. The PASSWORD is deliberately NOT wiped here —
-            // zeroization is caller-owned (relay continuation finally + teardown, settled 2.2 T7).
+            // abort whatever fired, zeroize the form (this catch is its only completion path — the
+            // pool task never started), settle fail-closed. The PASSWORD is deliberately NOT wiped
+            // here — zeroization is caller-owned (relay continuation finally + teardown, 2.2 T7).
             admission.release();
-            CompletableFuture<HttpResponse<byte[]>> fired = activeCall.get();
+            CompletableFuture<HttpResponse<byte[]>> fired = adj.activeCall.get();
             if (fired != null) {
                 fired.cancel(true);
             }
-            pin.complete(new Verdict.DenyIndeterminate());
+            adj.zeroizeSensitive();
+            adj.pin.complete(new Verdict.DenyIndeterminate());
         }
-        return new RopcVerdictRequest(pin, activeCall);
+        return new RopcVerdictRequest(adj.pin, adj.activeCall);
     }
 
     /**
      * The pool task: re-bind the context on THIS thread via the same handle (AD-5), run the structured
-     * fan-out, settle the pin with its verdict — fail-closed on anything unexpected. The permit is
-     * released exactly once here (every early exit still runs the {@code finally}).
+     * fan-out, settle the pin with its verdict — fail-closed on anything unexpected. The {@code finally}
+     * is the adjudication's completion path (AD-10(3)): the permit frees FIRST (a waiting bind never
+     * queues behind a wipe), then every registered secret buffer is zeroized — whatever the verdict was.
      */
-    private void settleAdjudication(ScopedValue<RequestContext> ctx, RequestContext rc,
-            CompletableFuture<HttpResponse<byte[]>> tokenExchange,
-            AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
-            CompletableFuture<Verdict> pin) {
+    private void settleAdjudication(ScopedValue<RequestContext> ctx, Adjudication adj,
+            CompletableFuture<HttpResponse<byte[]>> tokenExchange) {
         try {
-            if (pin.isDone()) {
+            if (adj.pin.isDone()) {
                 return;   // cancelHttp() landed before this task started — exchange aborted, verdict settled
             }
-            Verdict verdict = ScopedValue.where(ctx, rc).call(() -> adjudicate(tokenExchange, activeCall, rc));
-            pin.complete(verdict);
+            Verdict verdict = ScopedValue.where(ctx, adj.rc).call(() -> adjudicate(adj, tokenExchange));
+            adj.pin.complete(verdict);
         } catch (Throwable t) {
-            pin.complete(new Verdict.DenyIndeterminate());   // fail-closed on any unexpected failure (AD-11)
+            adj.pin.complete(new Verdict.DenyIndeterminate());   // fail-closed on any unexpected failure (AD-11)
         } finally {
             admission.release();
+            adj.zeroizeSensitive();
         }
     }
 
@@ -270,15 +282,16 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * verified empirically on JDK 25) — so round 2 cannot re-join this scope. The scope is what
      * makes the adjudication shuttable from the teardown path (AD-25): {@code cancelHttp()} cancels
      * the exchange &rarr; the forked {@code join} throws &rarr; {@code join()} fails &rarr;
-     * fail-closed below &rarr; {@code close()} unwinds the scope with the subtask; round 2 is
-     * cancelled the same way through the F3-registered future (see {@link #introspect}).
+     * fail-closed below &rarr; the scope closes with the subtask; round 2 is cancelled the same way
+     * through the F3-registered future (see {@link #introspect}).
      */
-    private Verdict adjudicate(CompletableFuture<HttpResponse<byte[]>> tokenExchange,
-            AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall, RequestContext rc) {
+    private Verdict adjudicate(Adjudication adj, CompletableFuture<HttpResponse<byte[]>> tokenExchange) {
         try (var scope = StructuredTaskScope.open(Joiner.awaitAllSuccessfulOrThrow())) {
             Subtask<HttpResponse<byte[]>> tokenTask = scope.fork(tokenExchange::join);
             scope.join();   // throws on timeout / network error / cancellation → fail-closed below
-            return mapTokenResponse(activeCall, rc, tokenTask.get());
+            HttpResponse<byte[]> response = tokenTask.get();
+            adj.registerSensitive(response.body());   // AC6: the body carries the issued access token
+            return mapTokenResponse(adj, response);
         } catch (Throwable t) {
             return new Verdict.DenyIndeterminate();   // timeout / network error / cancel → AD-11
         }
@@ -290,11 +303,10 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * {@code invalid_grant} (2-1 fixture finding #6), while rate-limit/config/authz 400s carry other
      * or absent error codes and are not credential verdicts.
      */
-    private Verdict mapTokenResponse(AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
-            RequestContext rc, HttpResponse<byte[]> response) {
+    private Verdict mapTokenResponse(Adjudication adj, HttpResponse<byte[]> response) {
         int status = response.statusCode();
         if (status == 200) {
-            return adjudicateIssuedToken(activeCall, rc, response.body());
+            return adjudicateIssuedToken(adj, response.body());
         }
         if (status == 401) {
             // RFC 6749 §5.2: a bare 401 from a token endpoint IS the provider's positive auth-layer
@@ -328,8 +340,7 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * malformed-JWT row (three segments that do not parse &mdash; JWT territory, denied locally by
      * {@link #verifyJwt}) distinct from the opaque row.
      */
-    private Verdict adjudicateIssuedToken(AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
-            RequestContext rc, byte[] body) {
+    private Verdict adjudicateIssuedToken(Adjudication adj, byte[] body) {
         String token = accessToken(body);
         if (token == null || token.isBlank()) {
             return new Verdict.DenyIndeterminate();   // no token issued (empty/HTML/no-field body) → unverifiable
@@ -341,7 +352,7 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             }
         }
         if (segments != 3) {
-            return introspect(activeCall, rc, token);   // opaque token → RFC 7662 (AC4)
+            return introspect(adj, token);   // opaque token → RFC 7662 (AC4)
         }
         return verifyJwt(token);
     }
@@ -434,18 +445,19 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * F3-registered future above, the join throws. The join is uninterruptible, but the clamped
      * request {@code timeout} bounds it &mdash; a lost cancel cannot park the pool thread forever.
      */
-    private Verdict introspect(AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall,
-            RequestContext rc, String token) {
-        Duration remaining = Duration.between(Instant.now(), rc.deadline());
+    private Verdict introspect(Adjudication adj, String token) {
+        Duration remaining = Duration.between(Instant.now(), adj.rc.deadline());
         if (!remaining.isPositive()) {
             return new Verdict.DenyIndeterminate();   // round-2 budget exhausted → no wire call
         }
         Duration budget = callTimeout.compareTo(remaining) < 0 ? callTimeout : remaining;
         CompletableFuture<HttpResponse<byte[]>> intro = http.sendAsync(
-                introspectRequest(token, budget), HttpResponse.BodyHandlers.ofByteArray());
-        activeCall.set(intro);   // F3: the same slot the token exchange used — cancelHttp() aborts round 2 too
+                introspectRequest(token, budget, adj), HttpResponse.BodyHandlers.ofByteArray());
+        adj.activeCall.set(intro);   // F3: the same slot the token exchange used — cancelHttp() aborts round 2 too
         try {
-            return mapIntrospection(intro.join());
+            HttpResponse<byte[]> response = intro.join();
+            adj.registerSensitive(response.body());   // AC6: the introspection answer joins the wipe set
+            return mapIntrospection(response);
         } catch (RuntimeException e) {   // CancellationException / HttpTimeoutException / IO failure
             return new Verdict.DenyIndeterminate();   // fail-closed (AD-11) — never an exception out of the arm
         }
@@ -479,7 +491,7 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * body, percent-encoded by the same raw-octet encoder as the ROPC form (AC6: no {@code String}
      * form buffers).
      */
-    private HttpRequest introspectRequest(String token, Duration budget) {
+    private HttpRequest introspectRequest(String token, Duration budget, Adjudication adj) {
         byte[] clientIdBytes = clientId.getBytes(StandardCharsets.US_ASCII);
         byte[] secretBytes = clientSecret.value();
         byte[] basicRaw = new byte[clientIdBytes.length + 1 + secretBytes.length];
@@ -489,15 +501,16 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         String basic = Base64.getEncoder().encodeToString(basicRaw);
         Arrays.fill(basicRaw, (byte) 0);   // AD-10: the base64 copy exists — wipe the concatenated raw pair
 
-        ByteArrayOutputStream form = new ByteArrayOutputStream(6 + 3 * token.length());
-        form.writeBytes("token=".getBytes(StandardCharsets.US_ASCII));
         byte[] tokenBytes = token.getBytes(StandardCharsets.UTF_8);
-        urlEncode(form, tokenBytes, 0, tokenBytes.length);
+        adj.registerSensitive(tokenBytes);   // AC6: the issued token's UTF-8 bytes
+        FormBuffer form = new FormBuffer(6 + 3 * tokenBytes.length);
+        form.literal("token=").urlEncoded(tokenBytes, 0, tokenBytes.length);
+        adj.registerSensitive(form.backingArray());   // AC6: the form carries the token
         return HttpRequest.newBuilder(metadata.introspectionEndpoint())
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .header("Authorization", "Basic " + basic)
                 .timeout(budget)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(form.toByteArray()))
+                .POST(new FormPublisher(form.backingArray(), form.length()))
                 .build();
     }
 
@@ -507,59 +520,184 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * {@code AsciiString.toString()}, whose lazy cache immortalizes the secret past any wipe); the
      * assembled form is a {@code byte[]} handed to the body publisher, never a {@link String}.
      */
-    private HttpRequest tokenRequest(BindCredential cred, Duration budget) {
+    private HttpRequest tokenRequest(BindCredential cred, Duration budget, Adjudication adj) {
         AsciiString uid = cred.systemId().value();
         AsciiString pw = cred.password().value();
         byte[] secretBytes = clientSecret.value();
         // Exact worst-case bound: every encoded octet is at most 3 bytes (%XX) and the four literal
         // keys + separators sum to 62 ASCII bytes ("grant_type=password&client_id=" 27 + "&username="
         // 10 + "&client_secret=" 15 + "&password=" 10) — the buffer is allocated once, never grows.
-        ByteArrayOutputStream form = new ByteArrayOutputStream(
+        FormBuffer form = new FormBuffer(
                 62 + 3 * (clientId.length() + uid.length() + secretBytes.length + pw.length()));
-        form.writeBytes("grant_type=password&client_id=".getBytes(StandardCharsets.US_ASCII));
-        byte[] clientIdBytes = clientId.getBytes(StandardCharsets.US_ASCII);
-        urlEncode(form, clientIdBytes, 0, clientIdBytes.length);
-        form.writeBytes("&username=".getBytes(StandardCharsets.US_ASCII));
-        urlEncode(form, uid.array(), uid.arrayOffset(), uid.length());
-        form.writeBytes("&client_secret=".getBytes(StandardCharsets.US_ASCII));
-        urlEncode(form, clientSecret.value(), 0, clientSecret.value().length);
-        form.writeBytes("&password=".getBytes(StandardCharsets.US_ASCII));
-        urlEncode(form, pw.array(), pw.arrayOffset(), pw.length());
+        form.literal("grant_type=password&client_id=")
+                .urlEncoded(clientId.getBytes(StandardCharsets.US_ASCII), 0, clientId.length())
+                .literal("&username=")
+                .urlEncoded(uid.array(), uid.arrayOffset(), uid.length())
+                .literal("&client_secret=")
+                .urlEncoded(secretBytes, 0, secretBytes.length)
+                .literal("&password=")
+                .urlEncoded(pw.array(), pw.arrayOffset(), pw.length());
+        adj.registerSensitive(form.backingArray());   // AC6: the form carries the password + client secret
         return HttpRequest.newBuilder(metadata.tokenEndpoint())
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .timeout(budget)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(form.toByteArray()))
+                .POST(new FormPublisher(form.backingArray(), form.length()))
                 .build();
     }
 
     /**
-     * {@code application/x-www-form-urlencoded} percent-encoding straight from raw bytes: the RFC 3986
-     * unreserved set stays verbatim, every other octet becomes {@code %XX}. Routing the encoding through
-     * {@code String}/URLEncoder would materialize a {@link String} of the secret first — exactly what
-     * the raw-byte rule forbids.
+     * One in-flight adjudication's mutable state (AC5/AC6): the verdict pin, the
+     * cancelHttp()-abortable wire-call slot (F3 — the token exchange hands the slot to the
+     * introspection round), the captured {@link RequestContext}, and the registry of the adapter's
+     * OWN secret buffers. Created on the caller's thread inside {@link #verify}; the pool task
+     * takes it over from there. The registry is zeroized on every completion path (AD-10(3)) —
+     * the pool task's {@code finally} and the use-after-close catch in {@link #verify}.
      *
-     * <p>Deliberately not Apache Commons Codec's {@code URLCodec}: commons-codec is on no proxy
-     * classpath today (a NEW runtime dependency for a twelve-line encoder), its {@code www-form-url}
-     * safe set differs from RFC 3986 unreserved ({@code *} allowed, {@code ~} escaped), and the
-     * security/ adapter stack stays JDK+Nimbus by design (AD-36's dependency-minimalism — the same
-     * rule that kept {@code oauth2-oidc-sdk} out, 2026-08-19 owner note).
+     * <p>Deliberately NOT registered: the bind password's backing array (zeroization is
+     * CALLER-OWNED, F1/2.2 T7 — the adapter reads it asynchronously while its future is pending)
+     * and the file-loaded client secret (wiped once at {@link #close}); the registry holds only
+     * per-adjudication transient copies.
      */
-    private static void urlEncode(ByteArrayOutputStream out, byte[] raw, int offset, int length) {
-        for (int i = 0; i < length; i++) {
-            int c = raw[offset + i] & 0xff;
-            if (isUnreserved(c)) {
-                out.write(c);
-            } else {
-                out.write('%');
-                out.write(HEX[(c >> 4) & 0xf]);
-                out.write(HEX[c & 0xf]);
+    private static final class Adjudication {
+        final CompletableFuture<Verdict> pin = new CompletableFuture<>();
+        final AtomicReference<CompletableFuture<HttpResponse<byte[]>>> activeCall = new AtomicReference<>();
+        final RequestContext rc;
+        private final List<byte[]> sensitiveBuffers = new ArrayList<>(4);
+
+        Adjudication(RequestContext rc) {
+            this.rc = rc;
+        }
+
+        /** Registers one of the adapter's own secret arrays (a form, token bytes, a parsed body). */
+        void registerSensitive(byte[] buffer) {
+            sensitiveBuffers.add(buffer);
+        }
+
+        /** Zeroizes every registered array — the AD-10(3) wipe, on completion paths only. */
+        void zeroizeSensitive() {
+            for (byte[] buffer : sensitiveBuffers) {
+                Arrays.fill(buffer, (byte) 0);
             }
         }
     }
 
-    private static boolean isUnreserved(int c) {
-        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-                || c == '-' || c == '.' || c == '_' || c == '~';
+    /**
+     * The form builder (AC6): one bound-allocated {@code byte[]} with a write cursor — no
+     * {@link java.io.ByteArrayOutputStream}, so building a form never materializes a SECOND
+     * secret-bearing array (the stream's internal buffer plus its {@code toByteArray} copy). The
+     * buffer is allocated at the exact worst-case bound, never grows, and the published request
+     * body IS this array (see {@link FormPublisher}) — the single copy an adjudication registers
+     * and wipes.
+     */
+    private static final class FormBuffer {
+
+        private static final char[] HEX = "0123456789ABCDEF".toCharArray();
+
+        private final byte[] buf;
+        private int len;
+
+        FormBuffer(int bound) {
+            buf = new byte[bound];
+        }
+
+        /** Appends verbatim ASCII — the literal keys and separators. */
+        FormBuffer literal(String ascii) {
+            byte[] bytes = ascii.getBytes(StandardCharsets.US_ASCII);
+            System.arraycopy(bytes, 0, buf, len, bytes.length);
+            len += bytes.length;
+            return this;
+        }
+
+        /**
+         * Appends {@code application/x-www-form-urlencoded} percent-encoding straight from raw
+         * bytes: the RFC 3986 unreserved set stays verbatim, every other octet becomes
+         * {@code %XX}. Routing the encoding through {@code String}/URLEncoder would materialize a
+         * {@link String} of the secret first — exactly what the raw-byte rule forbids.
+         */
+        FormBuffer urlEncoded(byte[] raw, int offset, int length) {
+            for (int i = 0; i < length; i++) {
+                int c = raw[offset + i] & 0xff;
+                if (isUnreserved(c)) {
+                    buf[len] = (byte) c;
+                    len += 1;
+                } else {
+                    buf[len] = '%';
+                    buf[len + 1] = (byte) HEX[(c >> 4) & 0xf];
+                    buf[len + 2] = (byte) HEX[c & 0xf];
+                    len += 3;
+                }
+            }
+            return this;
+        }
+
+        private static boolean isUnreserved(int c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                    || c == '-' || c == '.' || c == '_' || c == '~';
+        }
+
+        byte[] backingArray() {
+            return buf;
+        }
+
+        int length() {
+            return len;
+        }
+    }
+
+    /**
+     * The request-body publisher for the forms (AC6): hands the JDK client the adapter's EXACT
+     * buffer — {@code ByteBuffer.wrap}, zero copies. {@link HttpRequest.BodyPublishers#ofByteArray}
+     * copies the whole credential-bearing form into fresh heap chunks at subscribe time
+     * (JDK-source verified, 25.0.3), leaving secret copies the adapter cannot reach with any
+     * wipe; publishing the wrapped buffer keeps the form to the ONE array the adjudication
+     * registers and zeroizes. Single-item delivery — the forms are always fully buffered, so one
+     * {@code onNext} followed by {@code onComplete} is the whole contract.
+     */
+    static final class FormPublisher implements HttpRequest.BodyPublisher {
+
+        private final byte[] buffer;
+        private final int length;
+
+        FormPublisher(byte[] buffer, int length) {
+            this.buffer = buffer;
+            this.length = length;
+        }
+
+        /** The adapter's exact form array — what the adjudication registers and wipes (AC6). */
+        byte[] buffer() {
+            return buffer;
+        }
+
+        @Override
+        public long contentLength() {
+            return length;
+        }
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
+            Objects.requireNonNull(subscriber);
+            subscriber.onSubscribe(new Flow.Subscription() {
+                private boolean delivered;
+
+                @Override
+                public void request(long n) {
+                    if (n <= 0) {
+                        subscriber.onError(new IllegalArgumentException("non-positive request"));
+                        return;
+                    }
+                    if (!delivered) {
+                        delivered = true;
+                        subscriber.onNext(ByteBuffer.wrap(buffer, 0, length));
+                        subscriber.onComplete();
+                    }
+                }
+
+                @Override
+                public void cancel() {
+                    delivered = true;
+                }
+            });
+        }
     }
 
     private static VerdictRequest settledDeny() {
