@@ -87,7 +87,7 @@ development_status:
   # (2026-08-08, verdict MET, recorded in the AD-12 accepted-risk register) — deliberately no story key here.
   # Story 3.3+ (TLS modes A/B/C, forward-acceptor widening) not yet created.
   epic-3: in-progress
-  3-2-oidc-ropc-bind-adjudicator: review
+  3-2-oidc-ropc-bind-adjudicator: done
   epic-3-retrospective: optional
 
   # --- Epic 4: Operate the proxy in production — structured logs and read-only loopback /metrics ---
