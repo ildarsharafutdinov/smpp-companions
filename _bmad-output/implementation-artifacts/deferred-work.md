@@ -492,3 +492,9 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   rule change expected); (f) Keycloak vendor SDKs remain banned regardless. Owner note 2026-08-19
   (recorded verbatim intent: "find a library for oidc discovery or parsing to replace
   OidcStartupDiscovery.{probe,parseDocument}").
+
+## Deferred from: Story 3.3 scoping decision (2026-08-21, owner-directed split)
+
+- source_spec: none
+  summary: The combined relay pre-widening refactoring round (couple-vocabulary unification, `RelayHandler` direction-split, `ConnectionEntry` state-manager extraction, `BindInterceptor` role-split seam decisions — the 2026-08-16 owner-note cluster) is deferred to Story 3.4, running POST-widening.
+  evidence: Owner decision 2026-08-21 at the bmad-build Story-3.3 multi-goal checkpoint: 3.3 = TLS modes A/B/C machinery + forward-role relay wiring + F13 hardening (goals 2+3+4); the cleanup/decision round (goal 1) becomes Story 3.4, folded together with the wider refactoring. This consciously overrides the 2026-08-16 timing note ("AFTER Story 2.2, BEFORE Epic 3 widens the relay surface") — 3.3 does the widening first; 3.4 re-runs the full mutation pass after the renames/splits (the note's "a rename can silently de-target RED-on-neuter biters" caution applies with extra force over the widened surface). The state-manager decision still precedes the interceptor/relay-handler splits when 3.4 runs ("make this decision FIRST — it is the umbrella").
