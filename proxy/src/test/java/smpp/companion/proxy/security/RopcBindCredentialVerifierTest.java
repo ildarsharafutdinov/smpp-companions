@@ -364,7 +364,22 @@ class RopcBindCredentialVerifierTest {
     @Test
     @DisplayName("kid present but signature by a DIFFERENT key → DenyIndeterminate (unverifiable, not invalid)")
     void wrongSignerYieldsDenyIndeterminate(@TempDir Path dir) throws Exception {
-        HttpsServer server = jwtIdP(key("forger"), new JOSEObjectType("JWT"), key("t4-key"));
+        // A Story 3.2 T10 mutation-pass finding: the original shape used jwtIdP(key("forger"), …,
+        // key("t4-key")), which stamps the SIGNING key's kid ("forger") in the header — the cache
+        // misses and the KID-MISS arm denies; the signature line was unreachable (a neutered verify()
+        // stayed green — the DisplayName's "kid present" was false). The bite-able shape is the
+        // substitution attack: header kid = the CACHED key's id, signature = the forger's — only the
+        // signature arm can catch this.
+        RSAKey forger = key("forger");
+        RSAKey cached = key("t4-key");
+        HttpsServer server = standInIdP(
+                ex -> {
+                    drain(ex);
+                    respond(ex, 200, tokenBody(jwt(forger, cached.getKeyID(),
+                            new JOSEObjectType("JWT"), b -> validClaims(b, issuerOf(ex)))));
+                },
+                null,
+                jwksHandler(cached));
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             awaitCachePopulated(adapter);
             assertThat(awaitVerdict(verify(adapter)))
@@ -1017,6 +1032,63 @@ class RopcBindCredentialVerifierTest {
                     .as("the closed-state deny is repeatable (no permit leak strands later verifies)")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
             assertThat(tokenHits.get()).isEqualTo(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("AC5/F12: a null ScopedValue handle fails FAST (requireNonNull guards the handle itself)")
+    void nullContextHandleFailsFast(@TempDir Path dir) throws Exception {
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 401, "{}");
+        }, null);
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            // F12 (a 2-1 review MUST-keep): the HANDLE is a programming artifact, not a verdict input —
+            // a null one is a wiring bug and must fail fast with the guard's name, not fall into any
+            // fail-closed verdict row (contrast unboundContextFailsClosed: an UNBOUND handle denies).
+            assertThatThrownBy(() -> adapter.verify(cred(), null))
+                    .isInstanceOf(NullPointerException.class)
+                    // EXACT match (a Story 3.2 T10 mutation-pass finding): the JDK's helpful-NPE
+                    // message for the unguarded dereference quotes the parameter name
+                    // ("...because \"ctx\" is null"), so a substring assertion passes WITHOUT the
+                    // guard — only requireNonNull's literal "ctx" message distinguishes the guard
+                    // from the JVM diagnostic.
+                    .hasMessage("ctx");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("AC6: the bind password's zeroization stays CALLER-OWNED — the adapter never wipes it")
+    void passwordZeroizationStaysCallerOwned(@TempDir Path dir) throws Exception {
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 401, "{}");   // the fast bare-401 deny row — one complete wire adjudication
+        }, null);
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            Password password = new Password(new AsciiString("testpass"));
+            assertThat(awaitVerdict(verify(adapter, new BindCredential(cred().systemId(), password),
+                    Instant.now().plusSeconds(15))))
+                    .as("the wire row ran to a settled verdict before the wipe assertion")
+                    .isInstanceOf(Verdict.DenyInvalid.class);
+            // Read the shared backing bytes directly (never toString — F1). If any adapter path wiped
+            // the password, every octet would be zero here.
+            AsciiString value = password.value();
+            boolean allZero = true;
+            for (int i = value.arrayOffset(); i < value.arrayOffset() + value.length(); i++) {
+                if (value.array()[i] != 0) {
+                    allZero = false;
+                    break;
+                }
+            }
+            assertThat(allZero)
+                    .as("the adapter NEVER zeroizes the caller-owned password (the relay's continuation "
+                            + "finally + teardown own the wipe, 2.2 T7) — after a settled adjudication "
+                            + "the bytes must still be live")
+                    .isFalse();
         } finally {
             server.stop(0);
         }
