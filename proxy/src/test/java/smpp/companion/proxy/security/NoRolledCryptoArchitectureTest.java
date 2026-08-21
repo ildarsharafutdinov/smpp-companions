@@ -15,7 +15,10 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * non-Nimbus JWT library. Story 2.1 Task 5 extends the scaffold rule (which only forbade {@code sun.security..})
  * with the {@code javax.crypto}/{@code MessageDigest} forbid, the third-party-stack forbid, and the positive
  * AC7 assertions that {@code RopcSlice} — the test-tier client that ratifies the AD-12 port — uses the JDK
- * {@code HttpClient} and Nimbus.
+ * {@code HttpClient} and Nimbus. Story 3.2 Task 8 (AC10) widens those positive pins to the production adapter:
+ * {@code RopcBindCredentialVerifier} now rides the same two stacks under the same rules — the condition is
+ * evaluated per class, so an adapter that drifts off the JDK client or off Nimbus fails its row even while the
+ * slice stays compliant (the slice can ratify the contract, it cannot mask the production tier).
  */
 @AnalyzeClasses(packages = "smpp.companion.proxy")
 class NoRolledCryptoArchitectureTest {
@@ -48,20 +51,29 @@ class NoRolledCryptoArchitectureTest {
             .because("the ROPC client must use java.net.http.HttpClient + Nimbus only (AD-12/AD-36/SEC-4); "
                     + "no Keycloak SDK, no Apache/OkHttp, no Spring web client, no alternate JWT lib");
 
-    /** AC7: the ROPC slice ratifies that the port's verifier uses the JDK builtin {@code HttpClient}. */
+    /**
+     * AC7 / AC10-T8: the ROPC wire rides the JDK builtin {@code HttpClient} — both {@code RopcSlice} (the test-tier
+     * client that ratified the AD-12 port) and {@code RopcBindCredentialVerifier} (the production adapter behind it).
+     * Referenced via {@code getSimpleName()} so a rename refactors the rule with the class.
+     */
     @ArchTest
-    static final ArchRule ropcSliceUsesJdkHttpClient =
+    static final ArchRule ropcClientsUseJdkHttpClient =
         classes()
-            .that().haveSimpleName("RopcSlice")
+            .that().haveSimpleName(RopcSlice.class.getSimpleName())
+            .or().haveSimpleName(RopcBindCredentialVerifier.class.getSimpleName())
             .should().dependOnClassesThat().resideInAPackage("java.net.http..")
             .because("AC7 / AD-32 / AC5: the ROPC client must use java.net.http.HttpClient — the cancelHttp() wire "
                     + "abort and the raw-byte password/token hygiene depend on the JDK builtin client");
 
-    /** AC7: the ROPC slice ratifies JWT/JWKS verification via Nimbus (no hand-rolled JWT). */
+    /**
+     * AC7 / AC10-T8: JWT/JWKS verification goes through Nimbus (no hand-rolled JWT) — asserted of the test-tier
+     * slice AND the production adapter, per class, for the same anti-masking reason as the HttpClient pin above.
+     */
     @ArchTest
-    static final ArchRule ropcSliceUsesNimbus =
+    static final ArchRule ropcClientsUseNimbus =
         classes()
-            .that().haveSimpleName("RopcSlice")
+            .that().haveSimpleName(RopcSlice.class.getSimpleName())
+            .or().haveSimpleName(RopcBindCredentialVerifier.class.getSimpleName())
             .should().dependOnClassesThat().resideInAPackage("com.nimbusds..")
             .because("AC7 / SEC-4: JWT signature + JWKS + claim verification must use Nimbus JOSE+JWT, never hand-rolled");
 }
