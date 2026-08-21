@@ -88,6 +88,7 @@ development_status:
   # Story 3.3+ (TLS modes A/B/C, forward-acceptor widening) not yet created.
   epic-3: in-progress
   3-2-oidc-ropc-bind-adjudicator: done
+  3-3-tls-modes-and-forward-acceptor: in-progress
   epic-3-retrospective: optional
 
   # --- Epic 4: Operate the proxy in production — structured logs and read-only loopback /metrics ---
