@@ -168,7 +168,11 @@ class IdpSslContextFactoryTest {
         assertThatThrownBy(() -> new IdpSslContextFactory(
                 reverseB(empty, RelayTestFixtures.IDP_STORE_PASSWORD, "https://localhost:8443/realms/x")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("empty")
+                // Arm-specific (a Story 3.2 T10 mutation-pass finding): the bare "empty" substring is
+                // satisfied by the FILENAME (empty.p12) inside the shared load-catch message, so a
+                // neutered zero-byte guard stayed green via the wrong arm — the shared-substring
+                // masking trap, rediscovered by the consolidated pass.
+                .hasMessageContaining("is empty (zero bytes)")
                 .hasMessageContaining("SEC-050");
     }
 

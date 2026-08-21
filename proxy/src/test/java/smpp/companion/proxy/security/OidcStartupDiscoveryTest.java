@@ -129,6 +129,10 @@ class OidcStartupDiscoveryTest {
         try {
             assertThatThrownBy(() -> discovery(reverseBProperties(idpStore(dir), base(server))))
                     .isInstanceOf(IllegalStateException.class)
+                    // Arm-specific (a Story 3.2 T10 mutation-pass finding): "refusing to start"/"AD-12"
+                    // are shared by every discovery refusal arm — without this substring a neutered
+                    // parse guard stays green via the missing-field arm's message.
+                    .hasMessageContaining("unparseable")
                     .hasMessageContaining("refusing to start")
                     .hasMessageContaining("AD-12");
         } finally {
@@ -161,6 +165,10 @@ class OidcStartupDiscoveryTest {
         assertThatThrownBy(() -> discovery(
                 reverseBProperties(idpStore(dir), "https://localhost:" + deadPort + "/realms/x")))
                 .isInstanceOf(IllegalStateException.class)
+                // Arm-specific (a Story 3.2 T10 mutation-pass finding): same shared-substring weakness
+                // as the malformed-body row — pin the unreachable arm's own text so a message-neuter
+                // cannot hide behind it.
+                .hasMessageContaining("unreachable")
                 .hasMessageContaining("refusing to start")
                 .hasMessageContaining("AD-12");
     }

@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-08-19
+last_updated: 2026-08-21
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -87,7 +87,7 @@ development_status:
   # (2026-08-08, verdict MET, recorded in the AD-12 accepted-risk register) — deliberately no story key here.
   # Story 3.3+ (TLS modes A/B/C, forward-acceptor widening) not yet created.
   epic-3: in-progress
-  3-2-oidc-ropc-bind-adjudicator: in-progress
+  3-2-oidc-ropc-bind-adjudicator: review
   epic-3-retrospective: optional
 
   # --- Epic 4: Operate the proxy in production — structured logs and read-only loopback /metrics ---
