@@ -10,6 +10,8 @@ import com.nimbusds.jwt.SignedJWT;
 
 import io.netty.util.AsciiString;
 
+import lombok.extern.slf4j.Slf4j;
+
 import org.jspecify.annotations.Nullable;
 
 import java.net.http.HttpClient;
@@ -36,6 +38,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.StructuredTaskScope.Joiner;
 import java.util.concurrent.StructuredTaskScope.Subtask;
 import java.util.concurrent.atomic.AtomicReference;
@@ -113,6 +116,7 @@ import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
  * JWKS cache (F6) &mdash; operators should prefer JWT issuance (the {@code Oidc} config javadoc
  * carries that guidance; introspection is online-only with no offline cryptographic backstop).
  */
+@Slf4j
 public final class RopcBindCredentialVerifier implements BindCredentialVerifier, AutoCloseable {
 
     /**
@@ -743,17 +747,34 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     }
 
     /**
-     * Minimal shutdown seam (the T7 lifecycle stop body — deny in-flight with {@code shutdownNow()} +
-     * await + fail-closed log, AD-22 ordering once the JWKS refresh exists — wraps this): denying
-     * in-flight is structural — {@code shutdownNow()} interrupts the pool tasks, each settles its pin
-     * fail-closed in its catch, and every post-close verify settles via the use-after-close arm above.
-     * The JWKS refresh stops FIRST (AD-22: refresh before cache close) so no refresh races the
-     * closing shared client.
+     * The T7 AD-22 stop body (invoked by {@link AdjudicationLifecycle}; also the inferred destroy
+     * method — idempotent, the failed-boot backstop). Order: <b>deny in-flight FIRST</b> —
+     * {@code shutdownNow()} interrupts every pool task (each settles its pin fail-closed in its
+     * catch) and {@code awaitTermination} bounds the drain at the per-request budget + 1s, logging
+     * fail-closed and proceeding on timeout (the hard close below aborts whatever exchanges
+     * remain, and every aborted join settles {@code DenyIndeterminate}) — <b>then</b> the JWKS
+     * refresh stops (AD-22: refresh before the cache's own client closes, so no refresh races it)
+     * and the shared client + the client secret are released.
      */
     @Override
     public void close() {
-        jwks.close();   // AD-22: stop the refresh scheduler before anything it could still use closes
-        adjudicationPool.shutdownNow();
+        adjudicationPool.shutdownNow();   // AD-22 step 2: deny in-flight
+        // The drain bound: in-flight tasks are self-bounded by the per-request timeout clamp, so the
+        // budget + 1s always suffices — the timeout arm below is defensive, and the hard close that
+        // follows forces the unwind regardless (fail-closed, deferred-work §2.1 item 5).
+        Duration drainBudget = callTimeout.plusSeconds(1);
+        try {
+            if (!adjudicationPool.awaitTermination(drainBudget.toMillis(), TimeUnit.MILLISECONDS)) {
+                log.warn("the adjudication pool did not drain within {} — proceeding with the hard close "
+                        + "(every in-flight adjudication settles DenyIndeterminate; AD-22 fail-closed).",
+                        drainBudget);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("the adjudication drain was interrupted — proceeding with the hard close "
+                    + "(every in-flight adjudication settles DenyIndeterminate; AD-22 fail-closed).");
+        }
+        jwks.close();   // AD-22: stop the refresh scheduler before the client it fetches through closes
         http.close();
         clientSecret.zeroize();   // AD-10: the adapter's own secret material
     }

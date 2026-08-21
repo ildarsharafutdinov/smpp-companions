@@ -1,16 +1,15 @@
 package smpp.companion.proxy.security;
 
-import org.springframework.stereotype.Component;
-
 import java.util.concurrent.CompletableFuture;
 
 /**
- * The production stand-in {@link BindCredentialVerifier} (AD-12): always returns {@link Verdict.Allow} and
- * never starts a wire call. This is what {@code relay/} wires against until Epic 3 swaps in the real ROPC
- * adapter behind the UNCHANGED port. A Spring {@link Component @Component} so it is injectable as the
- * default {@link BindCredentialVerifier} bean.
+ * The {@link BindCredentialVerifier} for <b>forward</b> cells (AD-12 amended 2026-08-18: the
+ * forward role is a trusted-side relay that adjudicates nothing — the reverse role owns the ROPC
+ * enforcement): always returns {@link Verdict.Allow} and never starts a wire call. NOT a Spring
+ * {@code @Component} since Story 3.2 T7 — an unconditional component would collide with the ROPC
+ * adapter in every reverse context; {@code VerifierWiringConfig} selects exactly one verifier bean
+ * per cell (AC1) and wires this one on forward.mode-a/mode-c.
  */
-@Component
 public final class AlwaysAllowBindCredentialVerifier implements BindCredentialVerifier {
 
     private static final CompletableFuture<Verdict> COMPLETED_ALLOW =

@@ -208,7 +208,9 @@ class RelayServerLifecycleTest {
      * provider-url + fixture-CA IdP trust store + the three budget keys at the yml-template defaults).
      */
     private static SpringApplicationBuilder modeBBuilder(Path dir) throws IOException {
-        Path secret = Files.createFile(dir.resolve("oidc-client-secret"));
+        // NON-BLANK content (3.2 T7): this full boot constructs the ROPC adapter bean, which loads the
+        // secret at startup — an empty file would refuse (SEC-060).
+        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "stand-in-client-secret\n");
         Path idpTrustStore = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)

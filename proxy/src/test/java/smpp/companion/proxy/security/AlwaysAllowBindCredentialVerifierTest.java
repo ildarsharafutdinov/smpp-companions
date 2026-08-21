@@ -14,11 +14,14 @@ import java.util.concurrent.CompletableFuture;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * AC1 / AD-12: {@link AlwaysAllowBindCredentialVerifier} is the production stand-in the {@code relay/}
- * wires against until Epic 3 swaps in the real ROPC adapter behind the UNCHANGED port. It is a Spring
- * {@link Component @Component} whose {@code verify} returns a {@link VerdictRequest} already completed
- * with {@link Verdict.Allow} and whose {@code cancelHttp()} is a no-op (an always-allow never starts a wire
- * call, so there is nothing to abort).
+ * AC1 / AD-12 (amended 2026-08-18): {@link AlwaysAllowBindCredentialVerifier} is the FORWARD-cell
+ * stand-in {@link BindCredentialVerifier} (the trusted-side relay adjudicates nothing); the reverse
+ * cells get the ROPC adapter. Since Story 3.2 T7 it is NOT self-annotated {@code @Component} — its
+ * wiring moved to {@code VerifierWiringConfig} (an unconditional component would make every reverse
+ * context carry TWO verifier beans); {@code VerifierWiringConfigTest} pins the selection. Its
+ * {@code verify} returns a {@link VerdictRequest} already completed with {@link Verdict.Allow} and
+ * its {@code cancelHttp()} is a no-op (an always-allow never starts a wire call, so there is
+ * nothing to abort).
  *
  * <p>RED-on-neuter (AC9): make {@code verify} deny, return an uncompleted future, or throw from
  * {@code cancelHttp} and a test below goes RED.
@@ -26,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("unit")
 @Tag("security")
 @Tag("p1")
-@DisplayName("AD-12 AlwaysAllowBindCredentialVerifier — @Component stand-in, completed-Allow, no-op cancel")
+@DisplayName("AD-12 AlwaysAllowBindCredentialVerifier — wired (not annotated) stand-in, completed-Allow, no-op cancel")
 class AlwaysAllowBindCredentialVerifierTest {
 
     /** ScopedValue handle — the stand-in ignores it (the real adapter reads the bound context). */
@@ -37,10 +40,12 @@ class AlwaysAllowBindCredentialVerifierTest {
     }
 
     @Test
-    @DisplayName("is a Spring @Component (the bean relay/ wires against)")
-    void isSpringComponent() {
-        assertThat(AlwaysAllowBindCredentialVerifier.class)
-                .hasAnnotation(Component.class);
+    @DisplayName("is NOT self-annotated @Component — its wiring moved to VerifierWiringConfig (T7, AC1)")
+    void isNotSelfAnnotatedComponent() {
+        assertThat(AlwaysAllowBindCredentialVerifier.class.isAnnotationPresent(Component.class))
+                .as("an unconditional @Component would collide with the adapter on reverse cells — "
+                        + "the per-cell selection lives in VerifierWiringConfig (AC1)")
+                .isFalse();
         assertThat(AlwaysAllowBindCredentialVerifier.class.getInterfaces())
                 .contains(BindCredentialVerifier.class);
     }

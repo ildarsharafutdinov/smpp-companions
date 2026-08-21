@@ -21,9 +21,11 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
  *
  * <p>Checked exceptions from fixture file creation are wrapped so test methods stay clean.
  * {@code propertyValues()} feeds {@code ApplicationContextRunner.withPropertyValues};
- * {@code args()} feeds {@code SpringApplicationBuilder.run}.
+ * {@code args()} feeds {@code SpringApplicationBuilder.run}. Public since Story 3.2 T7 — the
+ * security-side wiring suite ({@code VerifierWiringConfigTest}) consumes the same five-cell bases
+ * cross-package so the canonical cell configs have one source, not drifted copies.
  */
-final class TestCompanionConfigs {
+public final class TestCompanionConfigs {
 
     private static final String TLS12 = "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,"
             + "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,"
@@ -36,7 +38,7 @@ final class TestCompanionConfigs {
     private TestCompanionConfigs() {}
 
     /** forward × A (internet leg, one-way TLS): server cert+key + routing — NO OIDC (trusted-side relay; SEC-097 positive: no SMSC). */
-    static TestCompanionConfigs forwardA(Path secrets) {
+    public static TestCompanionConfigs forwardA(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
         String b = "companion.forward.mode-a";
@@ -49,7 +51,7 @@ final class TestCompanionConfigs {
     }
 
     /** forward × C: forward-A material + trust store (mTLS to the reverse proxy). */
-    static TestCompanionConfigs forwardC(Path secrets) {
+    public static TestCompanionConfigs forwardC(Path secrets) {
         TestCompanionConfigs c = forwardA(secrets);
         // Re-key the forward material under mode-c, then add the trust store.
         c.rekey("companion.forward.mode-a", "companion.forward.mode-c");
@@ -61,7 +63,7 @@ final class TestCompanionConfigs {
     }
 
     /** reverse × A (internet leg, one-way TLS): SMSC + client trust store (internet-leg anchor, SEC-096) + OIDC. */
-    static TestCompanionConfigs reverseA(Path secrets) {
+    public static TestCompanionConfigs reverseA(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
         String b = "companion.reverse.mode-a";
@@ -75,7 +77,7 @@ final class TestCompanionConfigs {
     }
 
     /** reverse × B: plaintext internet leg (direct client→reverse). acknowledged=true so the base is valid (SEC-052 warn+ack+start) + OIDC. */
-    static TestCompanionConfigs reverseB(Path secrets) {
+    public static TestCompanionConfigs reverseB(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
         // The AD-30 budget comes minimal from common() (the self-check is unconditional — see common()).
@@ -88,7 +90,7 @@ final class TestCompanionConfigs {
     }
 
     /** reverse × C (internet leg, mTLS): SMSC + client cert+key (SEC-057) + trust store + OIDC. */
-    static TestCompanionConfigs reverseC(Path secrets) {
+    public static TestCompanionConfigs reverseC(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
         String b = "companion.reverse.mode-c";
@@ -119,11 +121,13 @@ final class TestCompanionConfigs {
      * signed the stand-in's server cert, so the config stays valid from T2 on). The three budget keys
      * are REQUIRED — stated explicitly at the yml-template defaults (the
      * companion.bind.adjudication-deadline T7 pattern: runner boots don't load application.yml).
+     * The secret file carries REAL content (T7): full-app boots construct the ROPC adapter bean,
+     * which loads it — an empty file would refuse startup (SEC-060).
      */
     private void oidcKeys(String b, Path secrets) {
         props.put(b + ".oidc.provider-url", OidcDiscoveryStandIn.url());
         props.put(b + ".oidc.client-id", "smpp-client-confidential");
-        props.put(b + ".oidc.client-secret-path", touch(secrets.resolve("oidc-client-secret")).toString());
+        props.put(b + ".oidc.client-secret-path", secretFile(secrets.resolve("oidc-client-secret")).toString());
         Path idpTrustStore = RelayTestFixtures.idpTrustStoreFixture(secrets.resolve("idp-truststore.p12"));
         props.put(b + ".oidc.trust-store.path", idpTrustStore.toString());
         props.put(b + ".oidc.trust-store.password", RelayTestFixtures.IDP_STORE_PASSWORD);
@@ -180,6 +184,18 @@ final class TestCompanionConfigs {
         }
     }
 
+    /**
+     * A NON-BLANK client-secret file (T7): the adapter bean loads it at startup, and the trailing
+     * newline keeps ClientSecret.load's ASCII-trim path exercised on every boot.
+     */
+    private static Path secretFile(Path p) {
+        try {
+            return Files.writeString(p, "stand-in-client-secret\n");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     private static Path trustStoreFixture(Path file) {
         try {
             return KeyStoreFixtures.writeValidTrustStore(file, "changeit");
@@ -188,7 +204,7 @@ final class TestCompanionConfigs {
         }
     }
 
-    TestCompanionConfigs put(String key, String value) {
+    public TestCompanionConfigs put(String key, String value) {
         props.put(key, value);
         return this;
     }
@@ -199,7 +215,7 @@ final class TestCompanionConfigs {
     }
 
     /** Property-value pairs for {@code ApplicationContextRunner.withPropertyValues(...)}. */
-    String[] propertyValues() {
+    public String[] propertyValues() {
         return props.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).toArray(String[]::new);
     }
 
