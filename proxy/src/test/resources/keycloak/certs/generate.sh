@@ -12,6 +12,10 @@
 #   client-keystore.p12             — PKCS12 holding the client cert + key; the test JVM's mTLS client identity
 #                                     (loaded into the SSLContext by the validation slice, Task 2/AC2 path 3).
 #   keycloak-truststore.pem         — CA PEM that Keycloak trusts for verifying the mTLS client cert (KC_TRUSTSTORE_PATHS).
+#   smpp-reverse-server*.pem        — Story 3.3 [B]: the reverse's internet-leg TLS listener server cert (SAN localhost+127.0.0.1).
+#   smpp-forward-client*.pem        — Story 3.3 [B]: the forward's per-instance Mode C client cert (CN=smpp-forward-instance).
+#   smpp-truststore.p12             — Story 3.3 [B]: CA-only PKCS12 anchoring both SMPP-leg trust directions (forward→reverse
+#                                     server-cert validation; reverse.mode-c REQUIRE of the forward's client cert).
 #
 # IMPORTANT: every cert here is self-signed TEST material for a local Docker Keycloak — NOT a production secret.
 # Regenerating changes the CA and invalidates any committed truststore; the committed artifacts + this script
@@ -60,11 +64,39 @@ openssl pkcs12 -export -inkey client-key.pem -in client.pem -out client-keystore
 # --- 6. Keycloak truststore (CA PEM) — verifies mTLS client certs -------------
 cp ca.pem keycloak-truststore.pem
 
+# --- 7. SMPP internet-leg server cert (Story 3.3, [B] topology) ---------------
+# The REVERSE proxy's internet-leg TLS listener presents this cert (CN=localhost,
+# SAN localhost+127.0.0.1); the forward's TLS client validates it against smpp-truststore.p12.
+# Signed by the SAME test CA (sections 1) — one PKI, two purposes (test-only).
+openssl req -newkey rsa:2048 -nodes \
+  -keyout smpp-reverse-server-key.pem -out smpp-reverse-server.csr \
+  -subj "/CN=localhost/O=smpp-companions-test" 2>/dev/null
+openssl x509 -req -in smpp-reverse-server.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out smpp-reverse-server.pem -days 825 -sha256 \
+  -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE") 2>/dev/null
+
+# --- 8. SMPP per-instance forward client cert (Mode C mTLS) --------------------
+# The FORWARD proxy's per-instance client cert (FR-AUTH-3: one cert per runtime instance),
+# presented on the per-session internet-leg dial; a reverse.mode-c listener REQUIREs it.
+openssl req -newkey rsa:2048 -nodes \
+  -keyout smpp-forward-client-key.pem -out smpp-forward-client.csr \
+  -subj "/CN=smpp-forward-instance/O=smpp-companions-test" 2>/dev/null
+openssl x509 -req -in smpp-forward-client.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out smpp-forward-client.pem -days 825 -sha256 \
+  -extfile <(printf "extendedKeyUsage=clientAuth\nbasicConstraints=critical,CA:FALSE") 2>/dev/null
+
+# --- 9. SMPP-leg trust store (CA only) — AD-13 minimal anchor for BOTH directions
+# One CA-only PKCS12 serves both internet-leg trust directions in the test PKI: the forward's
+# client context (validating the reverse's server cert) and the reverse.mode-c REQUIRE listener
+# (validating the forward's client cert). Minimal single-purpose store — never JDK cacerts.
+keytool -importcert -noprompt -storetype PKCS12 -storepass "$PASS" \
+  -keystore smpp-truststore.p12 -alias smpp-test-ca -file ca.pem 2>/dev/null
+
 # tidy CSR/serial intermediates
-rm -f server.csr client.csr ca.srl .srl
+rm -f server.csr client.csr smpp-reverse-server.csr smpp-forward-client.csr ca.srl .srl
 
 echo "Generated test PKI:"
 ls -1 ca.pem ca-key.pem server.pem server-key.pem client.pem client-key.pem \
-      truststore.p12 client-keystore.p12 keycloak-truststore.pem
+      truststore.p12 client-keystore.p12 keycloak-truststore.pem \
+      smpp-reverse-server.pem smpp-reverse-server-key.pem \
+      smpp-forward-client.pem smpp-forward-client-key.pem smpp-truststore.p12
 echo "Client cert subject DN (mapped to smpp-client-mtls):"
 openssl x509 -in client.pem -noout -subject

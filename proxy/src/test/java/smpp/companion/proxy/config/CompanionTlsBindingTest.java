@@ -3,7 +3,6 @@ package smpp.companion.proxy.config;
 import java.time.Duration;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.DisplayName;
@@ -41,21 +40,26 @@ class CompanionTlsBindingTest {
         // comes from application.yml — catching a field-name/yml-key drift an inspection-only check misses.
         // The memory overrides are run() args (highest precedence): since T5b the AD-30 self-check is
         // unconditional, and yml's realistic budget (≈ 6 GiB) exceeds the test JVM's direct-memory ceiling.
-        // NO oidc keys — the forward role is a trusted-side relay (AD-12 amended 2026-08-18).
-        Path cert = Files.createFile(dir.resolve("server.crt"));
-        Path key = Files.createFile(dir.resolve("server.key"));
+        // NO oidc keys — the forward role is a trusted-side relay (AD-12 amended 2026-08-18). The
+        // [B] re-shape: the forward branch carries the DIAL material (real fixture trust store — the
+        // full boot constructs SmppLegTlsFactory). Story 3.3: the forward boot also BINDS its listener
+        // now, so the run args carry a free port + the F13 cap fitted to the minimal budget.
+        var legs = smpp.companion.proxy.testsupport.RelayTestFixtures.smppTlsLegs(dir);
         try (ConfigurableApplicationContext ctx =
                      new SpringApplicationBuilder(ProxyCompanionApplication.class)
                              .web(WebApplicationType.NONE)
                              .properties(
-                                     "companion.forward.mode-a.server-cert.cert-path=" + cert,
-                                     "companion.forward.mode-a.server-cert.key-path=" + key,
+                                     "companion.forward.mode-a.trust-store.path=" + legs.trustStore(),
+                                     "companion.forward.mode-a.trust-store.password="
+                                             + smpp.companion.proxy.testsupport.RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD,
                                      "companion.forward.mode-a.routing[0].system-id=carrierOne",
                                      "companion.forward.mode-a.routing[0].host=reverse.internal",
                                      "companion.forward.mode-a.routing[0].port=2776")
                              .run("--companion.memory.max-inbound-depth=1",
                                      "--companion.memory.concurrent-pairs=1",
-                                     "--companion.memory.safety-factor=1.0")) {
+                                     "--companion.memory.safety-factor=1.0",
+                                     "--companion.bind.port="
+                                             + smpp.companion.proxy.testsupport.RelayTestFixtures.freePort())) {
             ProxyCompanionProperties.Tls tls = ctx.getBean(ProxyCompanionProperties.class).tls();
             assertThat(tls).isNotNull();
             // Story 2.2 T7 owner FIXME pin: this boot sets NO companion.bind.* property, so the adjudication

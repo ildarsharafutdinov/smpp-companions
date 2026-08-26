@@ -31,11 +31,16 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * {@code start()} &rarr; context refresh aborts &rarr; non-zero exit (AD-17 fail-fast), never a
  * silently-unbound acceptor.
  *
- * <p><b>Slice scope.</b> The acceptor starts ONLY for the {@code reverse.mode-b} cell — the cell this
- * story wires (plaintext, single egress). Every other cell leaves the lifecycle not-running (no port
- * bind, no event-loop churn); Epic 3 wires the forward/mode-a/c acceptors. Unlike the AD-30 memory
- * self-check (unconditional — the budget is a JVM-wide property), the acceptor is genuinely per-cell
- * wiring, so the guard here is slice-correct, not an omission.
+ * <p><b>Slice scope (widened by Story 3.3, [B] topology).</b> The acceptor starts for EVERY cell:
+ * the reverse's internet leg ({@code mode-b} plaintext direct leg — byte-identical to Story 2.2 —
+ * or {@code mode-a}/{@code mode-c} TLS listener via {@link RelayIngressInitializer}'s {@code
+ * SmppLegTlsFactory}) and the forward's trusted leg (plaintext — AD-15; the forward DIALS the
+ * reverse per session rather than listening for it). The per-cell TLS/plaintext split is
+ * startup-static and owned by the initializer; this lifecycle owns only the bind ({@code
+ * companion.bind.host:port}, F13) and the accepted-connection cap ({@link ConnectionCapHandler},
+ * sourced from {@code companion.memory.concurrent-pairs}).
+ * Unlike the AD-30 memory self-check (unconditional — the budget is a JVM-wide property), a boot
+ * with no cell at all leaves the lifecycle not-running — unreachable post-validation (AD-17).
  *
  * <p><b>Stop discipline.</b> {@link #stop(Runnable)} mirrors {@link ProxyCompanionLifecycle}: the
  * callback runs in {@code finally} (releases the shutdown latch within the per-phase graceful window,
@@ -68,16 +73,23 @@ public final class RelayServerLifecycle implements SmartLifecycle {
 
     @Override
     public void start() {
-        ProxyCompanionProperties.@Nullable Reverse reverse = properties.reverse();
-        if (reverse == null || reverse.modeB() == null) {
-            return; // not this slice's cell — the relay mounts reverse.mode-b only (Epic 3 widens)
+        if (properties.forward() == null && properties.reverse() == null) {
+            return; // unreachable post-validation (AD-17 compact ctor) — defensive tripwire
         }
+        // Story 3.3 ([B] topology): EVERY cell listens on companion.bind.host:port — the reverse's
+        // internet leg (mode-b plaintext / mode-a,c TLS via the initializer's SmppLegTlsFactory) and
+        // the forward's trusted leg (plaintext, AD-15). The TLS-vs-plaintext split is startup-static
+        // per cell and owned by RelayIngressInitializer, not this lifecycle.
         ServerBootstrap bootstrap = new ServerBootstrap()
                 .group(eventLoopGroup)
                 .channel(NioServerSocketChannel.class)
+                // F13 cap at the acceptor — sourced from the AD-30 budget input itself (one number:
+                // every accepted connection can become a budgeted pair; no separate bind knob).
+                .handler(new ConnectionCapHandler(properties.memory().concurrentPairs()))
                 .childHandler(ingressInitializer);
         channelOptions.applyToIngress(bootstrap);
-        serverChannel = bootstrap.bind(properties.bind().port()).syncUninterruptibly().channel();
+        serverChannel = bootstrap.bind(properties.bind().host(), properties.bind().port())
+                .syncUninterruptibly().channel();
         running = true;
     }
 

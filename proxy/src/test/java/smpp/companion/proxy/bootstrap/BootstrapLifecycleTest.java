@@ -1,7 +1,6 @@
 package smpp.companion.proxy.bootstrap;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.Tag;
@@ -38,7 +37,10 @@ class BootstrapLifecycleTest {
     private static final String[] MINIMAL_MEMORY = {
             "--companion.memory.max-inbound-depth=1",
             "--companion.memory.concurrent-pairs=1",
-            "--companion.memory.safety-factor=1.0"};
+            "--companion.memory.safety-factor=1.0",
+            // Story 3.3: the forward cell now BINDS its trusted-leg listener — a free ephemeral port
+            // (beats yml's shipped 2775); the F13 cap IS concurrent-pairs=1 above (one number).
+            "--companion.bind.port=" + smpp.companion.proxy.testsupport.RelayTestFixtures.freePort()};
 
     @Test
     void bootsAsNonWebContextAndStartsLifecycle(@TempDir Path dir) throws IOException {
@@ -67,20 +69,20 @@ class BootstrapLifecycleTest {
     }
 
     /**
-     * A forward+A boot: the common keys come from application.yml (except the memory overrides passed as
-     * run() args — see MINIMAL_MEMORY); the forward.mode-a branch supplies the cell-required material.
-     * The secret paths point at empty files under the temp dir (existence+readability is what 1.3
-     * validates; the cert/key content is a runtime TLS concern, Epic 3). NO oidc keys — the forward
+     * A forward+A boot ([B] topology, Story 3.3): the common keys come from application.yml (except
+     * the memory/port overrides passed as run() args — see MINIMAL_MEMORY); the forward.mode-a branch
+     * supplies the cell-required DIAL material — the committed SMPP-leg trust store (REAL material:
+     * the full boot constructs SmppLegTlsFactory, which loads it eagerly). NO oidc keys — the forward
      * role is a trusted-side relay (AD-12 amended 2026-08-18); the reverse role adjudicates.
      */
     private static SpringApplicationBuilder builder(Path dir) throws IOException {
-        Path cert = Files.createFile(dir.resolve("server.crt"));
-        Path key = Files.createFile(dir.resolve("server.key"));
+        var legs = smpp.companion.proxy.testsupport.RelayTestFixtures.smppTlsLegs(dir);
+        String storePassword = smpp.companion.proxy.testsupport.RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD;
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
-                        "companion.forward.mode-a.server-cert.cert-path=" + cert,
-                        "companion.forward.mode-a.server-cert.key-path=" + key,
+                        "companion.forward.mode-a.trust-store.path=" + legs.trustStore(),
+                        "companion.forward.mode-a.trust-store.password=" + storePassword,
                         "companion.forward.mode-a.routing[0].system-id=carrierOne",
                         "companion.forward.mode-a.routing[0].host=reverse.internal",
                         "companion.forward.mode-a.routing[0].port=2776");

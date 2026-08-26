@@ -96,18 +96,38 @@ class RelayServerLifecycleTest {
     }
 
     @Test
-    @DisplayName("forward.mode-a cell: the acceptor stays NOT running and never takes the port (slice scope)")
-    void forwardCellLeavesAcceptorUnstarted(@TempDir Path dir) throws IOException {
+    @DisplayName("forward.mode-a cell: the acceptor is LIVE on its trusted leg ([B] flip — was the 2.2 inert pin)")
+    void forwardCellBindsItsTrustedLegListener(@TempDir Path dir) throws IOException {
+        // Story 3.3 flipped the 2.2 pin: under [B] EVERY cell listens — the forward's TRUSTED leg
+        // (plaintext; no SslHandler on it — the TLS lives on the per-session DIALS, not this listener).
         int port = RelayTestFixtures.freePort();
         try (ConfigurableApplicationContext ctx = forwardABuilder(dir).run(minimalMemory(port))) {
             assertThat(ctx.getBean(RelayServerLifecycle.class).isRunning())
-                    .as("this story wires the relay for reverse.mode-b ONLY — the forward cell stays inert")
-                    .isFalse();
-            // Nothing is listening: we can bind the port OURSELVES while the context is open — the
-            // ServerSocket ctor THROWS (BindException) if the forward cell had taken it (the ctor is
-            // the assertion; Epic 3 wires the forward acceptor).
-            try (ServerSocket neverTaken = new ServerSocket(port)) {
-                // bound — the ctor is the assertion
+                    .as("[B]: the forward acceptor is live (the inert-boot pin of 2.2 is retired)")
+                    .isTrue();
+            // The listener is really there: the Socket ctor THROWS unless the connect completes.
+            try (Socket esme = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                // connected — the ctor is the assertion
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("reverse.mode-a/c cells: the acceptor is LIVE with an internet-leg TLS listener (wiring)")
+    void reverseTlsCellsBindTheirInternetLegListener(@TempDir Path dir) throws IOException {
+        for (String mode : new String[] {"mode-a", "mode-c"}) {
+            int port = RelayTestFixtures.freePort();
+            try (ConfigurableApplicationContext ctx = reverseTlsBuilder(dir, mode).run(minimalMemory(port))) {
+                assertThat(ctx.getBean(RelayServerLifecycle.class).isRunning())
+                        .as("[" + mode + "] the reverse internet-leg TLS listener is live")
+                        .isTrue();
+                // The listener is really there (the Socket ctor THROWS unless the connect completes).
+                // The TLS handshake semantics (one-way completes; REQUIRE refuses the cert-less peer)
+                // are the e2e suite's pins — here the acceptor's liveness on the TLS cells is the
+                // wiring proof.
+                try (Socket esme = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                    // connected — the ctor is the assertion
+                }
             }
         }
     }
@@ -229,21 +249,52 @@ class RelayServerLifecycleTest {
     }
 
     /**
-     * A forward.mode-a boot builder (mirrors BootstrapLifecycleTest.builder — the non-relay cell).
-     * NO oidc keys — the forward role is a trusted-side relay (AD-12 amended 2026-08-18); the
-     * reverse role adjudicates.
+     * A forward.mode-a boot builder (mirrors BootstrapLifecycleTest.builder): the [B] DIAL material
+     * (the committed SMPP-leg trust store — the full boot constructs SmppLegTlsFactory). NO oidc keys
+     * — the forward role is a trusted-side relay (AD-12 amended 2026-08-18); the reverse adjudicates.
      */
     private static SpringApplicationBuilder forwardABuilder(Path dir) throws IOException {
-        Path cert = Files.createFile(dir.resolve("server.crt"));
-        Path key = Files.createFile(dir.resolve("server.key"));
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
-                        "companion.forward.mode-a.server-cert.cert-path=" + cert,
-                        "companion.forward.mode-a.server-cert.key-path=" + key,
+                        "companion.forward.mode-a.trust-store.path=" + legs.trustStore(),
+                        "companion.forward.mode-a.trust-store.password=" + RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD,
                         "companion.forward.mode-a.routing[0].system-id=carrierOne",
                         "companion.forward.mode-a.routing[0].host=reverse.internal",
                         "companion.forward.mode-a.routing[0].port=2776");
+    }
+
+    /**
+     * A reverse.mode-a/mode-c boot builder (the internet-leg TLS listener cells): the committed
+     * server cert+key (+ the REQUIRE-side trust store in mode-c) + the T2 oidc stand-in keys.
+     */
+    private static SpringApplicationBuilder reverseTlsBuilder(Path dir, String mode) throws IOException {
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "stand-in-client-secret\n");
+        Path idpTrustStore = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
+        String b = "companion.reverse." + mode;
+        SpringApplicationBuilder builder = new SpringApplicationBuilder(ProxyCompanionApplication.class)
+                .web(WebApplicationType.NONE)
+                .properties(
+                        b + ".smsc.host=smsc.example",
+                        b + ".smsc.port=2775",
+                        b + ".server-cert.cert-path=" + legs.reverseServerCert(),
+                        b + ".server-cert.key-path=" + legs.reverseServerKey(),
+                        b + ".oidc.provider-url=" + OidcDiscoveryStandIn.url(),
+                        b + ".oidc.client-id=smpp-client-confidential",
+                        b + ".oidc.client-secret-path=" + secret,
+                        b + ".oidc.trust-store.path=" + idpTrustStore,
+                        b + ".oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
+                        b + ".oidc.timeout=4s",
+                        b + ".oidc.max-in-flight=64",
+                        b + ".oidc.jwks-cache-ttl=5m");
+        if ("mode-c".equals(mode)) {
+            builder.properties(
+                    b + ".trust-store.path=" + legs.trustStore(),
+                    b + ".trust-store.password=" + RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD);
+        }
+        return builder;
     }
 
     private static RelayChannelOptions newOptions(int port) {

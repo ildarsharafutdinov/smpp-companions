@@ -224,7 +224,7 @@ class IdpSslContextFactoryTest {
         return properties(List.of("TLSv1.3", "TLSv1.2"), TLS12, TLS13,
                 new ProxyCompanionProperties.Reverse(new ProxyCompanionProperties.ReverseModeA(
                         new ProxyCompanionProperties.Smsc("smsc.example", 2775),
-                        new ProxyCompanionProperties.TrustStore("/run/secrets/truststore.p12", "changeit"),
+                        new ProxyCompanionProperties.ServerCert("/run/secrets/reverse-server.crt", "/run/secrets/reverse-server.key"),
                         oidc(idpStore, RelayTestFixtures.IDP_STORE_PASSWORD, "https://localhost:8443/realms/x")),
                         null, null));
     }
@@ -233,7 +233,7 @@ class IdpSslContextFactoryTest {
         return properties(List.of("TLSv1.3", "TLSv1.2"), TLS12, TLS13,
                 new ProxyCompanionProperties.Reverse(null, null, new ProxyCompanionProperties.ReverseModeC(
                         new ProxyCompanionProperties.Smsc("smsc.example", 2775),
-                        new ProxyCompanionProperties.ClientCert("/run/secrets/client.crt", "/run/secrets/client.key"),
+                        new ProxyCompanionProperties.ServerCert("/run/secrets/reverse-server.crt", "/run/secrets/reverse-server.key"),
                         new ProxyCompanionProperties.TrustStore("/run/secrets/truststore.p12", "changeit"),
                         oidc(idpStore, RelayTestFixtures.IDP_STORE_PASSWORD, "https://localhost:8443/realms/x"))));
     }
@@ -241,9 +241,9 @@ class IdpSslContextFactoryTest {
     private static ProxyCompanionProperties forwardA() {
         ProxyCompanionProperties.Forward forward = new ProxyCompanionProperties.Forward(
                 new ProxyCompanionProperties.ForwardModeA(
-                        new ProxyCompanionProperties.ServerCert("/run/secrets/server.crt", "/run/secrets/server.key"),
+                        new ProxyCompanionProperties.TrustStore("/run/secrets/truststore.p12", "changeit"),
                         List.of(new ProxyCompanionProperties.RoutingEntry("carrierOne", "reverse.internal", 2776, null))),
-                null);
+                null, null);
         return properties(List.of("TLSv1.3", "TLSv1.2"), TLS12, TLS13, forward, null);
     }
 
@@ -252,7 +252,7 @@ class IdpSslContextFactoryTest {
                                                        ProxyCompanionProperties.@Nullable Forward forward,
                                                        ProxyCompanionProperties.@Nullable Reverse reverse) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(protocols, tls12, tls13),
                 forward,

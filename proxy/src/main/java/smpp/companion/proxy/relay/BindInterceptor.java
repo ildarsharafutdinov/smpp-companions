@@ -23,6 +23,7 @@ import smpp.companion.codec.bind.SmppBindResponse;
 import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.codec.framer.SmppFrame;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.SpliceObserver;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
@@ -33,6 +34,7 @@ import smpp.companion.proxy.security.RequestContext;
 import smpp.companion.proxy.security.SystemId;
 import smpp.companion.proxy.security.Verdict;
 import smpp.companion.proxy.security.VerdictRequest;
+import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
 /**
  * The bind-handshake interceptor (AC2; AD-7/AD-12/AD-14/AD-15/AD-25/AD-27/AD-33) — the control-plane half
@@ -41,9 +43,13 @@ import smpp.companion.proxy.security.VerdictRequest;
  * per-bind egress channel. It owns exactly the bind family and nothing else:
  *
  * <ul>
- * <li><b>Routing (AC2, no allow-list):</b> EVERY decoded {@link SmppBindRequest} routes to the single
- * configured egress {@code companion.reverse.mode-b.smsc}. AD-29's {@code system_id} allow-list is the
- * FORWARD-role contract and is deliberately absent here — reverse.mode-b has no routing table by design.
+ * <li><b>Routing (AC2; AD-29) — the Story 3.3 ROLE-SPLIT:</b> the <b>reverse</b> arm (modes a/b/c)
+ * has NO routing table by design: every decoded {@link SmppBindRequest} routes to the single
+ * configured {@code companion.reverse.mode-<mode>.smsc}. The <b>forward</b> arm ([B] topology: it
+ * dials the reverse per SMPP session) routes per {@code system_id} through the injected
+ * {@link RoutingTable}: a <b>miss is the AD-33 collapse</b> (header-only deny + close, log-only —
+ * never {@code onBindReject}, which fires ONLY for returned {@link Verdict}s, AD-27) and precedes
+ * adjudication; a hit proceeds to the (AlwaysAllow-wired) verdict and the per-session egress dial.
  * <li><b>Adjudication (AD-12/AD-15):</b> {@code new BindCredential(new SystemId(req.systemId()), new
  * Password(req.password()))} handed to the injected {@link BindCredentialVerifier} inside a
  * {@link ScopedValue}-bound {@link RequestContext} (AD-5 — never {@code ThreadLocal}). The relay never
@@ -96,6 +102,7 @@ import smpp.companion.proxy.security.VerdictRequest;
  * {@code SmppBindRequest}/{@code Password}/{@code BindCredential} objects nor the raw password
  * {@code AsciiString}.
  */
+@lombok.extern.slf4j.Slf4j
 @SuppressWarnings("FutureReturnValueIgnored") // reason: read()/close()/writeAndFlush() on the relay's own
 // channels are fire-and-forget control operations — a failed close/write merely means the channel was
 // already closing (the desired end state), and Netty itself releases a buffer whose write fails; the
@@ -123,7 +130,12 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     private final RelayEgressInitializer egressInitializer;
     private final RelayChannelOptions channelOptions;
     private final EgressConnector connector;
-    private final ProxyCompanionProperties.Smsc smsc;
+    private final RoutingTable routingTable;
+    private final SmppLegTlsFactory tlsFactory;
+    /** The role arm: {@code true} on the forward cells ([B]: dial-out per session, routing-gated). */
+    private final boolean forwardRole;
+    /** The REVERSE cells' single egress target (every mode leaf carries one); null on forward cells. */
+    private final ProxyCompanionProperties.@Nullable Smsc smsc;
     /**
      * The configured adjudication budget ({@code companion.bind.adjudication-deadline}, default {@code 4s}
      * in application.yml — owner FIXME 2026-08-15, formerly the hardcoded 30s constant): each bind's
@@ -138,13 +150,17 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     private volatile @Nullable Password pendingPassword;
 
     /**
-     * Production constructor (used by {@code RelayIngressInitializer} per accepted channel): the injected
-     * beans + the single configured egress target resolved from {@code companion.reverse.mode-b.smsc}.
+     * Production constructor (used by {@code RelayIngressInitializer} per accepted channel): the
+     * injected beans + the role resolved structurally from the populated branch (Story 3.3: the
+     * reverse arm targets the cell's single {@code smsc}; the forward arm routes per
+     * {@code system_id} and dials TLS per routing entry).
      */
     public BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, SpliceObserver observer,
                            ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
-                           RelayChannelOptions channelOptions) {
-        this(verifier, registry, observer, properties, egressInitializer, channelOptions, DEFAULT_CONNECTOR);
+                           RelayChannelOptions channelOptions, RoutingTable routingTable,
+                           SmppLegTlsFactory tlsFactory) {
+        this(verifier, registry, observer, properties, egressInitializer, channelOptions, routingTable,
+                tlsFactory, DEFAULT_CONNECTOR);
     }
 
     /**
@@ -154,22 +170,44 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      */
     BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, SpliceObserver observer,
                     ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
-                    RelayChannelOptions channelOptions, EgressConnector connector) {
-        ProxyCompanionProperties.@Nullable Reverse reverse = properties.reverse();
-        if (reverse == null || reverse.modeB() == null) {
-            // The acceptor is mode-b-scoped (RelayServerLifecycle): an interceptor outside that cell is a
-            // wiring bug, not a data-plane condition — fail fast at construction.
-            throw new IllegalStateException(
-                    "BindInterceptor requires companion.reverse.mode-b.smsc (the relay acceptor is mode-b-scoped)");
-        }
+                    RelayChannelOptions channelOptions, RoutingTable routingTable,
+                    SmppLegTlsFactory tlsFactory, EgressConnector connector) {
         this.verifier = verifier;
         this.registry = registry;
         this.observer = observer;
         this.egressInitializer = egressInitializer;
         this.channelOptions = channelOptions;
+        this.routingTable = routingTable;
+        this.tlsFactory = tlsFactory;
         this.connector = connector;
-        this.smsc = reverse.modeB().smsc();
+        ProxyCompanionProperties.@Nullable Forward forward = properties.forward();
+        ProxyCompanionProperties.@Nullable Reverse reverse = properties.reverse();
+        if (forward != null) {
+            this.forwardRole = true;
+            this.smsc = null; // forward dials the ROUTING target ([B]); no single SMSC exists (SEC-097)
+        } else if (reverse != null) {
+            this.forwardRole = false;
+            this.smsc = reverseSmsc(reverse);
+        } else {
+            // Unreachable post-validation (AD-17 compact ctor) — a wiring bug, not a data-plane condition.
+            throw new IllegalStateException(
+                    "BindInterceptor requires a companion.<role> branch (AD-17 single-cell selection)");
+        }
         this.adjudicationDeadline = properties.bind().adjudicationDeadline();
+    }
+
+    /** The reverse cells' single SMSC target (every mode leaf carries one, @NotNull-validated). */
+    private static ProxyCompanionProperties.Smsc reverseSmsc(ProxyCompanionProperties.Reverse reverse) {
+        if (reverse.modeA() != null) {
+            return reverse.modeA().smsc();
+        }
+        if (reverse.modeB() != null) {
+            return reverse.modeB().smsc();
+        }
+        if (reverse.modeC() != null) {
+            return reverse.modeC().smsc();
+        }
+        throw new IllegalStateException("no companion.reverse.<mode> branch (AD-17) — refusing to start.");
     }
 
     /** The per-bind egress connect seam ({@link Bootstrap} → {@link ChannelFuture}); see the package ctor. */
@@ -200,6 +238,18 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         Channel channel = ctx.channel();
         ConnectionEntry entry = registry.entryFor(channel);
         if (entry == null) {
+            if (forwardRole && routingTable.route(req.systemId().toString()) == null) {
+                // AD-29/AD-11 routing miss on the forward arm: NO pair is ever created (no registry
+                // entry, no adjudication — the miss precedes both), the AD-33 generic deny answers
+                // this bind, and the connection closes. LOG-ONLY (no observer fire: a routing miss is
+                // not a returned Verdict, AD-27; no metrics exist pre-Epic 4). The log observes the
+                // system_id ALONE (the RELAY logging rule).
+                log.warn("routing miss: system_id not in the routing table — AD-33 deny (AD-29/AD-11): {}",
+                        req.systemId());
+                req.originalFrame().release();
+                writeBindFailureAndClose(channel, req.commandId(), req.sequenceNumber());
+                return;
+            }
             // First bind on this connection: optimistically register the pair (RELAY-006 — the entry exists
             // before the egress connects), then adjudicate.
             entry = registry.register(channel, new SystemId(req.systemId()));
@@ -336,12 +386,21 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         if (won == null) {
             return; // a concurrent teardown owns the close
         }
-        ingress.writeAndFlush(synthesizeBindFailure(ingress.alloc(), requestCommandId, sequenceNumber))
-                .addListener(ChannelFutureListener.CLOSE);
+        writeBindFailureAndClose(ingress, requestCommandId, sequenceNumber);
         Channel egress = won.egress();
         if (egress != null) {
             egress.close();
         }
+    }
+
+    /**
+     * The AD-33 wire effect: the header-only deny answering the given request identifiers, then
+     * close ("bind_resp error, then close"). Shared by the teardown-race winner and the
+     * routing-miss arm (which has NO pair to tear down).
+     */
+    private static void writeBindFailureAndClose(Channel ingress, int requestCommandId, int sequenceNumber) {
+        ingress.writeAndFlush(synthesizeBindFailure(ingress.alloc(), requestCommandId, sequenceNumber))
+                .addListener(ChannelFutureListener.CLOSE);
     }
 
     /** Teardown-side hygiene: abort the in-flight ROPC (AD-12/AD-32) and wipe the pending password. */
@@ -408,14 +467,46 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * Assembles the per-bind egress connection (HexDumpProxy-style: the ingress channel's event loop is the
      * group, so both legs run on one thread — AD-2), wires the T6 substrate, and forwards the ORIGINAL bind
      * frame verbatim on connect success. Takes ownership of {@code req.originalFrame()} on every path.
+     *
+     * <p><b>Story 3.3 role-split:</b> the REVERSE arm dials the cell's single configured SMSC target with
+     * the shared PLAINTEXT egress initializer (the SMSC leg is trusted in every mode — AD-12 amended);
+     * the FORWARD arm dials the bind's ROUTING target with a per-bind TLS-carrying egress initializer
+     * (client {@link io.netty.handler.ssl.SslHandler} per {@code tlsContextId}, [B] topology).
      */
     private void openEgressAndForward(Channel ingress, ConnectionEntry entry, SmppBindRequest req) {
+        final String targetHost;
+        final int targetPort;
+        final io.netty.channel.ChannelHandler childInitializer;
+        if (forwardRole) {
+            ProxyCompanionProperties.RoutingEntry route = routingTable.route(req.systemId().toString());
+            if (route == null) {
+                // Unreachable (immutable post-startup table; the miss was denied pre-adjudication) —
+                // fail closed with the same collapse rather than dialing anything.
+                req.originalFrame().release();
+                writeBindFailureAndClose(ingress, req.commandId(), req.sequenceNumber());
+                return;
+            }
+            targetHost = route.host();
+            targetPort = route.port();
+            childInitializer = new RelayEgressInitializer(registry, observer,
+                    ch -> tlsFactory.newEgressSslHandler(ch.alloc(), route));
+        } else {
+            ProxyCompanionProperties.Smsc target = smsc;
+            if (target == null) {
+                // Unreachable post-validation (every reverse mode leaf carries a @NotNull smsc) — a
+                // role-resolution bug; fail closed rather than dialing anything.
+                throw new IllegalStateException("reverse arm without an SMSC target — a role-resolution bug");
+            }
+            targetHost = target.host();
+            targetPort = target.port();
+            childInitializer = egressInitializer;
+        }
         Bootstrap bootstrap = new Bootstrap()
                 .group(ingress.eventLoop())
                 .channel(NioSocketChannel.class)
-                .handler(egressInitializer); // the T6 codec prefix (+ the T8 slot documented there)
+                .handler(childInitializer); // the T6 codec prefix (+ the T8 slot documented there)
         channelOptions.applyToEgress(bootstrap);
-        connector.connect(bootstrap, smsc.host(), smsc.port()).addListener((ChannelFutureListener) future -> {
+        connector.connect(bootstrap, targetHost, targetPort).addListener((ChannelFutureListener) future -> {
             if (!future.isSuccess()) {
                 // Egress-establishment failure: no SMSC response PDU will ever arrive — collapse to the SAME
                 // generic deny (a prober cannot distinguish verifier-reject from unreachable-SMSC). NOT a

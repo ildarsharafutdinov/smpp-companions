@@ -31,7 +31,9 @@ import smpp.companion.proxy.observability.CapturingSpliceObserver;
 import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
+import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
+import smpp.companion.proxy.tls.SmppLegTlsFactory;
 import smpp.companion.proxy.security.BindCredential;
 import smpp.companion.proxy.security.BindCredentialVerifier;
 import smpp.companion.proxy.security.RequestContext;
@@ -105,8 +107,11 @@ class RelayHandlerTest {
         egressInitializer = new RelayEgressInitializer(registry, observer);
         ProxyCompanionProperties properties = RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1);
         RelayChannelOptions channelOptions = new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT);
+        // Story 3.3: the role-split graph — the routing table + per-cell TLS factory resolve from the
+        // SAME properties (mode-b: no routing, no TLS — the reverse arm's plaintext dial).
         BindInterceptor interceptor = new BindInterceptor(
-                verifier, registry, observer, properties, egressInitializer, channelOptions, connector);
+                verifier, registry, observer, properties, egressInitializer, channelOptions,
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
         ingress = new EmbeddedChannel(DefaultChannelId.newInstance(),
                 new SmppFrameDecoder(), new SmppCodec(), interceptor,
                 new RelayHandler(registry, observer, Direction.INGRESS));

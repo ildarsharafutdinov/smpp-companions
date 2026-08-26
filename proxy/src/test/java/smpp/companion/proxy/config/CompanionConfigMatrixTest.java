@@ -73,6 +73,7 @@ class CompanionConfigMatrixTest {
     private TestCompanionConfigs base(String kind) throws IOException {
         return switch (kind) {
             case "forwardA" -> TestCompanionConfigs.forwardA(dir);
+            case "forwardC" -> TestCompanionConfigs.forwardC(dir);
             case "reverseA" -> TestCompanionConfigs.reverseA(dir);
             case "reverseC" -> TestCompanionConfigs.reverseC(dir);
             default -> throw new IllegalArgumentException("unknown base " + kind);
@@ -143,16 +144,16 @@ class CompanionConfigMatrixTest {
     }
 
     @Test
-    @DisplayName("SEC-056: forward (A/C) missing the server cert+key -> refuse")
-    void sec056_forwardMissingServerCertRefuses() {
-        assertRefused(TestCompanionConfigs.forwardA(dir).remove("companion.forward.mode-a.server-cert.cert-path"),
+    @DisplayName("SEC-056: reverse × A/C missing the internet-leg server cert+key -> refuse ([B] re-shape)")
+    void sec056_reverseMissingServerCertRefuses() {
+        assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.server-cert.cert-path"),
                 "SEC-056", "server-cert");
     }
 
     @Test
-    @DisplayName("SEC-057: reverse × C missing the client cert+key -> refuse")
-    void sec057_reverseCMissingClientCertRefuses() {
-        assertRefused(TestCompanionConfigs.reverseC(dir).remove("companion.reverse.mode-c.client-cert.cert-path"),
+    @DisplayName("SEC-057: forward × C missing the per-instance client cert+key -> refuse ([B] re-shape)")
+    void sec057_forwardCMissingClientCertRefuses() {
+        assertRefused(TestCompanionConfigs.forwardC(dir).remove("companion.forward.mode-c.client-cert.cert-path"),
                 "SEC-057", "client-cert");
     }
 
@@ -183,9 +184,11 @@ class CompanionConfigMatrixTest {
     }
 
     @Test
-    @DisplayName("SEC-096: reverse × A missing the client trust store -> refuse")
-    void sec096_reverseAMissingTrustStoreRefuses() {
-        assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.trust-store.path"),
+    @DisplayName("SEC-096: forward × A missing the dial trust store (the reverse's server-cert anchor) -> refuse")
+    void sec096_forwardAMissingTrustStoreRefuses() {
+        // [B] re-shape: the trust store anchoring the reverse's internet-leg server cert moved to the
+        // FORWARD cells (the reverse now HOLDS the listener and presents that cert).
+        assertRefused(TestCompanionConfigs.forwardA(dir).remove("companion.forward.mode-a.trust-store.path"),
                 "SEC-096", "trust-store");
     }
 
@@ -267,10 +270,10 @@ class CompanionConfigMatrixTest {
         // REMOVING it no longer refuses — its missing-file case binds a bad path instead (see
         // ac8_clientSecretMissingFileRefuses).
         return Stream.of(
-                Arguments.of("server cert (forward A)", "forwardA", "companion.forward.mode-a.server-cert.cert-path"),
-                Arguments.of("server key (forward A)", "forwardA", "companion.forward.mode-a.server-cert.key-path"),
-                Arguments.of("client cert (reverse C)", "reverseC", "companion.reverse.mode-c.client-cert.cert-path"),
-                Arguments.of("client key (reverse C)", "reverseC", "companion.reverse.mode-c.client-cert.key-path"));
+                Arguments.of("server cert (reverse A)", "reverseA", "companion.reverse.mode-a.server-cert.cert-path"),
+                Arguments.of("server key (reverse A)", "reverseA", "companion.reverse.mode-a.server-cert.key-path"),
+                Arguments.of("client cert (forward C)", "forwardC", "companion.forward.mode-c.client-cert.cert-path"),
+                Arguments.of("client key (forward C)", "forwardC", "companion.forward.mode-c.client-cert.key-path"));
     }
 
     @Test
@@ -281,11 +284,11 @@ class CompanionConfigMatrixTest {
                 "unreadable-permission case requires a POSIX filesystem (skipped on Windows/non-POSIX CI)");
         Assumptions.assumeFalse("root".equals(System.getProperty("user.name")),
                 "unreadable-permission case is non-deterministic as root (CI runs non-root)");
-        TestCompanionConfigs config = TestCompanionConfigs.forwardA(dir);
+        TestCompanionConfigs config = TestCompanionConfigs.reverseA(dir);
         Path unreadable = dir.resolve("unreadable-server.crt");
         Files.createFile(unreadable);
         Files.setPosixFilePermissions(unreadable, PosixFilePermissions.fromString("---------"));
-        config.put("companion.forward.mode-a.server-cert.cert-path", unreadable.toString());
+        config.put("companion.reverse.mode-a.server-cert.cert-path", unreadable.toString());
         assertRefused(config, "SEC-060 unreadable", "not readable");
     }
 
@@ -293,8 +296,10 @@ class CompanionConfigMatrixTest {
     @MethodSource("invalidTrustStoreStates")
     @DisplayName("SEC-050: an invalid trust store (empty/wrong-format/wrong-password/zero-entries) -> refuse")
     void sec050_invalidTrustStoreRefuses(String name, String kind, String token) throws Exception {
-        TestCompanionConfigs config = TestCompanionConfigs.reverseA(dir);
+        // [B] re-shape: the trust-store-bearing simple cell is forward × A (the dial anchor).
+        TestCompanionConfigs config = TestCompanionConfigs.forwardA(dir);
         Path ts = dir.resolve("truststore.p12");
+        config.put("companion.forward.mode-a.trust-store.path", ts.toString());
         switch (kind) {
             case "empty" -> {
                 Files.deleteIfExists(ts);
@@ -307,7 +312,7 @@ class CompanionConfigMatrixTest {
             case "wrong-password" -> {
                 Files.deleteIfExists(ts);
                 KeyStoreFixtures.writeValidTrustStore(ts, "real-password"); // valid store, wrong password supplied
-                config.put("companion.reverse.mode-a.trust-store.password", "wrong-password");
+                config.put("companion.forward.mode-a.trust-store.password", "wrong-password");
             }
             case "zero-entries" -> {
                 Files.deleteIfExists(ts);
@@ -477,7 +482,7 @@ class CompanionConfigMatrixTest {
         // The cross-role two-branch test does not cover the within-role Forward compact-constructor guard.
         // Setting any forward.mode-c key makes modeC non-null alongside modeA -> "found 2".
         assertRefused(TestCompanionConfigs.forwardA(dir)
-                        .put("companion.forward.mode-c.server-cert.cert-path", dir.resolve("server.crt").toString()),
+                        .put("companion.forward.mode-c.trust-store.path", dir.resolve("truststore.p12").toString()),
                 "two forward modes", "found 2");
     }
 
@@ -499,7 +504,7 @@ class CompanionConfigMatrixTest {
         // an empty list PASSES @NotNull (non-null) and would be silently accepted without this guard.
         var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
         var props = new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -507,9 +512,9 @@ class CompanionConfigMatrixTest {
                         List.of("TLS_AES_256_GCM_SHA384")),
                 new ProxyCompanionProperties.Forward(
                         new ProxyCompanionProperties.ForwardModeA(
-                                new ProxyCompanionProperties.ServerCert("/run/secrets/server.crt", "/run/secrets/server.key"),
+                                new ProxyCompanionProperties.TrustStore("/run/secrets/truststore.p12", null),
                                 List.of()), // explicitly empty routing list
-                        null),
+                        null, null),
                 null);
         var violations = validator.validate(props);
         assertThat(violations)
@@ -522,8 +527,8 @@ class CompanionConfigMatrixTest {
     void sec060_directoryAsSecretRefuses() {
         // Files.exists && Files.isReadable are both true for a readable directory; without the isDirectory
         // check, pointing a cert path at the secrets dir would pass and defer the failure to Epic 3.
-        assertRefused(TestCompanionConfigs.forwardA(dir)
-                        .put("companion.forward.mode-a.server-cert.cert-path", dir.toString()),
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.server-cert.cert-path", dir.toString()),
                 "SEC-060 directory", "directory");
     }
 
@@ -612,30 +617,30 @@ class CompanionConfigMatrixTest {
     @Test
     @DisplayName("SEC-060: a blank secret path -> refuse (bites the requireReadableFile path.isBlank guard)")
     void sec060_blankSecretPathRefuses() {
-        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.forward.mode-a.server-cert.cert-path", ""),
+        assertRefused(TestCompanionConfigs.reverseA(dir).put("companion.reverse.mode-a.server-cert.cert-path", ""),
                 "SEC-060 blank cert path", "server certificate file path");
     }
 
     @Test
     @DisplayName("SEC-050: a blank trust-store path -> refuse (bites the trustStore.path.isBlank guard)")
     void sec050_blankTrustStorePathRefuses() {
-        assertRefused(TestCompanionConfigs.reverseA(dir).put("companion.reverse.mode-a.trust-store.path", ""),
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.forward.mode-a.trust-store.path", ""),
                 "SEC-050 blank trust-store path", "never falls back to cacerts");
     }
 
     @Test
     @DisplayName("SEC-060: a secret path pointing at a missing file -> refuse (bites the !Files.exists guard)")
     void sec060_missingSecretFileRefuses() {
-        assertRefused(TestCompanionConfigs.forwardA(dir)
-                        .put("companion.forward.mode-a.server-cert.cert-path", "/no/such/secret/file"),
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.server-cert.cert-path", "/no/such/secret/file"),
                 "SEC-060 missing file", "does not exist");
     }
 
     @Test
     @DisplayName("SEC-050: a trust store pointing at a missing file -> refuse (bites the !Files.exists guard)")
     void sec050_missingTrustStoreFileRefuses() {
-        assertRefused(TestCompanionConfigs.reverseA(dir)
-                        .put("companion.reverse.mode-a.trust-store.path", "/no/such/truststore.p12"),
+        assertRefused(TestCompanionConfigs.forwardA(dir)
+                        .put("companion.forward.mode-a.trust-store.path", "/no/such/truststore.p12"),
                 "SEC-050 missing trust store", "does not exist");
     }
 
@@ -647,11 +652,11 @@ class CompanionConfigMatrixTest {
                 "unreadable-permission case requires a POSIX filesystem (skipped on Windows/non-POSIX CI)");
         Assumptions.assumeFalse("root".equals(System.getProperty("user.name")),
                 "unreadable-permission case is non-deterministic as root (CI runs non-root)");
-        TestCompanionConfigs config = TestCompanionConfigs.reverseA(dir);
+        TestCompanionConfigs config = TestCompanionConfigs.forwardA(dir);
         Path unreadable = dir.resolve("unreadable.p12");
         Files.createFile(unreadable);
         Files.setPosixFilePermissions(unreadable, PosixFilePermissions.fromString("---------"));
-        config.put("companion.reverse.mode-a.trust-store.path", unreadable.toString());
+        config.put("companion.forward.mode-a.trust-store.path", unreadable.toString());
         assertRefused(config, "SEC-050 unreadable trust store", "is not readable");
     }
 
@@ -685,8 +690,8 @@ class CompanionConfigMatrixTest {
     }
 
     @Test
-    @DisplayName("SEC-050: a syntactically invalid trust-store path (NUL) -> refuse (bites the InvalidPath guard)")
-    void sec050_invalidTrustStorePathRefuses() {
+    @DisplayName("SEC-060: a syntactically invalid server-cert path (NUL) -> refuse (bites the InvalidPath guard)")
+    void sec060_invalidServerCertPathRefuses() {
         var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
         var violations = validator.validate(reverseAProps("\0bad-path"));
         assertThat(violations)
@@ -694,13 +699,60 @@ class CompanionConfigMatrixTest {
                 .anyMatch(v -> v.getMessage().contains("not a valid path"));
     }
 
+
+    // --- Story 3.3 (T2): the [B] re-shape's new refusals — every guard gets its biting test ----------
+
+    @Test
+    @DisplayName("SEC-098: a routing entry referencing an absent companion.forward.tls-contexts key -> refuse")
+    void sec098_unknownTlsContextIdRefuses() {
+        // The exact DANGLING id is BOUND (not the key removed): the entry carries tls-context-id=primary
+        // while no companion.forward.tls-contexts.primary exists — the validator must refuse rather than
+        // let the dial-time resolution fall back silently.
+        assertRefused(TestCompanionConfigs.forwardA(dir)
+                        .put("companion.forward.mode-a.routing[0].tls-context-id", "primary"),
+                "SEC-098 dangling tls-context-id", "SEC-098");
+    }
+
+    @Test
+    @DisplayName("SEC-098 positive: a routing entry whose tls-context-id RESOLVES boots (the map binds)")
+    void sec098_resolvableTlsContextIdBoots() {
+        var legs = smpp.companion.proxy.testsupport.RelayTestFixtures.smppTlsLegs(dir);
+        runner(TestCompanionConfigs.forwardA(dir)
+                .put("companion.forward.mode-a.routing[0].tls-context-id", "primary")
+                .put("companion.forward.tls-contexts.primary.cert-path", legs.forwardClientCert().toString())
+                .put("companion.forward.tls-contexts.primary.key-path", legs.forwardClientKey().toString()))
+                .run(ctx -> assertThat(ctx)
+                        .as("a resolvable tls-context-id is legal (AD-29 per-target override)")
+                        .hasNotFailed());
+    }
+
+    @Test
+    @DisplayName("F13: an absent companion.bind.host -> refuse (@NotNull+@NotBlank)")
+    void f13_absentBindHostRefuses() {
+        assertRefused(TestCompanionConfigs.forwardA(dir).remove("companion.bind.host"),
+                "F13 absent host", "bind.host");
+    }
+
+    @Test
+    @DisplayName("F13: a blank companion.bind.host -> refuse (binds the exact blank value)")
+    void f13_blankBindHostRefuses() {
+        // null-vs-blank rule: @NotBlank catches the BOUND empty value ("" does not convert to null for
+        // String targets).
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.bind.host", ""),
+                "F13 blank host", "must not be blank");
+    }
+
+    // (F13 max-connections guard tests retired with the knob, Story 3.3 review rework: the cap IS
+    // companion.memory.concurrent-pairs now — its @Min(1)/absent refusals are the AD-30 memory tests'
+    // business, and the cap<=budget consistency guard became an identity.)
+
     // --- helpers -----------------------------------------------------------------------------
 
     /** Minimal valid forward-A props for the pure-HV path (paths need not exist — only the targeted guard is asserted). */
     private static ProxyCompanionProperties forwardAProps(String certPath,
                                                           List<ProxyCompanionProperties.RoutingEntry> routing) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -708,16 +760,16 @@ class CompanionConfigMatrixTest {
                         List.of("TLS_AES_256_GCM_SHA384")),
                 new ProxyCompanionProperties.Forward(
                         new ProxyCompanionProperties.ForwardModeA(
-                                new ProxyCompanionProperties.ServerCert(certPath, "/run/secrets/server.key"),
+                                new ProxyCompanionProperties.TrustStore(certPath, null),
                                 routing),
-                        null),
+                        null, null),
                 null);
     }
 
     /** Minimal valid reverse-A props for the pure-HV path. */
     private static ProxyCompanionProperties reverseAProps(String trustStorePath) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -727,7 +779,7 @@ class CompanionConfigMatrixTest {
                 new ProxyCompanionProperties.Reverse(
                         new ProxyCompanionProperties.ReverseModeA(
                                 new ProxyCompanionProperties.Smsc("smsc.carrier.example", 2775),
-                                new ProxyCompanionProperties.TrustStore(trustStorePath, null),
+                                new ProxyCompanionProperties.ServerCert(trustStorePath, "/run/secrets/reverse-server.key"),
                                 new ProxyCompanionProperties.Oidc(java.net.URI.create("https://idp.example.com"), "smpp-client",
                                         "/run/secrets/oidc-client-secret",
                                         new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),

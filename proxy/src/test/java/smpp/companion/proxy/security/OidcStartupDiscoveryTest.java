@@ -280,7 +280,7 @@ class OidcStartupDiscoveryTest {
     /** A reverse×B properties record (full AD-34 TLS lists, yml-template oidc budgets). */
     private static ProxyCompanionProperties reverseBProperties(Path idpStore, String providerUrl) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -299,14 +299,14 @@ class OidcStartupDiscoveryTest {
     /** A forward×A properties record — no oidc node anywhere (AD-12 amended 2026-08-18). */
     private static ProxyCompanionProperties forwardAProperties() {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(List.of("TLSv1.3", "TLSv1.2"),
                         List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"), List.of("TLS_AES_256_GCM_SHA384")),
                 new ProxyCompanionProperties.Forward(new ProxyCompanionProperties.ForwardModeA(
-                        new ProxyCompanionProperties.ServerCert("/run/secrets/server.crt", "/run/secrets/server.key"),
+                        new ProxyCompanionProperties.TrustStore("/run/secrets/truststore.p12", "changeit"),
                         List.of(new ProxyCompanionProperties.RoutingEntry("carrierOne", "reverse.internal", 2776, null))),
-                        null),
+                        null, null),
                 null);
     }
 

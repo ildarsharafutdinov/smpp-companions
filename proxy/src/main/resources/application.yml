@@ -20,6 +20,11 @@ companion:
   bind:
     # The proxy's own SMPP listener port (SEC-055).
     port: 2775
+    # The listener's bind address (F13, Story 3.3): the reverse's internet leg (TLS in A/C, plaintext
+    # direct in B) or the forward's trusted leg. 0.0.0.0 = all interfaces (the pre-3.3 behavior); a
+    # loopback/interface-scoped value is the F13 hardening — an internet-leg listener SHOULD be scoped
+    # to the interface it is reachable on.
+    host: 0.0.0.0
     # Bind-adjudication budget (Story 2.2 T7): RequestContext.deadline = now + this, handed to the
     # BindCredentialVerifier via the ScopedValue (AD-5/AD-12). 4s = the PERF-3-flavored bind-latency
     # budget; zero/negative refuses startup (compact-ctor guard). The relay-side timeout arm is RELAY-020.
@@ -32,6 +37,9 @@ companion:
   # safety-factor. Only the three tunable inputs are operator-set here.
   memory:
     max-inbound-depth: 64
+    # Budget input AND the F13 accepted-connection cap (Story 3.3 review rework — one number): every
+    # accepted connection can become a budgeted coupled pair, so the acceptor reads this directly
+    # (RelayServerLifecycle/ConnectionCapHandler); there is no separate bind.max-connections knob.
     concurrent-pairs: 1024
     safety-factor: 1.5
     # Over-ceiling policy for the AD-30 live startup self-check (NOT a budget-formula input). "fail"
@@ -62,26 +70,35 @@ companion:
   # Every secret is a FILE PATH (AD-18); secrets never ship in-repo, so all branch material is
   # operator-supplied via env/args. Uncomment one block per instance.
   #
-  # forward:  (NO OIDC — trusted-side relay; the reverse role adjudicates. AD-12 amended 2026-08-18.)
-  #   mode-a:                       # internet leg, one-way TLS; SMSC NOT required (SEC-097)
-  #     server-cert:
-  #       cert-path: /run/secrets/server.crt
-  #       key-path: /run/secrets/server.key
-  #     routing:                    # 1:1 (AD-29): system_id allow-list -> single egress target
+  # forward:  (NO OIDC — trusted-side relay; the reverse role adjudicates. AD-12 amended 2026-08-18.
+  #            [B] topology, Story 3.3: the forward's listener is the PLAINTEXT trusted leg; it DIALS the
+  #            reverse per SMPP session over TLS. NO server cert on this role.)
+  #   mode-a:                       # per-session one-way TLS dial; SMSC NOT required (SEC-097)
+  #     trust-store: { path: /run/secrets/truststore.p12, password: changeit }   # anchors the reverse's server cert
+  #     routing:                    # 1:1 (AD-29): system_id allow-list -> the reverse's dial target
   #       - system-id: carrierOne
   #         host: reverse.internal
   #         port: 2776
-  #         # tls-context-id: primary     # optional (AD-29)
-  #   mode-c:                       # internet leg, mTLS = forward-A material + trust store (reverse's client cert)
-  #     server-cert: { cert-path: /run/secrets/server.crt, key-path: /run/secrets/server.key }
-  #     routing: [ { system-id: carrierOne, host: reverse.internal, port: 2776 } ]
+  #         # tls-context-id: primary     # optional (AD-29) — selects a forward.tls-contexts override
+  #   mode-c:                       # per-session mTLS dial = forward-A material + per-instance client cert
+  #     client-cert: { cert-path: /run/secrets/forward-client.crt, key-path: /run/secrets/forward-client.key }
   #     trust-store: { path: /run/secrets/truststore.p12, password: changeit }
+  #     routing: [ { system-id: carrierOne, host: reverse.internal, port: 2776 } ]
+  #   # AD-29 per-target client-cert overrides (optional): id -> client cert+key presented on dials
+  #   # whose routing entry carries tls-context-id: <id>. Absent id on an entry = the instance-level
+  #   # default (mode-c's own client cert; trust-only in mode-a). Forward-scoped: only the forward
+  #   # dials TLS ([B] topology). Example:
+  #   tls-contexts:
+  #     primary:
+  #       cert-path: /run/secrets/forward-client-primary.crt
+  #       key-path: /run/secrets/forward-client-primary.key
   #
   # reverse:  (performs OIDC — sole enforcement point before the SMSC; every reverse cell adjudicates.
-  #            Modes describe the INTERNET leg; the SMSC leg is always plaintext/trusted.)
-  #   mode-a:                       # internet leg, one-way TLS (trust store anchors the forward's server cert)
+  #            Modes describe the INTERNET leg listener; the SMSC leg is always plaintext/trusted.
+  #            [B]: the reverse HOLDS the TLS listener — the forward dials in.)
+  #   mode-a:                       # internet leg, one-way TLS listener (presents the server cert; validates no peers)
   #     smsc: { host: smsc.carrier.example, port: 2775 }
-  #     trust-store: { path: /run/secrets/truststore.p12, password: changeit }
+  #     server-cert: { cert-path: /run/secrets/reverse-server.crt, key-path: /run/secrets/reverse-server.key }
   #     oidc:                       # reverse performs OIDC (AD-12); provider-url MUST be https (SEC-053/054)
   #       provider-url: https://idp.example.com/realms/smpp-companions
   #       client-id: smpp-client-confidential
@@ -104,9 +121,10 @@ companion:
   #             client-secret-path: /run/secrets/oidc-client-secret,
   #             trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit },
   #             timeout: 4s, max-in-flight: 64, jwks-cache-ttl: 5m }
-  #   mode-c:                       # internet leg, mTLS = client cert+key presented to the forward + trust store
+  #   mode-c:                       # internet leg, mTLS listener = server cert + trust store REQUIREing the
+  #                                 # forward's per-instance client cert (AD-13: REQUIRE never WANT)
   #     smsc: { host: smsc.carrier.example, port: 2775 }
-  #     client-cert: { cert-path: /run/secrets/client.crt, key-path: /run/secrets/client.key }
+  #     server-cert: { cert-path: /run/secrets/reverse-server.crt, key-path: /run/secrets/reverse-server.key }
   #     trust-store: { path: /run/secrets/truststore.p12, password: changeit }
   #     oidc: { provider-url: https://idp.example.com/realms/smpp-companions, client-id: smpp-client-confidential,
   #             client-secret-path: /run/secrets/oidc-client-secret,

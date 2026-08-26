@@ -12,6 +12,7 @@ import org.hibernate.validator.constraints.time.DurationMin;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
@@ -81,10 +82,17 @@ public record ProxyCompanionProperties(
     /**
      * forward role container: mode A (one-way TLS) and mode C (mTLS). Mode B is forbidden (absent).
      * Binding: {@code companion.forward.mode-a}/{@code companion.forward.mode-c}.
+     *
+     * <p>{@code tlsContexts} is the AD-29 per-target client-cert override map ({@code id →
+     * client-cert/key}, binding {@code companion.forward.tls-contexts.<id>.*}): a routing entry's
+     * {@code tls-context-id} selects one; absent → the instance-level default context (the forward
+     * cell's own client cert, or trust-only in Mode A). Forward-scoped because ONLY the forward
+     * dials TLS ([B] topology) — reverse cells carry no routing entries and no client material.
      */
     public record Forward(
             @Valid @Nullable ForwardModeA modeA,   // companion.forward.mode-a
-            @Valid @Nullable ForwardModeC modeC    // companion.forward.mode-c
+            @Valid @Nullable ForwardModeC modeC,   // companion.forward.mode-c
+            @Valid @Nullable Map<String, ClientCert> tlsContexts   // companion.forward.tls-contexts.<id>.* (optional, AD-29)
     ) {
         public Forward {
             if (modeA == null && modeC == null) {
@@ -125,42 +133,47 @@ public record ProxyCompanionProperties(
     }
 
     /**
-     * forward × A (internet leg, one-way TLS): internet-leg server cert+key + routing. NO OIDC — the
+     * forward × A (trusted leg plaintext; per-session one-way TLS dial to the reverse): client trust
+     * store anchoring the reverse proxy's internet-leg server cert (SEC-096) + routing. NO OIDC — the
      * forward role is a trusted-side relay (AD-12 amended 2026-08-18: the reverse role adjudicates).
-     * SMSC NOT required (SEC-097).
+     * SMSC NOT required (SEC-097). NO server cert — under the [B] topology (2026-08-21) the REVERSE
+     * holds the internet-leg TLS listener; the forward dials out per SMPP session.
      */
     public record ForwardModeA(
-            @NotNull(message = "companion.forward.mode-a.server-cert is required (forward A/C, SEC-056) — refusing to start.")
-            @Valid ServerCert serverCert,
+            @NotNull(message = "companion.forward.mode-a.trust-store is required (forward dials TLS, SEC-096) — refusing to start.")
+            @Valid TrustStore trustStore,
             @NotNull(message = "companion.forward.mode-a.routing is required and must be non-empty (AD-29, SEC-058) — refusing to start.")
             @Valid List<RoutingEntry> routing
     ) {
     }
 
     /**
-     * forward × C (internet leg, mTLS): forward-A material + trust store validating the reverse
-     * proxy's client cert. NO OIDC — trusted-side relay (AD-12 amended 2026-08-18).
+     * forward × C (trusted leg plaintext; per-session mTLS dial to the reverse): forward-A material +
+     * the per-instance client cert+key presented on every dial (SEC-057/FR-AUTH-3). NO OIDC —
+     * trusted-side relay (AD-12 amended 2026-08-18). NO server cert ([B] topology).
      */
     public record ForwardModeC(
-            @NotNull(message = "companion.forward.mode-c.server-cert is required (forward A/C, SEC-056) — refusing to start.")
-            @Valid ServerCert serverCert,
+            @NotNull(message = "companion.forward.mode-c.client-cert is required (forward C mTLS dial, SEC-057) — refusing to start.")
+            @Valid ClientCert clientCert,
+            @NotNull(message = "companion.forward.mode-c.trust-store is required (forward dials TLS, SEC-050) — refusing to start.")
+            @Valid TrustStore trustStore,
             @NotNull(message = "companion.forward.mode-c.routing is required and must be non-empty (AD-29, SEC-058) — refusing to start.")
-            @Valid List<RoutingEntry> routing,
-            @NotNull(message = "companion.forward.mode-c.trust-store is required (forward C mTLS, SEC-050) — refusing to start.")
-            @Valid TrustStore trustStore
+            @Valid List<RoutingEntry> routing
     ) {
     }
 
     /**
-     * reverse × A (internet leg, one-way TLS): SMSC endpoint (plaintext trusted SMSC leg) + client
-     * trust store anchoring the forward proxy's internet-leg server cert (SEC-096) + OIDC — the
-     * reverse role adjudicates every bind before the SMSC (AD-12 amended 2026-08-18).
+     * reverse × A (internet leg, one-way TLS listener): SMSC endpoint (plaintext trusted SMSC leg) +
+     * the internet-leg server cert+key the listener presents (SEC-056) + OIDC — the reverse role
+     * adjudicates every bind before the SMSC (AD-12 amended 2026-08-18). NO trust store — one-way
+     * TLS presents a cert, it does not validate peers ([B] topology: the reverse cannot authenticate
+     * the forward in Mode A; the Mode A accepted-risk entry in the spine's register governs).
      */
     public record ReverseModeA(
             @NotNull(message = "companion.reverse.mode-a.smsc is required (reverse, SEC-059) — refusing to start.")
             @Valid Smsc smsc,
-            @NotNull(message = "companion.reverse.mode-a.trust-store is required (reverse A, SEC-096) — refusing to start.")
-            @Valid TrustStore trustStore,
+            @NotNull(message = "companion.reverse.mode-a.server-cert is required (reverse internet-leg listener, SEC-056) — refusing to start.")
+            @Valid ServerCert serverCert,
             @NotNull(message = "companion.reverse.mode-a.oidc is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
             @Valid Oidc oidc
     ) {
@@ -181,16 +194,17 @@ public record ProxyCompanionProperties(
     }
 
     /**
-     * reverse × C (internet leg, mTLS): SMSC endpoint (plaintext trusted SMSC leg) + client cert+key
-     * presented to the forward proxy (SEC-057) + trust store (internet leg) + OIDC (AD-12 amended
-     * 2026-08-18).
+     * reverse × C (internet leg, mTLS listener): SMSC endpoint (plaintext trusted SMSC leg) + the
+     * internet-leg server cert+key (SEC-056) + trust store REQUIRE-validating the forward's
+     * per-instance client cert (SEC-050, AD-13 — never WANT) + OIDC (AD-12 amended 2026-08-18).
+     * NO client cert on this cell — under [B] the forward dials in and PRESENTS one.
      */
     public record ReverseModeC(
             @NotNull(message = "companion.reverse.mode-c.smsc is required (reverse, SEC-059) — refusing to start.")
             @Valid Smsc smsc,
-            @NotNull(message = "companion.reverse.mode-c.client-cert is required (reverse C mTLS, SEC-057) — refusing to start.")
-            @Valid ClientCert clientCert,
-            @NotNull(message = "companion.reverse.mode-c.trust-store is required (reverse C, SEC-050) — refusing to start.")
+            @NotNull(message = "companion.reverse.mode-c.server-cert is required (reverse internet-leg listener, SEC-056) — refusing to start.")
+            @Valid ServerCert serverCert,
+            @NotNull(message = "companion.reverse.mode-c.trust-store is required (reverse C REQUIRE, SEC-050) — refusing to start.")
             @Valid TrustStore trustStore,
             @NotNull(message = "companion.reverse.mode-c.oidc is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
             @Valid Oidc oidc
@@ -200,7 +214,9 @@ public record ProxyCompanionProperties(
     // --- leaf value records (reused across branches) -------------------------------------
 
     /**
-     * AD-34 pinned TLS defaults; the floor (TLS 1.2 min) + cipher intersection are validated at bind time.
+     * AD-34 pinned TLS defaults; the floor (TLS 1.2 min) + cipher intersection are validated at bind
+     * time. Policy only — applies to every TLS context both roles build; the per-target client-cert
+     * override map lives on the forward role ({@code Forward.tlsContexts}, AD-29).
      */
     public record Tls(
             List<String> protocols,          // companion.tls.protocols
@@ -329,6 +345,11 @@ public record ProxyCompanionProperties(
      * The proxy's own SMPP listener (always required) plus the bind-handshake adjudication budget.
      *
      * @param port the proxy's own SMPP listener port (SEC-055).
+     * @param host the proxy's own SMPP listener bind address (F13, Story 3.3): the reverse binds its
+     *        internet-leg TLS listener here (modes A/C) or its direct legacy listener (Mode B); the
+     *        forward binds its trusted-leg plaintext listener. Default {@code 0.0.0.0} in
+     *        {@code application.yml} (all interfaces — the pre-3.3 behavior); a loopback or
+     *        interface-scoped value is the F13 hardening. Blank/absent refuses.
      * @param adjudicationDeadline the BUDGET for one bind's credential adjudication (Story 2.2 T7, owner
      *         FIXME 2026-08-15): {@code RequestContext.deadline = now + this} is what the relay hands the
      *         {@code BindCredentialVerifier} via the {@code ScopedValue} (AD-5/AD-12); the Epic-3 ROPC
@@ -342,6 +363,9 @@ public record ProxyCompanionProperties(
             @Min(value = 1, message = "companion.bind.port must be in [1,65535] — refusing to start (SEC-055).")
             @Max(value = 65535, message = "companion.bind.port must be in [1,65535] — refusing to start (SEC-055).")
             int port,
+            @NotNull(message = "companion.bind.host is required (F13 listener hardening) — refusing to start.")
+            @NotBlank(message = "companion.bind.host must not be blank (F13 listener hardening) — refusing to start.")
+            String host,
             @NotNull(message = "companion.bind.adjudication-deadline is required — refusing to start.")
             Duration adjudicationDeadline
     ) {
@@ -363,23 +387,25 @@ public record ProxyCompanionProperties(
     }
 
     /**
-     * Internet-leg server cert+key (forward A/C). FILE PATHS (AD-18).
+     * Internet-leg server cert+key (the REVERSE cells' TLS listener, [B] topology). FILE PATHS (AD-18).
      */
     public record ServerCert(
-            @NotNull(message = "server-cert.cert-path is required (forward A/C, AD-18, SEC-060) — refusing to start.")
+            @NotNull(message = "server-cert.cert-path is required (reverse A/C, AD-18, SEC-060) — refusing to start.")
             String certPath,                      // .cert-path
-            @NotNull(message = "server-cert.key-path is required (forward A/C, AD-18, SEC-060) — refusing to start.")
+            @NotNull(message = "server-cert.key-path is required (reverse A/C, AD-18, SEC-060) — refusing to start.")
             String keyPath                        // .key-path
     ) {
     }
 
     /**
-     * Mode C client cert+key (reverse C). FILE PATHS (AD-18).
+     * Per-instance client cert+key (the FORWARD cell's Mode C dial, and every {@code
+     * forward.tls-contexts} override — FR-AUTH-3: one cert per runtime instance, never a shared
+     * golden-image key). FILE PATHS (AD-18).
      */
     public record ClientCert(
-            @NotNull(message = "client-cert.cert-path is required (reverse C mTLS, AD-18, SEC-060) — refusing to start.")
+            @NotNull(message = "client-cert.cert-path is required (forward C mTLS dial, AD-18, SEC-060) — refusing to start.")
             String certPath,                      // .cert-path
-            @NotNull(message = "client-cert.key-path is required (reverse C mTLS, AD-18, SEC-060) — refusing to start.")
+            @NotNull(message = "client-cert.key-path is required (forward C mTLS dial, AD-18, SEC-060) — refusing to start.")
             String keyPath                        // .key-path
     ) {
     }
@@ -423,7 +449,7 @@ public record ProxyCompanionProperties(
             @Min(value = 1, message = "companion.memory.max-inbound-depth must be >= 1 — refusing to start (AD-30).")
             int maxInboundDepth,                  // companion.memory.max-inbound-depth
             @Min(value = 1, message = "companion.memory.concurrent-pairs must be >= 1 — refusing to start (AD-30).")
-            int concurrentPairs,                  // companion.memory.concurrent-pairs
+            int concurrentPairs,                  // companion.memory.concurrent-pairs — ALSO the F13 accepted-connection cap (every accepted connection can become a budgeted pair; one number, no separate bind.max-connections knob)
             @DecimalMin(value = "1.0", message = "companion.memory.safety-factor must be a finite number (>= 1.0) — refusing to start (AD-30).")
             double safetyFactor,                  // companion.memory.safety-factor
             BudgetCheck budgetCheck               // companion.memory.budget-check — FAIL default ships in application.yml
