@@ -1432,7 +1432,7 @@ class RopcBindCredentialVerifierTest {
     private static ProxyCompanionProperties reverseBProperties(Path idpStore, Path secretPath,
             String providerUrl, Duration timeout, int maxInFlight, Duration jwksCacheTtl) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),

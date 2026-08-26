@@ -5,6 +5,9 @@ import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
 
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+
 import java.security.cert.CertPathBuilder;
 import java.security.cert.CertPathValidator;
 import java.security.cert.PKIXBuilderParameters;
@@ -13,6 +16,8 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+
+import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
@@ -35,8 +40,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * when its selection matches nothing, which also makes a silent rename of the factory visible here.
  *
  * <p>RED-on-neuter (AI-1): plant an {@code X509TrustManager}-typed member, a {@code PKIXBuilderParameters}
- * reference, or an {@code HttpsParameters} import in any {@code security/} main class and the corresponding
- * rule fails.
+ * reference, or an {@code HttpsParameters} import in any main class and the corresponding rule fails.
  */
 @AnalyzeClasses(packages = "smpp.companion.proxy", importOptions = ImportOption.DoNotIncludeTests.class)
 class SecurityTlsSurfaceArchitectureTest {
@@ -47,15 +51,16 @@ class SecurityTlsSurfaceArchitectureTest {
      * validation" starts.
      */
     @ArchTest
-    static final ArchRule securityMainMustNotHandRollPkix =
+    static final ArchRule proxyMainMustNotHandRollPkix =
         noClasses()
-            .that().resideInAPackage("..smpp.companion.proxy.security..")
+            .that().resideInAPackage("..smpp.companion.proxy..")
             .should().dependOnClassesThat().belongToAnyOf(
                 CertPathValidator.class, CertPathBuilder.class,
                 PKIXParameters.class, PKIXBuilderParameters.class)
             .because("PKIX path building/validation is the JDK TrustManagerFactory's job with its defaults "
                     + "(AD-13: no custom chain-validation code, no PKIXBuilderParameters overrides) — "
-                    + "hand-rolled PKIX is how trust-anchor bugs are born");
+                    + "hand-rolled PKIX is how trust-anchor bugs are born. Widened to ALL of "
+                    + "smpp.companion.proxy main by Story 3.3 (the SMPP-leg tls/ package).");
 
     /**
      * SEC-090 / AD-13: no custom trust-manager logic — depending on {@code X509TrustManager}/{@code TrustManager}
@@ -64,9 +69,9 @@ class SecurityTlsSurfaceArchitectureTest {
      * the JDK's own managers, it never names the interface.
      */
     @ArchTest
-    static final ArchRule securityMainMustNotImplementCustomTrustLogic =
+    static final ArchRule proxyMainMustNotImplementCustomTrustLogic =
         noClasses()
-            .that().resideInAPackage("..smpp.companion.proxy.security..")
+            .that().resideInAPackage("..smpp.companion.proxy..")
             .should().dependOnClassesThat().belongToAnyOf(X509TrustManager.class, TrustManager.class)
             .because("peer-trust decisions must come from the JDK-default PKIX TrustManagerFactory over the "
                     + "dedicated IdP store (AD-13/AD-26) — a hand-written X509TrustManager is the classic "
@@ -77,13 +82,28 @@ class SecurityTlsSurfaceArchitectureTest {
      * test-tier stand-in stack — it must never appear in production {@code security/} code.
      */
     @ArchTest
-    static final ArchRule securityMainMustNotTouchSunHttpServer =
+    static final ArchRule proxyMainMustNotTouchSunHttpServer =
         noClasses()
-            .that().resideInAPackage("..smpp.companion.proxy.security..")
+            .that().resideInAPackage("..smpp.companion.proxy..")
             .should().dependOnClassesThat().resideInAPackage("com.sun.net.httpserver..")
             .because("com.sun.net.httpserver is the in-process stand-in IdP stack (test tier only); the "
                     + "provider-facing wire is java.net.http.HttpClient over the IdP SSLContext (AD-36) — "
                     + "HttpsParameters in main would mean the stand-in leaked into production");
+
+    /**
+     * SEC-090 / Story 3.3 T3 positive control: the SMPP-leg TLS factory really rides Netty's JDK-provider
+     * {@code SslContext} surface — fails if the factory stops using either class or is renamed out of the
+     * rule (the widened forbid rules must guard a live TLS surface, not a vacuous one).
+     */
+    @ArchTest
+    static final ArchRule smppLegTlsFactoryRidesNettyJdkSslContexts =
+        classes()
+            .that().haveSimpleName(SmppLegTlsFactory.class.getSimpleName())
+            .should().dependOnClassesThat().haveFullyQualifiedName(SslContext.class.getName())
+            .andShould().dependOnClassesThat().haveFullyQualifiedName(SslContextBuilder.class.getName())
+            .because("the SMPP-leg TLS runtime builds Netty JDK-provider SslContexts (Story 3.3, "
+                    + "SEC-4/AD-13: mature TLS stacks only — the positive control keeps the widened "
+                    + "forbid rules from being vacuous)");
 
     /**
      * SEC-090 / AC10 positive control: the IdP TLS factory really rides the sanctioned JDK classes — both

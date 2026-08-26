@@ -130,6 +130,7 @@ class DirectMemoryBudgetStartupCheckTest {
                     .run("--companion.memory.concurrent-pairs=1000000");
             ctx.close();
         }).hasRootCauseInstanceOf(DirectMemoryBudgetException.class);
+        // (the F13 cap fits this boot's budget by construction: yml 1024 <= 1_000_000)
         assertThat(out.getAll())
                 .as("no accepted-risk banner on the FAIL path")
                 .doesNotContain("AD-30 DIRECT-MEMORY BUDGET");
@@ -184,7 +185,7 @@ class DirectMemoryBudgetStartupCheckTest {
         // over-ceiling budget (64 × 1_000_000 × 1.5 ≈ 6.29 TB ≫ any ceiling) + null MUST throw.
         // RED under the `!= FAIL` mutation (null != FAIL would banner+boot instead of refusing).
         ProxyCompanionProperties props = new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new ProxyCompanionProperties.Memory(64, 1_000_000, 1.5, null),
                 new ProxyCompanionProperties.Tls(List.of("TLSv1.3"), List.of(), List.of()),
                 null,
@@ -238,13 +239,16 @@ class DirectMemoryBudgetStartupCheckTest {
      * trusted-side relay (AD-12 amended 2026-08-18); the reverse role adjudicates.
      */
     private static SpringApplicationBuilder forwardABuilder(Path dir) throws IOException {
-        Path cert = Files.createFile(dir.resolve("server.crt"));
-        Path key = Files.createFile(dir.resolve("server.key"));
+        // [B] re-shape (Story 3.3): the forward branch carries the DIAL material — the REAL committed
+        // trust store (this full boot constructs SmppLegTlsFactory, which loads it eagerly). NO oidc
+        // keys — the forward role is a trusted-side relay (AD-12 amended 2026-08-18).
+        var legs = RelayTestFixtures.smppTlsLegs(dir);
         return new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
-                        "companion.forward.mode-a.server-cert.cert-path=" + cert,
-                        "companion.forward.mode-a.server-cert.key-path=" + key,
+                        "companion.forward.mode-a.trust-store.path=" + legs.trustStore(),
+                        "companion.forward.mode-a.trust-store.password="
+                                + RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD,
                         "companion.forward.mode-a.routing[0].system-id=carrierOne",
                         "companion.forward.mode-a.routing[0].host=reverse.internal",
                         "companion.forward.mode-a.routing[0].port=2776");

@@ -12,7 +12,6 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Bind;
-import smpp.companion.proxy.config.ProxyCompanionProperties.ClientCert;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Forward;
 import smpp.companion.proxy.config.ProxyCompanionProperties.ForwardModeA;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Memory;
@@ -53,17 +52,17 @@ class CompanionRoleFailFastTest {
         // forward branch and a reverse branch without throwing. (Matrix validation is exercised
         // end-to-end in CompanionConfigMatrixTest.)
         new ProxyCompanionProperties(
-                new Bind(2775, Duration.ofSeconds(4)),
+                new Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 new Forward(
                         new ForwardModeA(
-                                new ServerCert("/run/secrets/server.crt", "/run/secrets/server.key"),
+                                new TrustStore("/run/secrets/truststore.p12", "changeit"),
                                 List.of(new RoutingEntry("carrierOne", "reverse.internal", 2776, null))),
-                        null),
+                        null, null),
                 null);
         new ProxyCompanionProperties(
-                new Bind(2775, Duration.ofSeconds(4)),
+                new Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 null,
@@ -71,7 +70,7 @@ class CompanionRoleFailFastTest {
                         null, null,
                         new ReverseModeC(
                                 new Smsc("smsc.carrier.example", 2775),
-                                new ClientCert("/run/secrets/client.crt", "/run/secrets/client.key"),
+                                new ServerCert("/run/secrets/reverse-server.crt", "/run/secrets/reverse-server.key"),
                                 new TrustStore("/run/secrets/truststore.p12", "changeit"),
                                 new Oidc(java.net.URI.create("https://idp.example.com"), "smpp-client-confidential",
                                         "/run/secrets/oidc-client-secret",

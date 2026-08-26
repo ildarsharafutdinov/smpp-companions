@@ -82,6 +82,11 @@ import org.jspecify.annotations.Nullable;
  * can express (filesystem/content checks + TLS/cipher/finite guards). Fired by {@code @Validated} at bind
  * time &rarr; non-zero startup exit on any violation.
  *
+ * <p>Story 3.3 ([B] re-shape) adds: the forward cells' trust-store/client-cert checks, and the
+ * routing entry {@code tls-context-id} &rarr; {@code companion.forward.tls-contexts} reference
+ * check (SEC-098). The F13 accepted-connection cap needs no guard here — it IS {@code
+ * companion.memory.concurrent-pairs} (one number; the acceptor reads the budget input directly).
+ *
  * <p>Mode B reverse+ack is the single non-refuse insecure posture: the validator returns valid for it,
  * and the loud plaintext startup warning is emitted <em>after</em> successful refresh by
  * {@link CompanionModeBWarning} (not here &mdash; a class-level constraint cannot see the field-level
@@ -166,11 +171,17 @@ public final class CompanionConfigValidator
         var rmb = (rev != null) ? rev.modeB() : null;
         var rmc = (rev != null) ? rev.modeC() : null;
         // Exactly one mode-leaf is populated (constructor-enforced); exactly one of these fires.
+        // AD-29 per-target contexts available to routing entries — FORWARD-scoped (Story 3.3 review
+        // rework: only the forward dials TLS): an absent map leaves it empty, so a routing entry then
+        // has NO valid tls-context-id and SEC-098 refuses the boot.
+        Set<String> contextIds = (fwd == null || fwd.tlsContexts() == null)
+                ? Set.of()
+                : fwd.tlsContexts().keySet();
         if (fma != null) {
-            validateForwardModeA(fma, v);
+            validateForwardModeA(fma, contextIds, v);
         }
         if (fmc != null) {
-            validateForwardModeC(fmc, v);
+            validateForwardModeC(fmc, contextIds, v);
         }
         if (rma != null) {
             validateReverseModeA(rma, v);
@@ -183,37 +194,33 @@ public final class CompanionConfigValidator
         }
     }
 
-    private void validateForwardModeA(ProxyCompanionProperties.ForwardModeA ma, List<String> v) {
-        validateForwardBase(ma.serverCert(), ma.routing(), "companion.forward.mode-a", v);
+    private void validateForwardModeA(ProxyCompanionProperties.ForwardModeA ma, Set<String> contextIds,
+                                      List<String> v) {
+        String prefix = "companion.forward.mode-a";
+        // SEC-096: the forward's TLS client validates the reverse's internet-leg server cert against
+        // this store (the [B] re-shape, Story 3.3) — full AD-13 depth, never cacerts.
+        requireTrustStore(ma.trustStore(), prefix + ".trust-store", v);
+        requireRouting(ma.routing(), contextIds, prefix + ".routing", v);
         // SEC-097 (positive): forward+A does NOT require an SMSC endpoint — intentionally no SMSC check.
         // NO OIDC check: the forward role is a trusted-side relay (AD-12 amended 2026-08-18 — the
         // reverse role adjudicates); the forward cells carry no oidc node at all.
     }
 
-    private void validateForwardModeC(ProxyCompanionProperties.ForwardModeC mc, List<String> v) {
+    private void validateForwardModeC(ProxyCompanionProperties.ForwardModeC mc, Set<String> contextIds,
+                                      List<String> v) {
         String prefix = "companion.forward.mode-c";
-        validateForwardBase(mc.serverCert(), mc.routing(), prefix, v);
-        // forward+C validates the mTLS trust store at the full AD-13 depth (SEC-050).
-        requireTrustStore(mc.trustStore(), prefix + ".trust-store", v);
-    }
-
-    /**
-     * Shared forward A/C content: server cert+key readability (SEC-056), routing (SEC-058). Both
-     * records are {@code @NotNull} on ForwardModeA/C and thus guaranteed non-null by the pre-pass.
-     */
-    private void validateForwardBase(ProxyCompanionProperties.ServerCert serverCert,
-                                     List<ProxyCompanionProperties.RoutingEntry> routing,
-                                     String prefix, List<String> v) {
-        requireReadableFile(serverCert.certPath(), "server certificate", prefix + ".server-cert.cert-path", v);
-        requireReadableFile(serverCert.keyPath(), "server key", prefix + ".server-cert.key-path", v);
-        requireRouting(routing, prefix + ".routing", v);
+        requireClientCert(mc.clientCert(), prefix + ".client-cert", v); // SEC-057: the per-instance dial cert.
+        requireTrustStore(mc.trustStore(), prefix + ".trust-store", v); // SEC-050: full AD-13 depth.
+        requireRouting(mc.routing(), contextIds, prefix + ".routing", v);
     }
 
     private void validateReverseModeA(ProxyCompanionProperties.ReverseModeA ma, List<String> v) {
         String prefix = "companion.reverse.mode-a";
         requireSmsc(ma.smsc(), prefix + ".smsc", v);         // SEC-059: reverse requires the SMSC endpoint.
-        requireTrustStore(ma.trustStore(), prefix + ".trust-store", v); // SEC-096: internet-leg server-cert anchor.
+        requireServerCert(ma.serverCert(), prefix + ".server-cert", v); // SEC-056: internet-leg listener material.
         requireOidc(ma.oidc(), prefix + ".oidc", v);         // AD-12 amended: the reverse adjudicates.
+        // NO trust store on reverse+A: one-way TLS PRESENTS a cert, it does not validate peers. The
+        // [B] Mode A accepted-risk entry (spine register) owns that posture.
     }
 
     private void validateReverseModeB(ProxyCompanionProperties.ReverseModeB mb, List<String> v) {
@@ -231,9 +238,18 @@ public final class CompanionConfigValidator
     private void validateReverseModeC(ProxyCompanionProperties.ReverseModeC mc, List<String> v) {
         String prefix = "companion.reverse.mode-c";
         requireSmsc(mc.smsc(), prefix + ".smsc", v);
-        requireClientCert(mc.clientCert(), prefix + ".client-cert", v); // SEC-057: reverse+C client cert+key.
-        requireTrustStore(mc.trustStore(), prefix + ".trust-store", v);
+        requireServerCert(mc.serverCert(), prefix + ".server-cert", v); // SEC-056: internet-leg listener material.
+        requireTrustStore(mc.trustStore(), prefix + ".trust-store", v); // SEC-050: the REQUIRE-side anchor.
         requireOidc(mc.oidc(), prefix + ".oidc", v);         // AD-12 amended: the reverse adjudicates.
+    }
+
+    /**
+     * The reverse cells' internet-leg listener cert+key (SEC-056, the [B] re-shape): file readability
+     * here; PEM/key parseability is the TLS factory's eager bean-init load (fail-closed).
+     */
+    private void requireServerCert(ProxyCompanionProperties.ServerCert serverCert, String prefix, List<String> v) {
+        requireReadableFile(serverCert.certPath(), "server certificate", prefix + ".cert-path", v);
+        requireReadableFile(serverCert.keyPath(), "server key", prefix + ".key-path", v);
     }
 
     /**
@@ -249,7 +265,8 @@ public final class CompanionConfigValidator
     /**
      * {@code routing} is {@code @NotNull} (but may be empty) on forward A/C → non-null by the pre-pass.
      */
-    private void requireRouting(List<ProxyCompanionProperties.RoutingEntry> routing, String prefix, List<String> v) {
+    private void requireRouting(List<ProxyCompanionProperties.RoutingEntry> routing, Set<String> contextIds,
+                                String prefix, List<String> v) {
         if (routing.isEmpty()) {
             v.add(prefix + " is required and must be non-empty for the forward role (AD-29 1:1; "
                     + "no default route per AD-11) — refusing to start (SEC-058).");
@@ -275,6 +292,12 @@ public final class CompanionConfigValidator
             }
             if (entry.host().isBlank()) {
                 v.add(prefix + "[" + index + "].host is required (AD-29) — refusing to start.");
+            }
+            if (entry.tlsContextId() != null && !contextIds.contains(entry.tlsContextId())) {
+                // SEC-098 (Story 3.3): a routing entry selecting an absent forward.tls-contexts key
+                // would silently fall back to the instance default at dial time — fail closed instead.
+                v.add(prefix + "[" + index + "].tls-context-id=" + entry.tlsContextId()
+                        + " references no companion.forward.tls-contexts entry — refusing to start (SEC-098/AD-29).");
             }
             index++;
         }

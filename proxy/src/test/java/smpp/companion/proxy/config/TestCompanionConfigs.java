@@ -37,41 +37,51 @@ public final class TestCompanionConfigs {
 
     private TestCompanionConfigs() {}
 
-    /** forward × A (internet leg, one-way TLS): server cert+key + routing — NO OIDC (trusted-side relay; SEC-097 positive: no SMSC). */
+    // Story 3.3 ([B] re-shape): the forward cells carry the DIAL material (trust store [+ client
+    // cert]); the reverse cells carry the LISTENER material (server cert [+ trust store in C]). The
+    // TLS files are the committed SMPP-leg test PKI (RelayTestFixtures.smppTlsLegs) — REAL parseable
+    // material, because every full-context boot constructs SmppLegTlsFactory, which loads it eagerly.
+
+    /** forward × A (per-session one-way TLS dial): trust store + routing — NO OIDC (trusted-side relay; SEC-097 positive: no SMSC). */
     public static TestCompanionConfigs forwardA(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(secrets);
         String b = "companion.forward.mode-a";
-        c.props.put(b + ".server-cert.cert-path", touch(secrets.resolve("server.crt")).toString());
-        c.props.put(b + ".server-cert.key-path", touch(secrets.resolve("server.key")).toString());
+        c.props.put(b + ".trust-store.path", legs.trustStore().toString());
+        c.props.put(b + ".trust-store.password", RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD);
         c.props.put(b + ".routing[0].system-id", "carrierOne");
         c.props.put(b + ".routing[0].host", "reverse.internal");
         c.props.put(b + ".routing[0].port", "2776");
         return c;
     }
 
-    /** forward × C: forward-A material + trust store (mTLS to the reverse proxy). */
+    /** forward × C: forward-A material + the per-instance client cert (mTLS dial to the reverse). */
     public static TestCompanionConfigs forwardC(Path secrets) {
-        TestCompanionConfigs c = forwardA(secrets);
-        // Re-key the forward material under mode-c, then add the trust store.
-        c.rekey("companion.forward.mode-a", "companion.forward.mode-c");
+        TestCompanionConfigs c = new TestCompanionConfigs();
+        c.common();
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(secrets);
         String b = "companion.forward.mode-c";
-        Path ts = trustStoreFixture(secrets.resolve("truststore.p12"));
-        c.props.put(b + ".trust-store.path", ts.toString());
-        c.props.put(b + ".trust-store.password", "changeit");
+        c.props.put(b + ".client-cert.cert-path", legs.forwardClientCert().toString());
+        c.props.put(b + ".client-cert.key-path", legs.forwardClientKey().toString());
+        c.props.put(b + ".trust-store.path", legs.trustStore().toString());
+        c.props.put(b + ".trust-store.password", RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD);
+        c.props.put(b + ".routing[0].system-id", "carrierOne");
+        c.props.put(b + ".routing[0].host", "reverse.internal");
+        c.props.put(b + ".routing[0].port", "2776");
         return c;
     }
 
-    /** reverse × A (internet leg, one-way TLS): SMSC + client trust store (internet-leg anchor, SEC-096) + OIDC. */
+    /** reverse × A (internet-leg TLS listener): SMSC + server cert+key + OIDC (no trust store — one-way presents, never validates). */
     public static TestCompanionConfigs reverseA(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(secrets);
         String b = "companion.reverse.mode-a";
         c.props.put(b + ".smsc.host", "smsc.carrier.example");
         c.props.put(b + ".smsc.port", "2775");
-        Path ts = trustStoreFixture(secrets.resolve("truststore.p12"));
-        c.props.put(b + ".trust-store.path", ts.toString());
-        c.props.put(b + ".trust-store.password", "changeit");
+        c.props.put(b + ".server-cert.cert-path", legs.reverseServerCert().toString());
+        c.props.put(b + ".server-cert.key-path", legs.reverseServerKey().toString());
         c.oidcKeys(b, secrets);
         return c;
     }
@@ -89,18 +99,18 @@ public final class TestCompanionConfigs {
         return c;
     }
 
-    /** reverse × C (internet leg, mTLS): SMSC + client cert+key (SEC-057) + trust store + OIDC. */
+    /** reverse × C (internet-leg mTLS listener): SMSC + server cert+key + trust store (REQUIRE) + OIDC. */
     public static TestCompanionConfigs reverseC(Path secrets) {
         TestCompanionConfigs c = new TestCompanionConfigs();
         c.common();
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(secrets);
         String b = "companion.reverse.mode-c";
         c.props.put(b + ".smsc.host", "smsc.carrier.example");
         c.props.put(b + ".smsc.port", "2775");
-        c.props.put(b + ".client-cert.cert-path", touch(secrets.resolve("client.crt")).toString());
-        c.props.put(b + ".client-cert.key-path", touch(secrets.resolve("client.key")).toString());
-        Path ts = trustStoreFixture(secrets.resolve("truststore.p12"));
-        c.props.put(b + ".trust-store.path", ts.toString());
-        c.props.put(b + ".trust-store.password", "changeit");
+        c.props.put(b + ".server-cert.cert-path", legs.reverseServerCert().toString());
+        c.props.put(b + ".server-cert.key-path", legs.reverseServerKey().toString());
+        c.props.put(b + ".trust-store.path", legs.trustStore().toString());
+        c.props.put(b + ".trust-store.password", RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD);
         c.oidcKeys(b, secrets);
         return c;
     }
@@ -146,6 +156,11 @@ public final class TestCompanionConfigs {
         // against other tests. (Forward-cell configs never bind — the lifecycle is mode-b-scoped — but
         // sharing the probe keeps every base uniform.)
         props.put("companion.bind.port", String.valueOf(RelayTestFixtures.freePort()));
+        // Story 3.3 / F13: the listener now binds host:port; the accepted-connection cap IS the
+        // minimal AD-30 budget's concurrent-pairs=1 below (one number — the review-rework shape;
+        // these runner configs never accept real connections; the wiring/e2e suites carry realistic
+        // values).
+        props.put("companion.bind.host", "127.0.0.1");
         // Story 2.2 T7 owner FIXME: companion.bind.adjudication-deadline is now a required key (the
         // ApplicationContextRunner boots below do NOT load application.yml, so the yml default cannot
         // supply it — every base carries the documented 4s default explicitly, the T5b no-@DefaultValue
@@ -165,25 +180,6 @@ public final class TestCompanionConfigs {
         props.put("companion.memory.safety-factor", "1.0");
     }
 
-    /** Re-keys every property whose key starts with {@code from} to start with {@code to}. */
-    private void rekey(String from, String to) {
-        Map<String, String> updated = new LinkedHashMap<>();
-        for (Map.Entry<String, String> e : props.entrySet()) {
-            String key = e.getKey().startsWith(from) ? to + e.getKey().substring(from.length()) : e.getKey();
-            updated.put(key, e.getValue());
-        }
-        props.clear();
-        props.putAll(updated);
-    }
-
-    private static Path touch(Path p) {
-        try {
-            return Files.createFile(p);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
     /**
      * A NON-BLANK client-secret file (T7): the adapter bean loads it at startup, and the trailing
      * newline keeps ClientSecret.load's ASCII-trim path exercised on every boot.
@@ -193,14 +189,6 @@ public final class TestCompanionConfigs {
             return Files.writeString(p, "stand-in-client-secret\n");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
-        }
-    }
-
-    private static Path trustStoreFixture(Path file) {
-        try {
-            return KeyStoreFixtures.writeValidTrustStore(file, "changeit");
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to build trust store fixture " + file, e);
         }
     }
 

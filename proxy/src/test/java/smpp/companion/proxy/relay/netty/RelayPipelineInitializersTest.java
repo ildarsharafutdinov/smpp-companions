@@ -1,11 +1,14 @@
 package smpp.companion.proxy.relay.netty;
 
+import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.ssl.SslHandler;
 
@@ -16,6 +19,7 @@ import smpp.companion.proxy.relay.BindInterceptor;
 import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.RelayHandler;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
+import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -150,6 +154,75 @@ class RelayPipelineInitializersTest {
             ingressB.close();
             egressA.close();
             egressB.close();
+        }
+    }
+
+    // --- Story 3.3 (T4): the TLS cells' pipeline shape — SslHandler FIRST, before the framer -------
+
+    /**
+     * The reverse internet-leg listener pipeline: the spine's {@code SslHandler → SmppFrameDecoder →
+     * SmppCodec → BindInterceptor → RelayHandler} order — the TLS handshake terminates BEFORE any SMPP
+     * byte is framed, and the handler is a per-channel instance (the engine is per-connection state).
+     */
+    @Test
+    @DisplayName("reverse.mode-a ingress: SslHandler → framer → codec → interceptor → relay handler, in order")
+    void reverseTlsIngressPrependsSslHandlerBeforeTheFramer(@TempDir Path dir) {
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        RelayTestFixtures.RelayHarness harness = RelayTestFixtures.relayHarness(
+                RelayTestFixtures.reverseAProperties(RelayTestFixtures.freePort(), 8, legs, "127.0.0.1", 2775),
+                new smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier());
+        EmbeddedChannel channel = new EmbeddedChannel(harness.ingressInitializer());
+        try {
+            List<String> names = channel.pipeline().names();
+            int ssl = indexOfPrefix(names, "SslHandler");
+            int framer = indexOfPrefix(names, "SmppFrameDecoder");
+            assertThat(ssl).as("the TLS listener cell carries an SslHandler").isGreaterThanOrEqualTo(0);
+            assertThat(ssl).as("TLS terminates BEFORE framing — the SslHandler must sit FIRST").isLessThan(framer);
+            assertThat(userHandlers(names))
+                    .as("the TLS ingress pipeline is EXACTLY SslHandler + the four plaintext handlers")
+                    .hasSize(5);
+        } finally {
+            channel.close();
+        }
+    }
+
+    /** The forward's per-dial egress pipeline: SslHandler first, then the codec prefix + flipper. */
+    @Test
+    @DisplayName("forward egress (TargetTls): SslHandler → framer → codec → relay handler, in order")
+    void forwardTlsEgressPrependsSslHandlerBeforeTheFramer(@TempDir Path dir) {
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        RelayTestFixtures.RelayHarness harness = RelayTestFixtures.relayHarness(
+                RelayTestFixtures.forwardAProperties(RelayTestFixtures.freePort(), 8, legs, "127.0.0.1", 2776),
+                new smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier());
+        smpp.companion.proxy.config.ProxyCompanionProperties.RoutingEntry target =
+                new smpp.companion.proxy.config.ProxyCompanionProperties.RoutingEntry("carrierOne", "127.0.0.1", 2776, null);
+        RelayEgressInitializer tlsEgress = new RelayEgressInitializer(
+                harness.registry(), harness.observer(),
+                ch -> harness.tlsFactory().newEgressSslHandler(ch.alloc(), target));
+        EmbeddedChannel channel = new EmbeddedChannel(tlsEgress);
+        try {
+            List<String> names = channel.pipeline().names();
+            int ssl = indexOfPrefix(names, "SslHandler");
+            int framer = indexOfPrefix(names, "SmppFrameDecoder");
+            assertThat(ssl).as("the TLS dial carries an SslHandler").isGreaterThanOrEqualTo(0);
+            assertThat(ssl).as("the ORIGINAL bind rides the TLS record layer — SslHandler FIRST").isLessThan(framer);
+            assertThat(userHandlers(names)).hasSize(4);
+        } finally {
+            channel.close();
+        }
+    }
+
+    /** The plaintext singleton (the reverse's SMSC leg) still carries NO SslHandler ([B]: SMSC leg is trusted). */
+    @Test
+    @DisplayName("reverse SMSC egress singleton: no SslHandler — the SMSC leg is plaintext in every mode")
+    void reverseSmscEgressSingletonStaysPlaintext() {
+        EmbeddedChannel channel = new EmbeddedChannel(egressInitializer());
+        try {
+            assertThat(channel.pipeline().get(SslHandler.class))
+                    .as("no TLS on the SMSC leg (AD-12 amended — trusted network in every mode)")
+                    .isNull();
+        } finally {
+            channel.close();
         }
     }
 

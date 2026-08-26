@@ -14,6 +14,7 @@ import java.util.List;
 import io.netty.buffer.PooledByteBufAllocator;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.CapturingSpliceObserver;
 import smpp.companion.proxy.observability.NoopSpliceObserver;
 import smpp.companion.proxy.relay.ConnectionRegistry;
@@ -21,6 +22,8 @@ import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
 import smpp.companion.proxy.relay.netty.RelayIngressInitializer;
 import smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier;
+import smpp.companion.proxy.security.BindCredentialVerifier;
+import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
 /**
  * Shared relay-test fixtures (T6 code-review consolidation): the free-ephemeral-port probe and the
@@ -110,9 +113,11 @@ public final class RelayTestFixtures {
     public static ProxyCompanionProperties modeBProperties(
             int bindPort, int maxInboundDepth, String smscHost, int smscPort) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(bindPort, DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(
+                        bindPort, DEFAULT_BIND_HOST, DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(
-                        maxInboundDepth, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
+                        maxInboundDepth, DEFAULT_CONCURRENT_PAIRS, 1.0,
+                        ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(List.of("TLSv1.3"), List.of(), List.of()),
                 null,
                 new ProxyCompanionProperties.Reverse(
@@ -121,6 +126,169 @@ public final class RelayTestFixtures {
                                 new ProxyCompanionProperties.Smsc(smscHost, smscPort), true, testOidc()),
                         null));
     }
+
+    /**
+     * The loopback listener host every direct-construction fixture binds (Story 3.3 / F13: the
+     * listener now binds host:port, and every fixture consumer connects via the loopback address).
+     */
+    public static final String DEFAULT_BIND_HOST = "127.0.0.1";
+
+    /**
+     * The realistic AD-34 TLS lists the TLS-bearing cells need (the fixture certs are RSA, and the
+     * 1.2 set carries the ECDHE_RSA suites that intersect — the minimal {@code List.of()} framer-only
+     * lists of the plaintext cells would refuse inside {@link SmppLegTlsFactory}).
+     */
+    public static final List<String> TLS_PROTOCOLS = List.of("TLSv1.3", "TLSv1.2");
+    public static final List<String> TLS12_SUITES = List.of(
+            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256");
+    public static final List<String> TLS13_SUITES = List.of(
+            "TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256", "TLS_CHACHA20_POLY1305_SHA256");
+
+    /**
+     * The Story 3.3 SMPP-leg test PKI ({@code keycloak/certs/smpp-*}, committed; see its
+     * {@code generate.sh}) materialized into {@code dir}: the reverse's internet-leg server
+     * cert+key, the forward's per-instance client cert+key, and the CA-only trust store anchoring
+     * both directions. One copy per temp dir; TLS material is immutable (AD-18).
+     */
+    public static SmppTlsLegs smppTlsLegs(Path dir) {
+        return new SmppTlsLegs(
+                copyResource("/keycloak/certs/smpp-reverse-server.pem", dir.resolve("smpp-reverse-server.pem")),
+                copyResource("/keycloak/certs/smpp-reverse-server-key.pem", dir.resolve("smpp-reverse-server-key.pem")),
+                copyResource("/keycloak/certs/smpp-forward-client.pem", dir.resolve("smpp-forward-client.pem")),
+                copyResource("/keycloak/certs/smpp-forward-client-key.pem", dir.resolve("smpp-forward-client-key.pem")),
+                copyResource("/keycloak/certs/smpp-truststore.p12", dir.resolve("smpp-truststore.p12")));
+    }
+
+    /** The materialized SMPP-leg fixture files (see {@link #smppTlsLegs(Path)}). */
+    public record SmppTlsLegs(
+            Path reverseServerCert, Path reverseServerKey,
+            Path forwardClientCert, Path forwardClientKey,
+            Path trustStore) {
+
+        /** The store password of the committed fixture PKI ({@code generate.sh} PASS). */
+        public static final String STORE_PASSWORD = "smpp-test";
+
+        /** The fixture trust-store record ({@code TrustStore(path, password)}). */
+        public ProxyCompanionProperties.TrustStore trustStoreRecord() {
+            return new ProxyCompanionProperties.TrustStore(trustStore.toString(), STORE_PASSWORD);
+        }
+    }
+
+    /** Copies a classpath resource to {@code target} (REPLACE_EXISTING) and returns it. */
+    public static Path copyResource(String resource, Path target) {
+        try (InputStream in = RelayTestFixtures.class.getResourceAsStream(resource)) {
+            if (in == null) {
+                throw new IllegalStateException("fixture resource missing: " + resource);
+            }
+            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+            return target;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    // --- Story 3.3 cell fixtures ([B] topology): minimal VALID properties per TLS-bearing cell ------
+
+    /**
+     * forward &times; A: trusted-leg listener (plaintext) + per-session one-way TLS dial — trust
+     * store + routing to the caller's reverse target. AlwaysAllow-verifier cell (AD-12 amended).
+     */
+    public static ProxyCompanionProperties forwardAProperties(
+            int bindPort, int concurrentPairs, SmppTlsLegs legs, String reverseHost, int reversePort) {
+        return new ProxyCompanionProperties(
+                baseBind(bindPort),
+                baseMemory(concurrentPairs),
+                new ProxyCompanionProperties.Tls(TLS_PROTOCOLS, TLS12_SUITES, TLS13_SUITES),
+                new ProxyCompanionProperties.Forward(
+                        new ProxyCompanionProperties.ForwardModeA(
+                                legs.trustStoreRecord(),
+                                List.of(new ProxyCompanionProperties.RoutingEntry(
+                                        "carrierOne", reverseHost, reversePort, null))),
+                        null, null),
+                null);
+    }
+
+    /**
+     * forward &times; C: forward-A material + the per-instance client cert+key presented on every dial.
+     */
+    public static ProxyCompanionProperties forwardCProperties(
+            int bindPort, int concurrentPairs, SmppTlsLegs legs, String reverseHost, int reversePort) {
+        return new ProxyCompanionProperties(
+                baseBind(bindPort),
+                baseMemory(concurrentPairs),
+                new ProxyCompanionProperties.Tls(TLS_PROTOCOLS, TLS12_SUITES, TLS13_SUITES),
+                new ProxyCompanionProperties.Forward(
+                        null,
+                        new ProxyCompanionProperties.ForwardModeC(
+                                new ProxyCompanionProperties.ClientCert(
+                                        legs.forwardClientCert().toString(), legs.forwardClientKey().toString()),
+                                legs.trustStoreRecord(),
+                                List.of(new ProxyCompanionProperties.RoutingEntry(
+                                        "carrierOne", reverseHost, reversePort, null))),
+                        null),
+                null);
+    }
+
+    /** reverse &times; A: internet-leg TLS listener (server cert) + plaintext SMSC dial + OIDC. */
+    public static ProxyCompanionProperties reverseAProperties(
+            int bindPort, int concurrentPairs, SmppTlsLegs legs, String smscHost, int smscPort) {
+        return new ProxyCompanionProperties(
+                baseBind(bindPort),
+                baseMemory(concurrentPairs),
+                new ProxyCompanionProperties.Tls(TLS_PROTOCOLS, TLS12_SUITES, TLS13_SUITES),
+                null,
+                new ProxyCompanionProperties.Reverse(
+                        new ProxyCompanionProperties.ReverseModeA(
+                                new ProxyCompanionProperties.Smsc(smscHost, smscPort),
+                                new ProxyCompanionProperties.ServerCert(
+                                        legs.reverseServerCert().toString(), legs.reverseServerKey().toString()),
+                                testOidc()),
+                        null, null));
+    }
+
+    /** reverse &times; C: the reverse-A listener + trust store REQUIRE-validating the forward's client cert. */
+    public static ProxyCompanionProperties reverseCProperties(
+            int bindPort, int concurrentPairs, SmppTlsLegs legs, String smscHost, int smscPort) {
+        return new ProxyCompanionProperties(
+                baseBind(bindPort),
+                baseMemory(concurrentPairs),
+                new ProxyCompanionProperties.Tls(TLS_PROTOCOLS, TLS12_SUITES, TLS13_SUITES),
+                null,
+                new ProxyCompanionProperties.Reverse(
+                        null, null,
+                        new ProxyCompanionProperties.ReverseModeC(
+                                new ProxyCompanionProperties.Smsc(smscHost, smscPort),
+                                new ProxyCompanionProperties.ServerCert(
+                                        legs.reverseServerCert().toString(), legs.reverseServerKey().toString()),
+                                legs.trustStoreRecord(),
+                                testOidc())));
+    }
+
+    private static ProxyCompanionProperties.Bind baseBind(int bindPort) {
+        return new ProxyCompanionProperties.Bind(
+                bindPort, DEFAULT_BIND_HOST, DEFAULT_ADJUDICATION_DEADLINE);
+    }
+
+    private static ProxyCompanionProperties.Memory baseMemory() {
+        return baseMemory(1);
+    }
+
+    /** The AD-30 budget whose concurrent-pairs input ALSO carries the F13 acceptor cap (one number). */
+    private static ProxyCompanionProperties.Memory baseMemory(int concurrentPairs) {
+        return new ProxyCompanionProperties.Memory(
+                1, concurrentPairs, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL);
+    }
+
+    /**
+     * The concurrent-pairs budget input every direct-construction mode-b fixture carries — which,
+     * since the Story 3.3 review rework, is ALSO the F13 acceptor cap (one number). Generous so the
+     * N-concurrent-binds smoke tests never hit it; the AD-30 self-check is a BIND-time check these
+     * directly-constructed records never run.
+     */
+    public static final int DEFAULT_CONCURRENT_PAIRS = 64;
 
     /**
      * The real production ingress wiring for direct-construction tests (T7 made the initializer
@@ -132,16 +300,7 @@ public final class RelayTestFixtures {
      * drift reason as {@link #modeBProperties} — a constructor-signature change breaks ONE fixture.
      */
     public static RelayIngressInitializer modeBIngressInitializer(int bindPort) {
-        ProxyCompanionProperties properties = modeBProperties(bindPort, 1);
-        ConnectionRegistry registry = new ConnectionRegistry();
-        NoopSpliceObserver observer = new NoopSpliceObserver();
-        return new RelayIngressInitializer(
-                new AlwaysAllowBindCredentialVerifier(),
-                registry,
-                observer,
-                properties,
-                new RelayEgressInitializer(registry, observer),
-                new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT));
+        return modeBRelayHarness(modeBProperties(bindPort, 1)).ingressInitializer();
     }
 
     /**
@@ -159,20 +318,44 @@ public final class RelayTestFixtures {
      *         record carries.
      */
     public static ModeBRelayHarness modeBRelayHarness(ProxyCompanionProperties properties) {
-        ConnectionRegistry registry = new ConnectionRegistry();
-        CapturingSpliceObserver observer = new CapturingSpliceObserver();
+        RelayHarness harness = relayHarness(properties, new AlwaysAllowBindCredentialVerifier());
         return new ModeBRelayHarness(
                 properties,
-                new RelayIngressInitializer(
-                        new AlwaysAllowBindCredentialVerifier(),
-                        registry,
-                        observer,
-                        properties,
-                        new RelayEgressInitializer(registry, observer),
-                        new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT)),
-                registry,
-                observer);
+                harness.ingressInitializer(),
+                harness.registry(),
+                harness.observer());
     }
+
+    /**
+     * The generic Story 3.3 harness: the REAL production wiring graph for ANY cell's properties —
+     * the shared registry/observer, the plain and TLS-carrying initializers behind the cell's
+     * {@link SmppLegTlsFactory}, and the routing table. The TLS factory's delegated-task executor is
+     * the same-thread direct executor (handshake crypto on the calling thread — the AD-28 bounded
+     * pool is a production bean; tests do not saturate).
+     *
+     * @param properties the cell's properties record; the SAME instance the graph receives.
+     * @param verifier the cell's verifier (forward cells: AlwaysAllow; reverse: the caller's choice).
+     */
+    public static RelayHarness relayHarness(ProxyCompanionProperties properties, BindCredentialVerifier verifier) {
+        ConnectionRegistry registry = new ConnectionRegistry();
+        CapturingSpliceObserver observer = new CapturingSpliceObserver();
+        SmppLegTlsFactory tlsFactory = new SmppLegTlsFactory(properties, Runnable::run);
+        RelayEgressInitializer egress = new RelayEgressInitializer(registry, observer);
+        RelayIngressInitializer ingress = new RelayIngressInitializer(
+                verifier, registry, observer, properties, egress,
+                new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
+                new RoutingTable(properties), tlsFactory);
+        return new RelayHarness(properties, ingress, egress, registry, observer, tlsFactory);
+    }
+
+    /** The generic harness (see {@link #relayHarness(ProxyCompanionProperties, BindCredentialVerifier)}). */
+    public record RelayHarness(
+            ProxyCompanionProperties properties,
+            RelayIngressInitializer ingressInitializer,
+            RelayEgressInitializer egressInitializer,
+            ConnectionRegistry registry,
+            CapturingSpliceObserver observer,
+            SmppLegTlsFactory tlsFactory) { }
 
     /**
      * The socket-smoke harness: the properties record, the real ingress initializer for

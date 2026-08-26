@@ -178,7 +178,7 @@ class AdjudicationLifecycleTest {
         Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
