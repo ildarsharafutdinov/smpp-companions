@@ -16,9 +16,9 @@ import org.springframework.stereotype.Component;
  * <p>Keyed per {@code system_id} — NEVER per connection and never per {@code message_id} (REL-4 /
  * AD-9): N concurrent sessions under one {@code system_id} each resolve the SAME single target
  * (AD-29 1:1; the routing entry is the forward's dial target — AD-29 as-built under [B]). The
- * REVERSE cells carry no routing table ({@link #present()} is {@code false}); their every bind
- * routes to the single configured SMSC endpoint, which is why the reverse arm of the interceptor
- * never consults this bean.
+ * REVERSE cells carry no routing table (a {@code null} forward branch indexes nothing); their
+ * every bind routes to the single configured SMSC endpoint, which is why the reverse arm of the
+ * interceptor never consults this bean.
  *
  * <p>Lives in {@code config} because the spine's package ownership pins the routing table there
  * ("config &mdash; @ConfigurationProperties model, fail-fast validation, role&times;mode matrix,
@@ -50,11 +50,6 @@ public final class RoutingTable {
             return forward.modeC().routing();
         }
         throw new IllegalStateException("no companion.forward.<mode> branch (AD-17) — a wiring bug, not a config state");
-    }
-
-    /** Whether this cell HAS a routing table (forward cells: yes; reverse cells: no). */
-    public boolean present() {
-        return !entries.isEmpty();
     }
 
     /**

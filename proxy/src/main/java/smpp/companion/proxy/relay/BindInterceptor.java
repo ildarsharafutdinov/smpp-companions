@@ -15,6 +15,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.nio.NioSocketChannel;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.Nullable;
 
 import smpp.companion.codec.bind.SmppBindPdu;
@@ -102,7 +103,7 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * {@code SmppBindRequest}/{@code Password}/{@code BindCredential} objects nor the raw password
  * {@code AsciiString}.
  */
-@lombok.extern.slf4j.Slf4j
+@Slf4j
 @SuppressWarnings("FutureReturnValueIgnored") // reason: read()/close()/writeAndFlush() on the relay's own
 // channels are fire-and-forget control operations — a failed close/write merely means the channel was
 // already closing (the desired end state), and Netty itself releases a buffer whose write fails; the

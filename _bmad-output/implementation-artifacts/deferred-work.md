@@ -498,3 +498,33 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: none
   summary: The combined relay pre-widening refactoring round (couple-vocabulary unification, `RelayHandler` direction-split, `ConnectionEntry` state-manager extraction, `BindInterceptor` role-split seam decisions — the 2026-08-16 owner-note cluster) is deferred to Story 3.4, running POST-widening.
   evidence: Owner decision 2026-08-21 at the bmad-build Story-3.3 multi-goal checkpoint: 3.3 = TLS modes A/B/C machinery + forward-role relay wiring + F13 hardening (goals 2+3+4); the cleanup/decision round (goal 1) becomes Story 3.4, folded together with the wider refactoring. This consciously overrides the 2026-08-16 timing note ("AFTER Story 2.2, BEFORE Epic 3 widens the relay surface") — 3.3 does the widening first; 3.4 re-runs the full mutation pass after the renames/splits (the note's "a rename can silently de-target RED-on-neuter biters" caution applies with extra force over the widened surface). The state-manager decision still precedes the interceptor/relay-handler splits when 3.4 runs ("make this decision FIRST — it is the umbrella").
+
+## Deferred from: Story 3.3 implementation close-out (2026-08-25, review waived by owner)
+
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: ROPC adjudication is not e2e-proven THROUGH the TLS path (loopback e2e uses the AlwaysAllow stand-in on the reverse).
+  evidence: The implementer's close-out gap list; `VerifierWiringConfig` was spec-forbidden to touch, and 3.2's live Keycloak suite owns the production adapter — but no test drives a real (or stand-in) ROPC verdict across the new TLS legs. Candidate home: extend the T9-style live suite or the loopback e2e with a scripted verifier.
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: The AD-28 delegated-task executor's abort-on-saturation arm is verified in Netty sources only — no behavioral test drives it to saturation.
+  evidence: Implementer close-out; the 3.2 F7/M-SETTLE double-coverage precedent suggests this may be structurally hard to bite — the attempt should record either a control or a reasoned non-control comment.
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: `companion.tls.contexts` per-target override is unit-proven to resolve but no e2e dials with an override cert selected.
+  evidence: Implementer close-out; one added loopback row (routing entry with `tls-context-id` pointing at a second client cert) would close it.
+
+## Deferred from: code review of 3-3-tls-modes-and-forward-acceptor (2026-08-27)
+
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: Story contract text not swept to the re-keyed/retired config surface — AC5 names the retired `bind.max-connections` knob + the deleted cap≤budget startup guard; T2/T6 completion notes, I/O-matrix rows, Design Notes and File List name the retired top-level `tls.contexts` (as-built: `companion.forward.tls-contexts`; the F13 cap reads `companion.memory.concurrent-pairs`).
+  evidence: Code review 2026-08-27 (acceptance-auditor + blind-hunter layers, source-verified); owner-ratified in the `.memlog.md` 2026-08-26 entry, which enumerates exactly this sweep as "NOT yet swept (deliberately deferred to the story-text pass at review wrap)".
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: T8 RED-on-neuter mutation ledger stale against the reworked tree — M3 ran against the retired `companion.tls.contexts` sourcing; M4/M10 pin guards deleted with the knob; a fresh mutation pass on the re-keyed SEC-098 guard is owed (behavioral biters exist: `sec098_unknownTlsContextIdRefuses` + the factory re-check test).
+  evidence: Code review 2026-08-27 (acceptance-auditor + blind-hunter); the memlog 2026-08-26 entry lists the fresh pass as not yet done.
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: Dev Agent Record verification counts stale — the story Debug Log claims 352 tests (+21 net new); the post-rework XML and the memlog gate line record 347.
+  evidence: Code review 2026-08-27 (acceptance-auditor + blind-hunter); memlog gates: "`:proxy:test` 347 tests / 0 failed / 0 skipped (XML)".
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: Companion contract docs unswept after the [B] rework — `epic-3-context.md` documents the pre-[B] topology (inverted listener/dial roles), still says Story 3.3 is "not yet created", and promises a Mode A "loud startup warning" no code emits; `deferred-work.md:511` names the retired key; `sprint-status.yaml` keeps a "not yet created" comment directly above the in-progress row.
+  evidence: Code review 2026-08-27 (blind-hunter, source-verified); enumerated in the memlog 2026-08-26 NOT-yet-swept list (deferred-work.md:511, epic-3-context.md).
+- source_spec: `3-3-tls-modes-and-forward-acceptor.md`
+  summary: (corroboration of the 2026-08-25 close-out entries — no new action) ROPC-through-TLS e2e gap and the override-cert e2e row were independently re-surfaced and confirmed by this review's verification-gap + acceptance-auditor layers.
+  evidence: Code review 2026-08-27; see the existing entries under "Deferred from: Story 3.3 implementation close-out (2026-08-25)".

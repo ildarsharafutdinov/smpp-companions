@@ -150,8 +150,9 @@ public final class RelayTestFixtures {
     /**
      * The Story 3.3 SMPP-leg test PKI ({@code keycloak/certs/smpp-*}, committed; see its
      * {@code generate.sh}) materialized into {@code dir}: the reverse's internet-leg server
-     * cert+key, the forward's per-instance client cert+key, and the CA-only trust store anchoring
-     * both directions. One copy per temp dir; TLS material is immutable (AD-18).
+     * cert+key, the forward's per-instance client cert+key, the CA-only trust store anchoring
+     * both directions, and the FOREIGN-CA client pair (the AC4 "unanchored" negative arm —
+     * presented but not chained to the anchor). One copy per temp dir; TLS material is immutable (AD-18).
      */
     public static SmppTlsLegs smppTlsLegs(Path dir) {
         return new SmppTlsLegs(
@@ -159,14 +160,17 @@ public final class RelayTestFixtures {
                 copyResource("/keycloak/certs/smpp-reverse-server-key.pem", dir.resolve("smpp-reverse-server-key.pem")),
                 copyResource("/keycloak/certs/smpp-forward-client.pem", dir.resolve("smpp-forward-client.pem")),
                 copyResource("/keycloak/certs/smpp-forward-client-key.pem", dir.resolve("smpp-forward-client-key.pem")),
-                copyResource("/keycloak/certs/smpp-truststore.p12", dir.resolve("smpp-truststore.p12")));
+                copyResource("/keycloak/certs/smpp-truststore.p12", dir.resolve("smpp-truststore.p12")),
+                copyResource("/keycloak/certs/smpp-foreign-client.pem", dir.resolve("smpp-foreign-client.pem")),
+                copyResource("/keycloak/certs/smpp-foreign-client-key.pem", dir.resolve("smpp-foreign-client-key.pem")));
     }
 
     /** The materialized SMPP-leg fixture files (see {@link #smppTlsLegs(Path)}). */
     public record SmppTlsLegs(
             Path reverseServerCert, Path reverseServerKey,
             Path forwardClientCert, Path forwardClientKey,
-            Path trustStore) {
+            Path trustStore,
+            Path foreignClientCert, Path foreignClientKey) {
 
         /** The store password of the committed fixture PKI ({@code generate.sh} PASS). */
         public static final String STORE_PASSWORD = "smpp-test";
@@ -337,9 +341,24 @@ public final class RelayTestFixtures {
      * @param verifier the cell's verifier (forward cells: AlwaysAllow; reverse: the caller's choice).
      */
     public static RelayHarness relayHarness(ProxyCompanionProperties properties, BindCredentialVerifier verifier) {
+        return relayHarness(properties, verifier, Runnable::run);
+    }
+
+    /**
+     * The executor-parameterized variant ({@code relayHarness(properties, verifier)} delegates with
+     * the same-thread direct executor). The AD-28 observation test (code review 2026-08-27) injects
+     * a RECORDING executor here so delegated handshake tasks become visible — under the direct
+     * executor they are indistinguishable from same-thread work.
+     *
+     * @param delegatedTaskExecutor rides every {@code SslHandler} the harness's factory builds
+     *         (the production bean's bounded pool stands in for it).
+     */
+    public static RelayHarness relayHarness(
+            ProxyCompanionProperties properties, BindCredentialVerifier verifier,
+            java.util.concurrent.Executor delegatedTaskExecutor) {
         ConnectionRegistry registry = new ConnectionRegistry();
         CapturingSpliceObserver observer = new CapturingSpliceObserver();
-        SmppLegTlsFactory tlsFactory = new SmppLegTlsFactory(properties, Runnable::run);
+        SmppLegTlsFactory tlsFactory = new SmppLegTlsFactory(properties, delegatedTaskExecutor);
         RelayEgressInitializer egress = new RelayEgressInitializer(registry, observer);
         RelayIngressInitializer ingress = new RelayIngressInitializer(
                 verifier, registry, observer, properties, egress,

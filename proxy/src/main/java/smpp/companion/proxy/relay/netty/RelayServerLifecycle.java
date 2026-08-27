@@ -107,7 +107,7 @@ public final class RelayServerLifecycle implements SmartLifecycle {
     @Override
     public void stop() {
         if (!running) {
-            return; // never started (non-mode-b cell) or already stopped — idempotent
+            return; // never started (no-cell boot — unreachable post-validation) or already stopped — idempotent
         }
         running = false;
         Channel acceptor = serverChannel;

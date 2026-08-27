@@ -10,10 +10,16 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Executor;
 
+import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -205,6 +211,29 @@ class TlsModesLoopbackE2eTest {
                 .isEmpty();
     }
 
+    @Test
+    @DisplayName("Mode C REQUIRE-negative (AC4, unanchored arm): a peer presenting a cert chained to a "
+            + "FOREIGN CA fails the handshake — no SMPP byte, no SMSC session")
+    void modeCRequireRefusesTheUnanchoredPeer() throws IOException {
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        int reversePort = startReverse(RelayTestFixtures.reverseCProperties(
+                RelayTestFixtures.freePort(), 64, legs, "127.0.0.1", smsc.port()));
+
+        // A JDK TLS client that TRUSTS the reverse's server cert (server auth succeeds) and PRESENTS
+        // the foreign-CA-chained client pair — a presented-but-UNANCHORED identity: AC4's other arm
+        // (the cert-less arm is modeCRequireRefusesTheCertlessPeer above).
+        SSLSocket unanchored = foreignCertSslSocket(legs, reversePort);
+        clients.add(unanchored);
+        unanchored.startHandshake();
+        assertThatThrownBy(() -> unanchored.getInputStream().read())
+                .as("REQUIRE-side PKIX validation refuses the unanchored cert (the reverse's trust "
+                        + "store anchors only the fixture CA) — the alert or the close surfaces on the first read")
+                .isInstanceOf(java.io.IOException.class);
+        assertThat(smsc.sessions())
+                .as("no SMPP PDU was ever read — the failure is BELOW the codec (AC4)")
+                .isEmpty();
+    }
+
     // ---------------------------------------------------------------- routing miss on the wire (AC2)
 
     @Test
@@ -306,7 +335,69 @@ class TlsModesLoopbackE2eTest {
             byte[] deliver = opaquePdu(DELIVER_SM, 611, "DLR-AFTER-REFUSAL");
             smsc.awaitSession(0).deliver(deliver);
             assertThat(readPdu(first)).isEqualTo(deliver);
+
+            // Recovery (review 2026-08-27): the cap counts LIVE legs, not cumulative accepts —
+            // after `first` closes, the exactly-once decrement on the child closeFuture must return
+            // capacity. (Neutering that decrement degrades the cap to N-total-per-process-lifetime
+            // while every over-cap test above still passes.)
+            first.close();
+            Socket third = connectLegacyClient(forwardPort);
+            writePdu(third, bindRequest(23, "carrierOne", "pw123456"));
+            assertRokBindResp(readPdu(third), 23);
         }
+    }
+
+    // ---------------------------------------------------------------- F13 bind.host scoping
+
+    @Test
+    @DisplayName("F13 bind.host: the acceptor binds the CONFIGURED interface — a sibling loopback "
+            + "address is refused (a wildcard-bind regression would accept it)")
+    void bindHostScopesTheListener() throws IOException {
+        // The fixtures bind DEFAULT_BIND_HOST=127.0.0.1 (the F13 knob under test). Linux serves the
+        // whole 127/8 on loopback, so 127.0.0.2 is connectable IFF the acceptor bound a wildcard —
+        // reverting to bind(port) alone keeps every other suite green (they all dial 127.0.0.1).
+        int port = startReverse(RelayTestFixtures.modeBProperties(
+                RelayTestFixtures.freePort(), 1, "127.0.0.1", smsc.port()));
+        try (Socket configured = new Socket(InetAddress.getLoopbackAddress(), port)) {
+            assertThat(configured.isConnected()).as("the configured interface accepts").isTrue();
+        }
+        Socket probe = new Socket();
+        clients.add(probe);
+        assertThatThrownBy(() -> probe.connect(new java.net.InetSocketAddress("127.0.0.2", port), 2_000))
+                .as("the listener is scoped to 127.0.0.1 — a sibling loopback alias must be refused")
+                .isInstanceOf(java.io.IOException.class);
+    }
+
+    // ---------------------------------------------------------------- AD-28 delegated-task executor
+
+    @Test
+    @DisplayName("AD-28: delegated handshake tasks execute on the factory's EXECUTOR threads — "
+            + "never silently on the relay event loop")
+    void delegatedHandshakeTasksRunOnTheExecutor() throws IOException {
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        List<String> delegatedOn = Collections.synchronizedList(new ArrayList<>());
+        // The recording stand-in for the production bounded pool: every submitted delegated task
+        // runs on its own thread so WHERE it ran is observable (Runnable::run would hide it).
+        Executor recording = task -> {
+            Thread runner = new Thread(task, "ad28-delegate");
+            delegatedOn.add(runner.getName());
+            runner.start();
+        };
+        int reversePort = startRelay(RelayTestFixtures.reverseAProperties(
+                RelayTestFixtures.freePort(), 64, legs, "127.0.0.1", smsc.port()), recording);
+
+        SSLSocket client = trustOnlySslSocket(legs, reversePort);
+        clients.add(client);
+        client.startHandshake(); // completes: the fixture CA anchors the server cert
+        client.close();
+
+        assertThat(delegatedOn)
+                .as("the RSA server-cert handshake delegates work through the executor the factory "
+                        + "carries (the SslHandler wiring the production bean's pool relies on)")
+                .isNotEmpty();
+        assertThat(delegatedOn)
+                .as("no delegated task ran on the relay event loop thread")
+                .noneMatch(thread -> thread.startsWith("tls-e2e-relay"));
     }
 
     // ---------------------------------------------------------------- Mode B regression
@@ -341,8 +432,13 @@ class TlsModesLoopbackE2eTest {
     }
 
     private int startRelay(ProxyCompanionProperties properties) {
-        RelayTestFixtures.RelayHarness harness =
-                RelayTestFixtures.relayHarness(properties, new AlwaysAllowBindCredentialVerifier());
+        return startRelay(properties, Runnable::run);
+    }
+
+    /** The AD-28 variant: boots the relay with the factory carrying the caller's delegated-task executor. */
+    private int startRelay(ProxyCompanionProperties properties, Executor delegatedTaskExecutor) {
+        RelayTestFixtures.RelayHarness harness = RelayTestFixtures.relayHarness(
+                properties, new AlwaysAllowBindCredentialVerifier(), delegatedTaskExecutor);
         EventLoopGroup group = new MultiThreadIoEventLoopGroup(
                 1, new DefaultThreadFactory("tls-e2e-relay"), NioIoHandler.newFactory());
         groups.add(group);
@@ -359,19 +455,60 @@ class TlsModesLoopbackE2eTest {
     /** The REQUIRE-negative probe: a JDK TLS client trusting the fixture CA, presenting NO cert. */
     private static SSLSocket trustOnlySslSocket(RelayTestFixtures.SmppTlsLegs legs, int port) throws IOException {
         try {
-            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            try (InputStream in = java.nio.file.Files.newInputStream(legs.trustStore())) {
-                trustStore.load(in, RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD.toCharArray());
-            }
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            tmf.init(trustStore);
             SSLContext context = SSLContext.getInstance("TLS");
-            context.init(null, tmf.getTrustManagers(), null);
+            context.init(null, fixtureTrustManagers(legs), null);
             SSLSocketFactory factory = context.getSocketFactory();
             return (SSLSocket) factory.createSocket(InetAddress.getLoopbackAddress(), port);
         } catch (Exception e) {
             throw new IllegalStateException("could not build the cert-less TLS probe", e);
         }
+    }
+
+    /**
+     * The AC4 unanchored probe: same fixture-CA trust as {@link #trustOnlySslSocket}, but PRESENTING
+     * the foreign-CA-chained client pair ({@code generate.sh} §10 — verified: chains to foreign-ca.pem,
+     * "error 20" under the fixture CA). The JDK KeyManager is built straight from the PEMs — the
+     * committed key is PKCS#8 ("BEGIN PRIVATE KEY"), so it parses with {@link java.security.KeyFactory}
+     * alone; the cert with X.509 CertificateFactory. No keystore tooling, no PEM library.
+     */
+    private static SSLSocket foreignCertSslSocket(RelayTestFixtures.SmppTlsLegs legs, int port) throws IOException {
+        try {
+            PrivateKey key = pemPrivateKey(legs.foreignClientKey());
+            X509Certificate cert = (X509Certificate) CertificateFactory.getInstance("X.509")
+                    .generateCertificate(java.nio.file.Files.newInputStream(legs.foreignClientCert()));
+            KeyStore identity = KeyStore.getInstance(KeyStore.getDefaultType());
+            identity.load(null, null);
+            identity.setKeyEntry("foreign", key, new char[0], new java.security.cert.Certificate[] {cert});
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(identity, new char[0]);
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(kmf.getKeyManagers(), fixtureTrustManagers(legs), null);
+            SSLSocketFactory factory = context.getSocketFactory();
+            return (SSLSocket) factory.createSocket(InetAddress.getLoopbackAddress(), port);
+        } catch (Exception e) {
+            throw new IllegalStateException("could not build the unanchored-cert TLS probe", e);
+        }
+    }
+
+    /** The fixture-CA trust managers shared by both REQUIRE-negative probes. */
+    private static javax.net.ssl.TrustManager[] fixtureTrustManagers(RelayTestFixtures.SmppTlsLegs legs)
+            throws Exception {
+        KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        try (InputStream in = java.nio.file.Files.newInputStream(legs.trustStore())) {
+            trustStore.load(in, RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD.toCharArray());
+        }
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(trustStore);
+        return tmf.getTrustManagers();
+    }
+
+    /** Parses a PKCS#8 PEM private key ("BEGIN PRIVATE KEY") with the JDK alone. */
+    private static PrivateKey pemPrivateKey(Path pem) throws Exception {
+        String body = java.nio.file.Files.readString(pem).replaceAll("-----(BEGIN|END) PRIVATE KEY-----", "")
+                .replaceAll("\\s", "");
+        byte[] encoded = java.util.Base64.getDecoder().decode(body);
+        return java.security.KeyFactory.getInstance("RSA")
+                .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(encoded));
     }
 
     private Socket connectLegacyClient(int port) throws IOException {
@@ -439,6 +576,12 @@ class TlsModesLoopbackE2eTest {
             throw new EOFException("peer closed mid-header (expected a complete framed PDU)");
         }
         int commandLength = ByteBuffer.wrap(header).getInt(0);
+        if (commandLength < 16 || commandLength > (1 << 20)) {
+            // Review 2026-08-27: fail LOUDLY on an implausible harness-side frame (the known jSMPP
+            // oracle trap class — a malformed length would otherwise surface as AIOOBE or a giant
+            // allocation), instead of trusting whatever the header claimed.
+            throw new EOFException("implausible command_length in peer header: " + commandLength);
+        }
         byte[] pdu = Arrays.copyOf(header, commandLength);
         int body = in.readNBytes(pdu, 16, commandLength - 16);
         if (body < commandLength - 16) {

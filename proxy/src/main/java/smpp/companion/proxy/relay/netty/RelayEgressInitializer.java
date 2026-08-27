@@ -59,10 +59,12 @@ public final class RelayEgressInitializer extends ChannelInitializer<Channel> {
 
     /**
      * The per-dial TLS-carrying variant (the forward arm): {@link #initChannel} prepends the seam's
-     * handler before the codec prefix.
+     * handler before the codec prefix. A {@code null} seam means the PLAINTEXT egress pipeline —
+     * the same contract the {@code @Autowired} singleton carries (the reverse cells' SMSC dial);
+     * the forward arm under [B] A/C always passes a live seam (it dials TLS per session).
      *
      * @param targetTls creates the per-connection client {@link SslHandler} (once per dial; the
-     *        engine is per-connection state); non-null.
+     *        engine is per-connection state); {@code null} = no TLS on this egress leg.
      */
     public RelayEgressInitializer(ConnectionRegistry registry, SpliceObserver observer, @Nullable TargetTls targetTls) {
         this.registry = registry;
