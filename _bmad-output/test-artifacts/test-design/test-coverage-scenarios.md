@@ -1028,6 +1028,12 @@ Level: integration · Priority: P1 · Risks: R16 · NFR: SEC-5
 - Tooling: OWASP dependency-check + Dependabot + Gradle version-pin + JUnit5 injected-bad-coordinate fixture + AssertJ.
 - Notes: [critic-fix] Closes the CI-gate-positive-control gap (cross-level issue). SEC-091 (and SEC-085/DEPLOY-014) assert the gate EXISTS but never inject a known-bad input, so a misconfigured OWASP suppression file or wrong dependency scope would silently disable the gate while every test passes. Pairs with CODEC-041 and OBS-043.
 
+**SEC-100** `[story-3.3-review: ADDED 2026-08-27]` — TLS policy/material startup refusal (SMPP-leg TLS factory): every refusal arm carries the SEC-100 id, and EVERY `companion.forward.tls-contexts` entry is eagerly validated at startup — including entries no routing entry references
+Level: unit · Priority: P0 · Risks: R7 · NFR: FR-SEC-1 (AD-13/AD-18/AD-34)
+- Technique: boot each refusal arm and assert the exception message names SEC-100 — unparseable/absent cert/key/trust-store files, the 5-state trust-store matrix, empty AD-34 cipher/protocol intersection per context (incl. the suite/protocol applicability case: TLS-1.3-only suites selected with `protocols=[TLSv1.2]`), and the orphan arm: an UNREFERENCED `tls-contexts` entry with nonexistent/unparseable material refuses startup (before the 2026-08-27 patch such dead config escaped both the validator — keySet-derived — and the factory, which loaded only routing-referenced ids).
+- Tooling: JUnit5 + AssertJ + committed PKI fixtures (`keycloak/certs/`, incl. the §10 foreign-CA pair) + `Runnable::run` delegated-task executor.
+- Notes: Created at the Story 3.3 adversarial review (decision D2, 2026-08-27): the AD-34 intersection and constructor-wrap refusals previously carried no SEC id, and the orphan-eager-load closed an AD-18 hole on the re-keyed surface. Biters: `CompanionConfigMatrixTest` SEC-098 rows + `SmppLegTlsFactoryTest` 5-state/intersection/orphan matrix.
+
 ## 5. OBS — Observability & operability
 
 Owns R10 (/metrics surface: cardinality DoS + PRIV-1 body leak + handler hardening + loopback-only), R11 end-to-end (graceful shutdown AD-22 7-step), R37 (docs drift from `companion.*`), R38 (A-1 non-CI ops plan must be genuinely falsifiable). NFRs OBS-1/2/3, OPS-1/2, PRIV-1, REL-3, FR-OBS-1/2. The `SpliceObserver` interface (pinned triggers; no content/PDU-type method by design — AD-27) is the metrics/observability seam.
