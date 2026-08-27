@@ -244,15 +244,17 @@ public record ProxyCompanionProperties(
      * budget key refuses startup &mdash; the {@code companion.bind.adjudication-deadline} pattern
      * (runner/test configs state them explicitly; runner boots do not load application.yml).
      *
-     * <p><b>Operator guidance (AC4):</b> prefer JWT-issuing providers. The opaque-token RFC 7662
-     * introspection fallback is online-only (every opaque bind hits the introspection endpoint) with
-     * no offline cryptographic backstop, and introspection results are never cached (AD-12). A
-     * docs-time preference, not a runtime warning.
+     * <p><b>Operator guidance &mdash; JWT-only adjudication (Story 3.4 T1, 2026-08-27):</b> the
+     * provider's token endpoint must issue JWT access tokens. A non-JWT (opaque) token response
+     * denies fail-closed ({@code DenyIndeterminate} + a WARN naming the policy); the opaque-token
+     * second-arm fallback this config surface once documented was removed with the arm.
+     * Remediation: configure the client/realm to issue JWT access tokens (the pinned Keycloak
+     * &ge;26.7.0 issues JWTs by default).
      *
      * @param providerUrl the OIDC provider's base URL as a {@link URI} ({@code https} + a host required,
      *        SEC-053/054 &mdash; checked by the validator; a string that is not a URI at all refuses at
      *        BIND time, conversion failure); discovery ({@code /.well-known/openid-configuration}) and
-     *        the token/introspection endpoints are derived from it (AC7/AC4) &mdash; no per-endpoint
+     *        the token endpoint are derived from it (AC7) &mdash; no per-endpoint
      *        override keys. The compact constructor strips exactly one trailing {@code '/'} so the
      *        well-known-path join never doubles a slash (canonicalization only &mdash; no value is ever
      *        invented; the amendment-1 no-defaulting rule concerns the budget keys).
@@ -263,8 +265,8 @@ public record ProxyCompanionProperties(
      * @param trustStore the dedicated IdP trust store (AD-13/AD-26: never JDK {@code cacerts});
      *        file existence/readability at bind time &mdash; the full 5-state PKIX load is the T2+
      *        adapter's SSLContext build (fail-closed bean-init refusal), not the config validator.
-     * @param timeout the per-call HTTP budget for one provider round trip (token endpoint or
-     *        introspection). NOT validator-enforced: the inclusive window [2s, 5s] (PERF-3) and the
+     * @param timeout the per-call HTTP budget for one provider round trip (the token endpoint).
+     *        NOT validator-enforced: the inclusive window [2s, 5s] (PERF-3) and the
      *        {@code <= companion.bind.adjudication-deadline} relation are an OPERATOR CONTRACT
      *        documented in application.yml (the OIDC_TIMEOUT comment) &mdash; the per-call budget
      *        must fit inside the whole-adjudication budget the relay hands the verifier. Required

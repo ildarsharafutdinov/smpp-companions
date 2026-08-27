@@ -88,7 +88,7 @@ development_status:
   epic-3: in-progress
   3-2-oidc-ropc-bind-adjudicator: done
   3-3-tls-modes-and-forward-acceptor: done
-  3-4-relay-refactoring-round: ready-for-dev
+  3-4-relay-refactoring-round: in-progress
   epic-3-retrospective: optional
 
   # --- Epic 4: Operate the proxy in production — structured logs and read-only loopback /metrics ---
