@@ -213,6 +213,24 @@ class SmppLegTlsFactoryTest {
         assertThatThrownBy(() -> new SmppLegTlsFactory(badListener, Runnable::run))
                 .as("an empty cipher intersection on the listener context must refuse")
                 .hasMessageContaining("empty intersection");
+
+        // (d) SEC-100/AD-34 APPLICABILITY (review 2026-08-27): TLS-1.3-only suites with
+        // protocols=[TLSv1.2] — BOTH intersections non-empty, yet no suite applies to the selected
+        // protocol: must refuse (previously passed startup and failed every runtime handshake).
+        ProxyCompanionProperties tls13SuitesForTls12Only = withTls(
+                RelayTestFixtures.forwardAProperties(0, 8, legs, "127.0.0.1", 2776),
+                List.of("TLSv1.2"), null, RelayTestFixtures.TLS13_SUITES);
+        assertThatThrownBy(() -> new SmppLegTlsFactory(tls13SuitesForTls12Only, Runnable::run))
+                .as("suites that apply to none of the selected protocols must refuse")
+                .hasMessageContaining("apply to none of the selected protocols");
+
+        // (e) the mirror: TLS-1.2-only suites with protocols=[TLSv1.3].
+        ProxyCompanionProperties tls12SuitesForTls13Only = withTls(
+                RelayTestFixtures.forwardAProperties(0, 8, legs, "127.0.0.1", 2776),
+                List.of("TLSv1.3"), RelayTestFixtures.TLS12_SUITES, null);
+        assertThatThrownBy(() -> new SmppLegTlsFactory(tls12SuitesForTls13Only, Runnable::run))
+                .as("the mirrored non-applicability must refuse too")
+                .hasMessageContaining("apply to none of the selected protocols");
     }
 
     /** AD-20: IP-literal routing targets disable endpoint identification; hostnames keep HTTPS on. */
@@ -225,6 +243,87 @@ class SmppLegTlsFactoryTest {
         assertThat(SmppLegTlsFactory.isIpLiteral("[::1]")).isTrue();
         assertThat(SmppLegTlsFactory.isIpLiteral("reverse.internal")).isFalse();
         assertThat(SmppLegTlsFactory.isIpLiteral("smpp.example.com")).isFalse();
+        // Review 2026-08-27: an invalid dotted-quad is NOT an IP literal — the resolver treats it as
+        // a DNS name, so it must fall to hostname verification (ON), never silently disable it.
+        assertThat(SmppLegTlsFactory.isIpLiteral("999.1.2.3")).as("octet > 255").isFalse();
+        assertThat(SmppLegTlsFactory.isIpLiteral("010.1.2.3")).as("leading-zero octet (octal ambiguity)").isFalse();
+        assertThat(SmppLegTlsFactory.isIpLiteral("255.255.255.255")).as("still a literal at the boundary").isTrue();
+    }
+
+    /**
+     * AD-20 (review 2026-08-27): the egress engine's endpoint-identification parameter is pinned per
+     * target shape — deleting or inverting the factory line stays invisible to every socket-level
+     * test (all dials are IP-literal against an IP-SAN cert), so pin the engine state directly.
+     */
+    @Test
+    @DisplayName("AD-20: egress endpoint identification — null for IP-literal targets, HTTPS for hostnames")
+    void egressEndpointIdentificationIsPinnedPerTarget(@TempDir Path dir) {
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        SmppLegTlsFactory ipLiteral = new SmppLegTlsFactory(
+                RelayTestFixtures.forwardAProperties(0, 8, legs, "127.0.0.1", 2776), Runnable::run);
+        EmbeddedChannel ipDial = new EmbeddedChannel();
+        try {
+            javax.net.ssl.SSLEngine engine = ipLiteral.newEgressSslHandler(ipDial.alloc(),
+                    new ProxyCompanionProperties.RoutingEntry("carrierOne", "127.0.0.1", 2776, null)).engine();
+            assertThat(engine.getSSLParameters().getEndpointIdentificationAlgorithm())
+                    .as("IP-literal target: hostname verification OFF (AD-20)")
+                    .isNull();
+        } finally {
+            ipDial.close();
+        }
+        SmppLegTlsFactory hostname = new SmppLegTlsFactory(
+                RelayTestFixtures.forwardAProperties(0, 8, legs, "reverse.internal", 2776), Runnable::run);
+        EmbeddedChannel hostDial = new EmbeddedChannel();
+        try {
+            javax.net.ssl.SSLEngine engine = hostname.newEgressSslHandler(hostDial.alloc(),
+                    new ProxyCompanionProperties.RoutingEntry("carrierOne", "reverse.internal", 2776, null)).engine();
+            assertThat(engine.getSSLParameters().getEndpointIdentificationAlgorithm())
+                    .as("hostname target: JDK HTTPS verification ON (AD-20)")
+                    .isEqualTo("HTTPS");
+        } finally {
+            hostDial.close();
+        }
+    }
+
+    /**
+     * Factory re-checks (review 2026-08-27, the resolveClientCert discipline): a directly-constructed
+     * mode-c record with NULL material must refuse here, not silently downgrade the runtime — a null
+     * trust-store would run the REQUIRE listener at ClientAuth.NONE; a null instance cert would dial
+     * cert-less against a REQUIRE reverse (every handshake failing at runtime).
+     */
+    @Test
+    @DisplayName("null mode-c material bypassing the validator: null trust-store (SEC-050) / null client-cert (SEC-057) refuse")
+    void nullModeCMaterialRefusesAtTheFactory(@TempDir Path dir) {
+        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        ProxyCompanionProperties reverseBase =
+                RelayTestFixtures.reverseCProperties(0, 8, legs, "smsc.example", 2775);
+        ProxyCompanionProperties reverseCNoStore = new ProxyCompanionProperties(
+                reverseBase.bind(), reverseBase.memory(), reverseBase.tls(), null,
+                new ProxyCompanionProperties.Reverse(null, null,
+                        new ProxyCompanionProperties.ReverseModeC(
+                                reverseBase.reverse().modeC().smsc(),
+                                reverseBase.reverse().modeC().serverCert(),
+                                null, // the bypassed-validator null
+                                reverseBase.reverse().modeC().oidc())));
+        assertThatThrownBy(() -> new SmppLegTlsFactory(reverseCNoStore, Runnable::run))
+                .as("a null REQUIRE-side store must refuse — never a silent ClientAuth.NONE")
+                .hasMessageContaining("SEC-050");
+
+        ProxyCompanionProperties forwardBase =
+                RelayTestFixtures.forwardCProperties(0, 8, legs, "127.0.0.1", 2776);
+        ProxyCompanionProperties forwardCNoCert = new ProxyCompanionProperties(
+                forwardBase.bind(), forwardBase.memory(), forwardBase.tls(),
+                new ProxyCompanionProperties.Forward(
+                        null,
+                        new ProxyCompanionProperties.ForwardModeC(
+                                null, // the bypassed-validator null
+                                forwardBase.forward().modeC().trustStore(),
+                                forwardBase.forward().modeC().routing()),
+                        null),
+                null);
+        assertThatThrownBy(() -> new SmppLegTlsFactory(forwardCNoCert, Runnable::run))
+                .as("a null per-instance dial cert must refuse — never a cert-less dial")
+                .hasMessageContaining("SEC-057");
     }
 
     /** AD-29/AD-13: the contexts map overrides the instance cert per routing entry; a dangling id fails closed. */
@@ -264,6 +363,39 @@ class SmppLegTlsFactoryTest {
         assertThatThrownBy(() -> new SmppLegTlsFactory(dangling, Runnable::run))
                 .as("a dangling tls-context-id must fail closed (SEC-098)")
                 .hasMessageContaining("SEC-098");
+
+        // (c) an UNREFERENCED entry with unloadable material refuses (SEC-100/AD-18, review
+        // 2026-08-27): without the eager orphan pass this dead config would escape ALL validation
+        // (the validator checks only id membership; the dial path never loads it).
+        ProxyCompanionProperties orphanGarbage = new ProxyCompanionProperties(
+                withOverride.bind(), withOverride.memory(), withOverride.tls(),
+                new ProxyCompanionProperties.Forward(
+                        withOverride.forward().modeA(),
+                        null,
+                        Map.of("primary", new ProxyCompanionProperties.ClientCert(
+                                        legs.forwardClientCert().toString(), legs.forwardClientKey().toString()),
+                                "orphan", new ProxyCompanionProperties.ClientCert(
+                                        dir.resolve("no-such-cert.pem").toString(),
+                                        dir.resolve("no-such-key.pem").toString()))),
+                null);
+        assertThatThrownBy(() -> new SmppLegTlsFactory(orphanGarbage, Runnable::run))
+                .as("an unreferenced tls-contexts entry with unloadable material must refuse")
+                .hasMessageContaining("does not exist");
+
+        // (d) an unreferenced but VALID entry stays acceptable — a future routing target, not a boot failure.
+        ProxyCompanionProperties orphanValid = new ProxyCompanionProperties(
+                withOverride.bind(), withOverride.memory(), withOverride.tls(),
+                new ProxyCompanionProperties.Forward(
+                        withOverride.forward().modeA(),
+                        null,
+                        Map.of("primary", new ProxyCompanionProperties.ClientCert(
+                                        legs.forwardClientCert().toString(), legs.forwardClientKey().toString()),
+                                "future", new ProxyCompanionProperties.ClientCert(
+                                        legs.foreignClientCert().toString(), legs.foreignClientKey().toString()))),
+                null);
+        assertThat(new SmppLegTlsFactory(orphanValid, Runnable::run).egressTls())
+                .as("a valid unreferenced entry boots — only unloadable orphans refuse")
+                .isTrue();
     }
 
     // --- helpers ---------------------------------------------------------------------------

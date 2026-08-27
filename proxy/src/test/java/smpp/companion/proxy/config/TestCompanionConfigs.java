@@ -153,8 +153,8 @@ public final class TestCompanionConfigs {
         // Story 2.2 T6: a VALID mode-b full-context boot now BINDS companion.bind.port (the relay
         // acceptor lifecycle, RelayServerLifecycle). A per-instance free ephemeral port keeps those
         // boots off the shipped 2775 default — deterministic against a locally-listening SMPP tool and
-        // against other tests. (Forward-cell configs never bind — the lifecycle is mode-b-scoped — but
-        // sharing the probe keeps every base uniform.)
+        // against other tests. (Since Story 3.3 EVERY cell binds — the acceptor is no longer
+        // mode-b-scoped — so the shared probe matters for all of them.)
         props.put("companion.bind.port", String.valueOf(RelayTestFixtures.freePort()));
         // Story 3.3 / F13: the listener now binds host:port; the accepted-connection cap IS the
         // minimal AD-30 budget's concurrent-pairs=1 below (one number — the review-rework shape;

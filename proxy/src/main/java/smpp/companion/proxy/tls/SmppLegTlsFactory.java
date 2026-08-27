@@ -104,7 +104,7 @@ public final class SmppLegTlsFactory {
             // IllegalArgumentException: Netty's PEM loaders reject unparseable cert/key material with
             // an IAE (not an SSLException) — same fail-closed wrap, the standard Spring refusal shape.
             throw new IllegalStateException("could not build the SMPP-leg TLS material ("
-                    + e.getClass().getSimpleName() + ": " + e.getMessage() + ") — refusing to start (AD-13/AD-34).", e);
+                    + e.getClass().getSimpleName() + ": " + e.getMessage() + ") — refusing to start (SEC-100/AD-13/AD-34).", e);
         }
     }
 
@@ -171,6 +171,13 @@ public final class SmppLegTlsFactory {
         if (reverse.modeA() != null) {
             material = new SslMaterial(reverse.modeA().serverCert(), null, "companion.reverse.mode-a");
         } else if (reverse.modeC() != null) {
+            if (reverse.modeC().trustStore() == null) {
+                // Factory re-check (the resolveClientCert discipline): a directly-constructed record
+                // that bypassed the validator must fail the same fail-closed way — a null store here
+                // would silently downgrade the REQUIRE listener to ClientAuth.NONE (code review 2026-08-27).
+                throw new IllegalStateException("companion.reverse.mode-c.trust-store is required "
+                        + "(the REQUIRE-side anchor) — refusing to start (SEC-050/AD-13).");
+            }
             material = new SslMaterial(reverse.modeC().serverCert(), reverse.modeC().trustStore(),
                     "companion.reverse.mode-c");
             clientAuth = ClientAuth.REQUIRE;
@@ -205,6 +212,13 @@ public final class SmppLegTlsFactory {
             routing = forward.modeA().routing();
             prefix = "companion.forward.mode-a";
         } else if (forward.modeC() != null) {
+            if (forward.modeC().clientCert() == null) {
+                // Factory re-check (the resolveClientCert discipline): a null instance cert would dial
+                // cert-less against a REQUIRE reverse — every handshake failing at runtime instead of
+                // refusing here (code review 2026-08-27).
+                throw new IllegalStateException("companion.forward.mode-c.client-cert is required "
+                        + "(the per-instance dial identity) — refusing to start (SEC-057).");
+            }
             trustStore = forward.modeC().trustStore();
             instanceCert = forward.modeC().clientCert();
             routing = forward.modeC().routing();
@@ -213,6 +227,7 @@ public final class SmppLegTlsFactory {
             throw new IllegalStateException("no companion.forward.<mode> branch (AD-17) — refusing to start.");
         }
         Map<String, SslContext> contexts = new HashMap<>();
+        java.util.Set<String> referenced = new java.util.HashSet<>();
         for (ProxyCompanionProperties.RoutingEntry entry : routing) {
             ProxyCompanionProperties.@Nullable ClientCert cert = resolveClientCert(properties, entry, instanceCert);
             SslContextBuilder builder = SslContextBuilder.forClient()
@@ -225,8 +240,31 @@ public final class SmppLegTlsFactory {
             // AD-20: Netty 4.2 defaults client verification to "HTTPS" (fails raw-IP connects) — make
             // the posture EXPLICIT per target: null for IP literals, HTTPS for hostnames.
             builder.endpointIdentificationAlgorithm(isIpLiteral(entry.host()) ? null : "HTTPS");
+            if (entry.tlsContextId() != null) {
+                referenced.add(entry.tlsContextId());
+            }
             contexts.put(entry.systemId(),
                     applyTlsPolicy(properties, prefix + " (system_id=" + entry.systemId() + ")", builder).build());
+        }
+        // Story 3.3 review (SEC-100/AD-18): EVERY configured tls-contexts entry is loaded eagerly, not
+        // just the routing-referenced ones. Without this pass an UNREFERENCED entry (a leftover from a
+        // routing edit, or a typo'd id nothing selects) is dead secret-path config that escapes all
+        // validation — the validator checks only id membership and the dial path never touches it. A
+        // VALID unreferenced entry stays acceptable (a future routing target); an unloadable one refuses.
+        Map<String, ProxyCompanionProperties.ClientCert> configured =
+                forward.tlsContexts() == null ? Map.of() : forward.tlsContexts();
+        for (Map.Entry<String, ProxyCompanionProperties.ClientCert> ctx : configured.entrySet()) {
+            if (!referenced.contains(ctx.getKey())) {
+                SslContextBuilder orphan = SslContextBuilder.forClient()
+                        .sslProvider(SslProvider.JDK)
+                        .trustManager(loadTrustManagerFactory(trustStore, prefix + ".trust-store"))
+                        .keyManager(readable(prefix + " client cert (tls-contexts id=" + ctx.getKey() + ")",
+                                        ctx.getValue().certPath()),
+                                readable(prefix + " client key (tls-contexts id=" + ctx.getKey() + ")",
+                                        ctx.getValue().keyPath()));
+                applyTlsPolicy(properties, prefix + " (unreferenced tls-contexts id=" + ctx.getKey() + ")",
+                        orphan).build(); // load-for-validation only — the built context is discarded
+            }
         }
         return Collections.unmodifiableMap(contexts);
     }
@@ -284,7 +322,7 @@ public final class SmppLegTlsFactory {
             if (suites.isEmpty()) {
                 throw new IllegalStateException("companion.tls cipher suites have an empty intersection with the "
                         + "JDK supported suites for the SMPP-leg context [" + what + "] — refusing to start "
-                        + "(AD-34, D2 discharge).");
+                        + "(SEC-100/AD-34, D2 discharge).");
             }
             List<String> effectiveProtocols = (protocols == null ? List.<String>of() : protocols).stream()
                     .filter(supportedProtocols::contains)
@@ -292,7 +330,22 @@ public final class SmppLegTlsFactory {
             if (effectiveProtocols.isEmpty()) {
                 throw new IllegalStateException("companion.tls.protocols have an empty intersection with the JDK "
                         + "supported protocols for the SMPP-leg context [" + what + "] — refusing to start "
-                        + "(AD-34, D2 discharge).");
+                        + "(SEC-100/AD-34, D2 discharge).");
+            }
+            // SEC-100/AD-34 applicability (code review 2026-08-27): the two intersections above run
+            // independently — a suite set that intersects the JDK's supported list but applies to NONE of
+            // the selected protocols (TLS-1.3-only suites with protocols=[TLSv1.2], or vice versa) would
+            // pass this startup gate and then fail EVERY runtime handshake. Cross-check them: under the
+            // JDK provider (SEC-090 pins it) the TLS-1.3 namespace is exactly the TLS_AES_*/TLS_CHACHA20_*
+            // suites, so applicability is decided by name.
+            boolean tls13Selected = effectiveProtocols.contains("TLSv1.3");
+            boolean pre13Selected = effectiveProtocols.stream().anyMatch(p -> !"TLSv1.3".equals(p));
+            boolean any13Suite = suites.stream().anyMatch(SmppLegTlsFactory::isTls13Suite);
+            boolean anyPre13Suite = suites.stream().anyMatch(s -> !isTls13Suite(s));
+            if ((any13Suite && !tls13Selected) || (anyPre13Suite && !pre13Selected)) {
+                throw new IllegalStateException("companion.tls cipher suites apply to none of the selected "
+                        + "protocols for the SMPP-leg context [" + what + "] — every handshake would fail — "
+                        + "refusing to start (SEC-100/AD-34).");
             }
             return builder.protocols(effectiveProtocols).ciphers(suites);
         } catch (GeneralSecurityException e) {
@@ -300,8 +353,13 @@ public final class SmppLegTlsFactory {
             // SecurityManager these do not throw in practice (the IdpSslContextFactory note). Fail
             // closed regardless: an unexpected failure refuses startup.
             throw new IllegalStateException("could not compute the AD-34 intersection for [" + what
-                    + "] (" + e.getClass().getSimpleName() + ") — refusing to start (AD-34).", e);
+                    + "] (" + e.getClass().getSimpleName() + ") — refusing to start (SEC-100/AD-34).", e);
         }
+    }
+
+    /** Whether the suite name is in the JDK provider's fixed TLS-1.3 namespace (see {@link #applyTlsPolicy}). */
+    private static boolean isTls13Suite(String suite) {
+        return suite.startsWith("TLS_AES_") || suite.startsWith("TLS_CHACHA20_");
     }
 
     /**
@@ -367,7 +425,10 @@ public final class SmppLegTlsFactory {
     /**
      * AD-20's IP-literal test, dependency-free and DNS-free: bracketed or bare IPv6 (contains ':')
      * and dotted-quad IPv4. An ambiguous value falls to hostname-verification-ON — the fail-closed
-     * posture.
+     * posture. A dotted-quad-looking value that is NOT valid IPv4 (an octet &gt; 255, or a leading
+     * zero a resolver may read as octal) is ambiguous in exactly that way, so it falls to hostname
+     * verification too (code review 2026-08-27): treating {@code 999.1.2.3} as a literal would
+     * silently DISABLE endpoint identification for what the resolver treats as a DNS name.
      */
     static boolean isIpLiteral(String host) {
         String bare = host.startsWith("[") && host.endsWith("]")
@@ -376,7 +437,16 @@ public final class SmppLegTlsFactory {
         if (bare.contains(":")) {
             return true; // IPv6 literal (bracketed or bare)
         }
-        return bare.matches("\\d{1,3}(\\.\\d{1,3}){3}");
+        if (!bare.matches("\\d{1,3}(\\.\\d{1,3}){3}")) {
+            return false;
+        }
+        for (String octet : bare.split("\\.")) {
+            if (Integer.parseInt(octet) > 255
+                    || (octet.length() > 1 && octet.charAt(0) == '0')) {
+                return false; // not an IP literal the JDK would parse — treat as a hostname (verify ON)
+            }
+        }
+        return true;
     }
 
     /** The per-cell listener material bundle (cert+key, and the REQUIRE-side store in Mode C). */

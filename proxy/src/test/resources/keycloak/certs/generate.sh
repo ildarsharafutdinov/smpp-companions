@@ -16,6 +16,9 @@
 #   smpp-forward-client*.pem        — Story 3.3 [B]: the forward's per-instance Mode C client cert (CN=smpp-forward-instance).
 #   smpp-truststore.p12             — Story 3.3 [B]: CA-only PKCS12 anchoring both SMPP-leg trust directions (forward→reverse
 #                                     server-cert validation; reverse.mode-c REQUIRE of the forward's client cert).
+#   foreign-ca*.pem, smpp-foreign-client*.pem — Story 3.3 review: a SECOND, DISJOINT self-signed CA and a client
+#                                     cert chained to it (CN=smpp-foreign-client). The mode-c REQUIRE listener must refuse
+#                                     this peer — AC4's "unanchored one" arm (presented but not chained to the anchor).
 #
 # IMPORTANT: every cert here is self-signed TEST material for a local Docker Keycloak — NOT a production secret.
 # Regenerating changes the CA and invalidates any committed truststore; the committed artifacts + this script
@@ -26,7 +29,8 @@ cd "$(dirname "$0")"
 PASS="smpp-test"   # PKCS12 store password (test-only)
 
 rm -f ca.pem ca-key.pem ca.srl server.pem server-key.pem client.pem client-key.pem \
-      truststore.p12 client-keystore.p12 keycloak-truststore.pem .srl
+      truststore.p12 client-keystore.p12 keycloak-truststore.pem \
+      foreign-ca.pem foreign-ca-key.pem smpp-foreign-client.pem smpp-foreign-client-key.pem .srl
 
 # --- 1. Local test CA (CN-only subject so Keycloak's X.509 client authenticator
 #         reads its DN unambiguously as "CN=smpp-test-ca" — no RDN reordering) ------
@@ -90,13 +94,29 @@ openssl x509 -req -in smpp-forward-client.csr -CA ca.pem -CAkey ca-key.pem -CAcr
 keytool -importcert -noprompt -storetype PKCS12 -storepass "$PASS" \
   -keystore smpp-truststore.p12 -alias smpp-test-ca -file ca.pem 2>/dev/null
 
+# --- 10. FOREIGN CA + unanchored client cert (Story 3.3 review, AC4 negative arm) ----
+# A second, DISJOINT self-signed CA and a client cert chained to it. The mode-c REQUIRE listener
+# must refuse this peer: the cert IS presented but is NOT chained to smpp-truststore.p12's anchor
+# (openssl verify: OK under foreign-ca.pem, "error 20" under ca.pem) — the "unanchored one" arm.
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout foreign-ca-key.pem -out foreign-ca.pem -days 3650 \
+  -subj "/CN=smpp-foreign-test-ca" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes \
+  -keyout smpp-foreign-client-key.pem -out smpp-foreign-client.csr \
+  -subj "/CN=smpp-foreign-client/O=smpp-companions-test" 2>/dev/null
+openssl x509 -req -in smpp-foreign-client.csr -CA foreign-ca.pem -CAkey foreign-ca-key.pem -CAcreateserial -out smpp-foreign-client.pem -days 825 -sha256 \
+  -extfile <(printf "extendedKeyUsage=clientAuth\nbasicConstraints=critical,CA:FALSE") 2>/dev/null
+
 # tidy CSR/serial intermediates
-rm -f server.csr client.csr smpp-reverse-server.csr smpp-forward-client.csr ca.srl .srl
+rm -f server.csr client.csr smpp-reverse-server.csr smpp-forward-client.csr smpp-foreign-client.csr ca.srl .srl foreign-ca.srl
 
 echo "Generated test PKI:"
 ls -1 ca.pem ca-key.pem server.pem server-key.pem client.pem client-key.pem \
       truststore.p12 client-keystore.p12 keycloak-truststore.pem \
       smpp-reverse-server.pem smpp-reverse-server-key.pem \
-      smpp-forward-client.pem smpp-forward-client-key.pem smpp-truststore.p12
+      smpp-forward-client.pem smpp-forward-client-key.pem smpp-truststore.p12 \
+      foreign-ca.pem foreign-ca-key.pem smpp-foreign-client.pem smpp-foreign-client-key.pem
 echo "Client cert subject DN (mapped to smpp-client-mtls):"
 openssl x509 -in client.pem -noout -subject
