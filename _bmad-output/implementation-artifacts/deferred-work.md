@@ -508,7 +508,7 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   summary: The AD-28 delegated-task executor's abort-on-saturation arm is verified in Netty sources only — no behavioral test drives it to saturation.
   evidence: Implementer close-out; the 3.2 F7/M-SETTLE double-coverage precedent suggests this may be structurally hard to bite — the attempt should record either a control or a reasoned non-control comment.
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
-  summary: `companion.tls.contexts` per-target override is unit-proven to resolve but no e2e dials with an override cert selected.
+  summary: `companion.forward.tls-contexts` per-target override is unit-proven to resolve but no e2e dials with an override cert selected.
   evidence: Implementer close-out; one added loopback row (routing entry with `tls-context-id` pointing at a second client cert) would close it.
 
 ## Deferred from: code review of 3-3-tls-modes-and-forward-acceptor (2026-08-27)
