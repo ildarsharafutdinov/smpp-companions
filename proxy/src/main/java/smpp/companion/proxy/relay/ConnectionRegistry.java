@@ -120,7 +120,7 @@ public final class ConnectionRegistry {
         }
     }
 
-    /** The number of live coupled pairs (introspection for tests / AD-22 drain enumeration). */
+    /** The number of live coupled pairs (test observation / AD-22 drain enumeration). */
     public int size() {
         return entries.size();
     }

@@ -42,12 +42,16 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * by default since Keycloak 26.2) gets the LOUD DAG warning and defers to runtime: a grant-type
  * error at the token endpoint denies per the AC2 mapping, which is the fail-closed outcome already.
  *
- * <p><b>What survives.</b> The {@link OidcProviderMetadata} record (issuer + token/introspection/
- * jwks endpoints — endpoint URIs come from discovery, no per-endpoint override keys) is the T3
- * adapter's, T4 JWKS cache's and T5 introspection fallback's provider surface. The probe uses a
- * transient {@link HttpClient} closed after the one call; the adapter's steady-state shared client
- * (AC5/AC7 "single shared HttpClient") is built from the same factory outputs in T3. Forward cells
- * carry no oidc node (AD-12 amended 2026-08-18) — the probe stays inactive there.
+ * <p><b>What survives.</b> The {@link OidcProviderMetadata} record (issuer + token/jwks endpoints
+ * — endpoint URIs come from discovery, no per-endpoint override keys) is the T3 adapter's and T4
+ * JWKS cache's provider surface. <b>JWT-only policy (Story 3.4 T1, 2026-08-27):</b> the
+ * field-completeness requirement shrinks to issuer + token endpoint + JWKS (the removed
+ * opaque-token arm's endpoint requirement died with the arm — a discovery document omitting that
+ * former field is accepted), and a non-JWT token response denies at bind time
+ * ({@code DenyIndeterminate} + WARN, D6; see {@code RopcBindCredentialVerifier}). The probe uses
+ * a transient {@link HttpClient} closed after the one call; the adapter's steady-state shared
+ * client (AC5/AC7 "single shared HttpClient") is built from the same factory outputs in T3.
+ * Forward cells carry no oidc node (AD-12 amended 2026-08-18) — the probe stays inactive there.
  */
 @Slf4j
 @Component
@@ -142,9 +146,9 @@ public final class OidcStartupDiscovery {
     }
 
     /**
-     * Field-completeness first (every endpoint the adapter's three paths need: token, RFC 7662
-     * introspection, JWKS — a provider omitting one cannot back the AD-12 contract), then the
-     * exact {@code issuer == provider-url} equality, then the DAG warning.
+     * Field-completeness first (issuer + token endpoint + JWKS — the endpoints the adapter's paths
+     * need; the removed opaque-token arm's endpoint requirement died with the arm, Story 3.4 T1,
+     * 2026-08-27), then the exact {@code issuer == provider-url} equality, then the DAG warning.
      */
     private static OidcProviderMetadata parseDocument(URI discoveryUri, String body,
                                                       IdpSslContextFactory.ResolvedOidc resolved) {
@@ -156,20 +160,17 @@ public final class OidcStartupDiscovery {
         }
         String issuer;
         String tokenEndpoint;
-        String introspectionEndpoint;
         String jwksUri;
         try {
             issuer = JSONObjectUtils.getString(document, "issuer");
             tokenEndpoint = JSONObjectUtils.getString(document, "token_endpoint");
-            introspectionEndpoint = JSONObjectUtils.getString(document, "introspection_endpoint");
             jwksUri = JSONObjectUtils.getString(document, "jwks_uri");
         } catch (ParseException e) {
             throw refuse(discoveryUri, "carries a malformed field (" + e.getMessage() + ")", e);
         }
-        if (issuer == null || tokenEndpoint == null || introspectionEndpoint == null || jwksUri == null) {
+        if (issuer == null || tokenEndpoint == null || jwksUri == null) {
             String missing = issuer == null ? "issuer"
                     : tokenEndpoint == null ? "token_endpoint"
-                    : introspectionEndpoint == null ? "introspection_endpoint"
                     : "jwks_uri";
             throw refuse(discoveryUri, "omits " + missing + " (incomplete provider metadata)", null);
         }
@@ -183,8 +184,7 @@ public final class OidcStartupDiscovery {
             log.warn(DAG_WARNING, providerUrl);
         }
         try {
-            return new OidcProviderMetadata(
-                    issuer, URI.create(tokenEndpoint), URI.create(introspectionEndpoint), URI.create(jwksUri));
+            return new OidcProviderMetadata(issuer, URI.create(tokenEndpoint), URI.create(jwksUri));
         } catch (IllegalArgumentException e) {
             throw refuse(discoveryUri, "carries a malformed endpoint URI (" + e.getMessage() + ")", e);
         }
@@ -202,11 +202,13 @@ public final class OidcStartupDiscovery {
     }
 
     /**
-     * The discovered provider surface the T3 adapter (token endpoint), T4 JWKS cache ({@code jwks_uri})
-     * and T5 introspection fallback consume; the issuer anchors the local JWT claim checks (AC3).
+     * The discovered provider surface the T3 adapter (token endpoint) and T4 JWKS cache
+     * ({@code jwks_uri}) consume; the issuer anchors the local JWT claim checks (AC3). The
+     * 3.2-era second-endpoint component was removed with the opaque-token arm
+     * (Story 3.4 T1, 2026-08-27).
      */
     public record OidcProviderMetadata(
-            String issuer, URI tokenEndpoint, URI introspectionEndpoint, URI jwksUri) {
+            String issuer, URI tokenEndpoint, URI jwksUri) {
 
         public OidcProviderMetadata {
             // F5 fail-fast precedent (2-1 review, a story MUST-keep): a null member would NPE deep
@@ -215,7 +217,6 @@ public final class OidcStartupDiscovery {
             // ctor is the only enforcement point.
             Objects.requireNonNull(issuer, "issuer");
             Objects.requireNonNull(tokenEndpoint, "tokenEndpoint");
-            Objects.requireNonNull(introspectionEndpoint, "introspectionEndpoint");
             Objects.requireNonNull(jwksUri, "jwksUri");
         }
     }

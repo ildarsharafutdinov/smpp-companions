@@ -73,8 +73,10 @@ class OidcStartupDiscoveryTest {
                 .isEqualTo(standIn);
         String realm = standIn + "/realms/smpp-companions/protocol/openid-connect";
         assertThat(metadata.tokenEndpoint()).isEqualTo(URI.create(realm + "/token"));
-        assertThat(metadata.introspectionEndpoint()).isEqualTo(URI.create(realm + "/token/introspect"));
         assertThat(metadata.jwksUri()).isEqualTo(URI.create(realm + "/certs"));
+        // Story 3.4 T1 (2026-08-27): the stand-in's document no longer carries the retired
+        // introspection_endpoint field — reaching these assertions IS the omission-accepted pin
+        // (the field-completeness requirement shrank with the RFC 7662 arm).
     }
 
     @Test
@@ -238,12 +240,16 @@ class OidcStartupDiscoveryTest {
         return RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
     }
 
-    /** A minimal valid discovery document with the Keycloak realm endpoint layout. */
+    /**
+     * A minimal valid discovery document with the Keycloak realm endpoint layout. The retired
+     * {@code introspection_endpoint} field is not served (Story 3.4 T1, 2026-08-27) — like the
+     * shared stand-in's document, omission must stay ACCEPTED.
+     */
     private static String discoveryDoc(String issuer, String grants) {
         return """
-                {"issuer": "%s", "token_endpoint": "%s/token", "introspection_endpoint": "%s/token/introspect",
+                {"issuer": "%s", "token_endpoint": "%s/token",
                  "jwks_uri": "%s/certs", "grant_types_supported": [%s]}"""
-                .formatted(issuer, realmOf(issuer), realmOf(issuer), realmOf(issuer), grants);
+                .formatted(issuer, realmOf(issuer), realmOf(issuer), grants);
     }
 
     private static String realmOf(String base) {

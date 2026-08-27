@@ -2,7 +2,7 @@
 title: 'Story 3.4: OIDC token-path simplification + relay refactoring round'
 type: 'refactor'
 created: '2026-08-27'
-status: 'ready-for-dev'
+status: 'in-progress'
 review_loop_iteration: 0
 baseline_commit: cda2013948b9b2793fa0bb19a21e7f46fe664a79
 context: []
@@ -82,7 +82,7 @@ context: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] T1 — JWT-only adjudication: delete the RFC 7662 arm (`introspect`/`mapIntrospection`/`introspectRequest`, the discovery `introspection_endpoint` requirement, the metadata component, stand-in/fixture serving); non-JWT token response → the D6 fail-closed arm; sweep yml comments + matrix rows; register the policy in the discovery/probe docs surface. (AC1)
+- [x] T1 — JWT-only adjudication: delete the RFC 7662 arm (`introspect`/`mapIntrospection`/`introspectRequest`, the discovery `introspection_endpoint` requirement, the metadata component, stand-in/fixture serving); non-JWT token response → the D6 fail-closed arm; sweep yml comments + matrix rows; register the policy in the discovery/probe docs surface. (AC1)
 - [ ] T2 — TLS-as-sole-trust-anchor: delete `verifyJwt`'s signature/kid/typ verification and `JwksCache` (class + refresh VT + `oidc.jwks-cache-ttl` knob + `jwks_uri` requirement); keep the structural JWT-ness gate per D7; spine amendments AD-12 / AD-8(c) / AD-28(2) + epics 4-path + register + TEA rows, dated markers + `.memlog.md` entries (rationale: owner 2026-08-27 — the proxy is the token's only consumer; the HTTPS client-authenticated provider link is the trust anchor). (AC2, AC3)
 - [ ] T3 — THE UMBRELLA DECISION, FIRST among the refactoring tasks (owner checkpoint): state-manager variant (single manager vs per-role managers — one fork with the interceptor role-split at manager altitude), mechanics (sealed decision returned to the caller vs executor-facing port), and state-absorption scope (`pendingVerdict`/`pendingPassword`? `EgressLeg.answered`? `CLOSE_*` attributes?). Recorded as a dated `.memlog.md` `(decision)` entry + Design Notes addendum BEFORE T5/T6 execute. (AC4)
 - [ ] T4 — Couple-vocabulary unification: code identifiers to `couple`-variants (`spliced()` → `coupled()`, `flipSpliced()` → successor named once with the T3 state names); relay prose + test names/assertion strings swept; spine-sweep scope per D1's resolution; full deliberate re-targeting list. (AC5)
@@ -152,10 +152,38 @@ context: []
 
 ### Agent Model Used
 
+GLM (claude-code CLI), 2026-08-27 — T1 execution.
+
 ### Debug Log References
+
+- `./gradlew :proxy:cleanTest :proxy:test` → BUILD SUCCESSFUL (2m 14s), Docker UP.
+- XML counts: **340 tests, 0 failed, 0 errors, 0 skipped** (49 suites) — baseline 352 − 12 retired + 0 added-retirement + 1 new D6 pin = 340. ✓
+- `grep -rn "7662\|introspect" proxy/src/main` → empty (removal completeness, src/main half of the gate; the `jwks|Jwks` half remains for T2).
+- New D6 row confirmed executed in `TEST-…RopcBindCredentialVerifierTest.xml`.
 
 ### Completion Notes List
 
+**T1 — JWT-only adjudication (2026-08-27):**
+
+- Main half landed in the prior session (uncommitted tree): `introspect`/`mapIntrospection`/`introspectRequest` deleted; structural dispatch `segments != 3` → D6 `DenyIndeterminate` + WARN (policy + operator remediation, runtime arm per the Ask-First lean); discovery `introspection_endpoint` requirement + metadata component removed; `OidcStartupDiscovery`/`ProxyCompanionProperties`/`IdpSslContextFactory`/`ConnectionRegistry` javadoc sweeps; `application.yml` T1 comment block. This session completed the test half + verification.
+- **Test deltas (enumerated, AC10):** `RopcBindCredentialVerifierTest` 42 → 31 — retired the twelve 7662 rows (active:true/false, malformed bodies, non-200, timeout, F3 round-2 cancel ×2, F6 dead-JWKS, never-cached, request shape, budget clamp, path zeroization); added ONE D6 pin `opaqueTokenDeniesFailClosedWithoutAWireRound2` (verdict + WARN substrings + `introHits == 0` against a REGISTERED, ALLOWING endpoint still advertised by the stand-in discovery doc — the deny is provably the policy arm, not a wire failure). `RopcBindCredentialVerifierLiveTest` 4 → 3 — path 2 (live 7662 interop) retired with its stand-in IdP/control-client apparatus; class javadoc 3-path → 2-path with dated retirement note. Net: **−13 rows + 1 row = −12**.
+- **Discovery completeness shrink pin:** the shared `OidcDiscoveryStandIn` and the `OidcStartupDiscoveryTest` doc template stopped serving `introspection_endpoint` — every happy-path discovery row now also proves omission-ACCEPTED (comment pinned at the assertion site); `metadata.introspectionEndpoint()` assertion deleted with the component. `missingEndpointFieldRefusesStartup` unchanged (still omits `token_endpoint`, still refuses).
+- **Deliberately UNCHANGED (dispositions):** the `RopcSlice*` family + `KeycloakFixture.INTROSPECTION_ENDPOINT` — the slice is the historical-ratification artifact (the 2026-08-19 mTLS removal set the precedent: product-arm removals leave the slice; `RopcSliceLiveTest` path 2 keeps the 7662 ratification, its own container). `AdjudicationLifecycleTest`'s embedded discovery doc still serves `introspection_endpoint` (ignored field, zero behavioral effect) — its doc line carries `jwks_uri` too and is rewritten wholesale by T2; deferring avoids double-churn. The ad-hoc `standInIdP` fixture doc KEEPS advertising the endpoint deliberately (the D6 never-hit pin needs a reachable, allowing target).
+- `jwks`/`Jwks` references intentionally survive everywhere (JwksCache, knob, `jwks_uri` requirement) — T2's removal, not T1's.
+
 ### RED-on-neuter mutation ledger (T8 / AI-1)
 
+*(T8 fills this — fresh rows for renamed/moved neuter sites; struck-with-evidence rows for the retired 7662 arm.)*
+
 ### File List
+
+**T1 (2026-08-27):**
+- `proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java` — 7662 arm deleted; D6 WARN deny added at the dispatch; javadoc amendments (prior session, this tree)
+- `proxy/src/main/java/smpp/companion/proxy/security/OidcStartupDiscovery.java` — `introspection_endpoint` requirement + `OidcProviderMetadata` component removed (prior session, this tree)
+- `proxy/src/main/java/smpp/companion/proxy/config/ProxyCompanionProperties.java` — operator-guidance javadoc → JWT-only policy (prior session, this tree)
+- `proxy/src/main/java/smpp/companion/proxy/security/IdpSslContextFactory.java`, `relay/ConnectionRegistry.java` — stale introspection prose swept (prior session, this tree)
+- `proxy/src/main/resources/application.yml` — JWT-only policy comment block (prior session, this tree)
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierTest.java` — 12 rows retired, D6 pin added, AC4 javadoc amended, `@DisplayName`/fixture javadoc updated
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierLiveTest.java` — path 2 + stand-in/control apparatus retired, imports pruned, javadoc/`@DisplayName` amended
+- `proxy/src/test/java/smpp/companion/proxy/security/OidcStartupDiscoveryTest.java` — metadata assertion retarget, doc template swept
+- `proxy/src/test/java/smpp/companion/proxy/testsupport/OidcDiscoveryStandIn.java` — stopped serving `introspection_endpoint`
