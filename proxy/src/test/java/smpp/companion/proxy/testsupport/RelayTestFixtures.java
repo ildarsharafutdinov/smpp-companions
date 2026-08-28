@@ -15,8 +15,8 @@ import io.netty.buffer.PooledByteBufAllocator;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
-import smpp.companion.proxy.observability.CapturingSpliceObserver;
-import smpp.companion.proxy.observability.NoopSpliceObserver;
+import smpp.companion.proxy.observability.CapturingRelayObserver;
+import smpp.companion.proxy.observability.NoopRelayObserver;
 import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
@@ -300,7 +300,7 @@ public final class RelayTestFixtures {
      * verifier/observer/registry beans, the mode-b properties, the egress initializer, and the shared
      * substrate options. The registry/observer instances are SHARED between the two initializers —
      * Spring wires the same singleton beans into both, and the egress-leg RelayHandler (the AD-25
-     * flipper) must resolve the same registry the ingress interceptor wrote. One home for the same
+     * couple unit) must resolve the same registry the ingress interceptor wrote. One home for the same
      * drift reason as {@link #modeBProperties} — a constructor-signature change breaks ONE fixture.
      */
     public static RelayIngressInitializer modeBIngressInitializer(int bindPort) {
@@ -311,7 +311,7 @@ public final class RelayTestFixtures {
      * The real production wiring for the T9/T10 socket-level smoke tests: same constructor graph as
      * {@link #modeBIngressInitializer(int)} (the real initializers + the production default
      * {@code AlwaysAllow} verifier + the shared substrate options) but with (a) the egress target
-     * pointed at the caller's in-JVM mock and (b) a {@link CapturingSpliceObserver} whose handle the
+     * pointed at the caller's in-JVM mock and (b) a {@link CapturingRelayObserver} whose handle the
      * test keeps — so a smoke test can assert the pinned triggers while driving REAL TCP sockets
      * through the REAL acceptor ({@code RelayServerLifecycle.start()}; the T6-review deferred
      * wiring-pin — real PDUs through the acceptor bite on any dropped wiring line).
@@ -357,7 +357,7 @@ public final class RelayTestFixtures {
             ProxyCompanionProperties properties, BindCredentialVerifier verifier,
             java.util.concurrent.Executor delegatedTaskExecutor) {
         ConnectionRegistry registry = new ConnectionRegistry();
-        CapturingSpliceObserver observer = new CapturingSpliceObserver();
+        CapturingRelayObserver observer = new CapturingRelayObserver();
         SmppLegTlsFactory tlsFactory = new SmppLegTlsFactory(properties, delegatedTaskExecutor);
         RelayEgressInitializer egress = new RelayEgressInitializer(registry, observer);
         RelayIngressInitializer ingress = new RelayIngressInitializer(
@@ -373,18 +373,18 @@ public final class RelayTestFixtures {
             RelayIngressInitializer ingressInitializer,
             RelayEgressInitializer egressInitializer,
             ConnectionRegistry registry,
-            CapturingSpliceObserver observer,
+            CapturingRelayObserver observer,
             SmppLegTlsFactory tlsFactory) { }
 
     /**
      * The socket-smoke harness: the properties record, the real ingress initializer for
      * {@code RelayServerLifecycle}, and the SHARED registry/observer handles the initializers were
-     * wired with (the same singleton wiring Spring does — the egress-leg flipper must resolve the
+     * wired with (the same singleton wiring Spring does — the egress-leg couple unit must resolve the
      * registry the ingress interceptor wrote).
      */
     public record ModeBRelayHarness(
             ProxyCompanionProperties properties,
             RelayIngressInitializer ingressInitializer,
             ConnectionRegistry registry,
-            CapturingSpliceObserver observer) { }
+            CapturingRelayObserver observer) { }
 }

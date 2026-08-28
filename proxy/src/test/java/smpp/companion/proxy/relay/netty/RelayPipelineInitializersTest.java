@@ -14,7 +14,7 @@ import io.netty.handler.ssl.SslHandler;
 
 import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.framer.SmppFrameDecoder;
-import smpp.companion.proxy.observability.CapturingSpliceObserver;
+import smpp.companion.proxy.observability.CapturingRelayObserver;
 import smpp.companion.proxy.relay.BindInterceptor;
 import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.RelayHandler;
@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * attachment points — both LANDED, the slice's pipelines are complete). Pins the structural
  * contracts: (a) order &mdash; {@code SmppFrameDecoder → SmppCodec → BindInterceptor → RelayHandler}
  * (INGRESS) and {@code SmppFrameDecoder → SmppCodec → RelayHandler} (EGRESS) (the framer feeds the
- * codec, the codec feeds the interceptor, the interceptor hands the post-flip plane to the relay
+ * codec, the codec feeds the interceptor, the interceptor hands the post-couple plane to the relay
  * handler); (b) CODEC-014 &mdash; PER-CHANNEL instances of every handler (two channels must never
  * share a framer — nor the stateful per-connection interceptor, nor the direction-carrying relay
  * handler); (c) NO {@link SslHandler} on either leg (plaintext slice &mdash; TLS is Epic 3).
@@ -49,7 +49,7 @@ class RelayPipelineInitializersTest {
 
     /** The real production egress wiring — the SAME registry/observer pair the ingress initializer shares. */
     private static RelayEgressInitializer egressInitializer() {
-        return new RelayEgressInitializer(new ConnectionRegistry(), new CapturingSpliceObserver());
+        return new RelayEgressInitializer(new ConnectionRegistry(), new CapturingRelayObserver());
     }
 
     @Test
@@ -74,7 +74,7 @@ class RelayPipelineInitializersTest {
             assertThat(framer).as("the framer FEEDS the codec — it must sit first").isLessThan(codec);
             assertThat(codec).as("the codec FEEDS the interceptor — it must sit between").isLessThan(interceptor);
             assertThat(interceptor)
-                    .as("the interceptor hands the post-flip plane to the relay handler — it must sit between")
+                    .as("the interceptor hands the post-couple plane to the relay handler — it must sit between")
                     .isLessThan(relayHandler);
             assertThat(userHandlers(names))
                     .as("the ingress pipeline is EXACTLY framer + codec + BindInterceptor + RelayHandler")
@@ -88,7 +88,7 @@ class RelayPipelineInitializersTest {
     }
 
     @Test
-    @DisplayName("egress: framer → codec → RelayHandler (the flipper rides the egress leg), exactly those "
+    @DisplayName("egress: framer → codec → RelayHandler (the couple unit rides the egress leg), exactly those "
             + "three, no SslHandler (AC4)")
     void egressWiresFramerCodecRelayHandler() {
         EmbeddedChannel channel = new EmbeddedChannel(egressInitializer());
@@ -100,7 +100,7 @@ class RelayPipelineInitializersTest {
             assertThat(framer).as("the egress leg must carry a SmppFrameDecoder").isGreaterThanOrEqualTo(0);
             assertThat(codec).as("the egress leg must carry an SmppCodec").isGreaterThanOrEqualTo(0);
             assertThat(relayHandler)
-                    .as("T8 landed: the egress leg carries the RelayHandler after the codec — the AD-25 flip "
+                    .as("T8 landed: the egress leg carries the RelayHandler after the codec — the AD-25 couple "
                             + "fires here (the bind_resp arrives from the SMSC on this leg, which rides the "
                             + "ingress event loop, AD-2)")
                     .isGreaterThanOrEqualTo(0);
@@ -146,7 +146,7 @@ class RelayPipelineInitializersTest {
             assertThat(egressA.pipeline().get(SmppCodec.class))
                     .isNotSameAs(egressB.pipeline().get(SmppCodec.class));
             assertThat(egressA.pipeline().get(RelayHandler.class))
-                    .as("two egress channels must never share the RelayHandler (the per-pair flip + per-leg "
+                    .as("two egress channels must never share the RelayHandler (the per-pair couple + per-leg "
                             + "close marker are channel-scoped)")
                     .isNotSameAs(egressB.pipeline().get(RelayHandler.class));
         } finally {
@@ -186,7 +186,7 @@ class RelayPipelineInitializersTest {
         }
     }
 
-    /** The forward's per-dial egress pipeline: SslHandler first, then the codec prefix + flipper. */
+    /** The forward's per-dial egress pipeline: SslHandler first, then the codec prefix + couple unit. */
     @Test
     @DisplayName("forward egress (TargetTls): SslHandler → framer → codec → relay handler, in order")
     void forwardTlsEgressPrependsSslHandlerBeforeTheFramer(@TempDir Path dir) {

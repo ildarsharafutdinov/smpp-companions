@@ -7,25 +7,25 @@ import smpp.companion.proxy.security.SystemId;
 import smpp.companion.proxy.security.Verdict;
 
 /**
- * A thread-safe capturing {@link SpliceObserver} for the relay tests &mdash; T7 {@code BindInterceptor},
+ * A thread-safe capturing {@link RelayObserver} for the relay tests &mdash; T7 {@code BindInterceptor},
  * T8 {@code RelayHandler}, and the T9 in-JVM mock consume this. Records every trigger in concurrent
  * structures so a test can AssertJ-assert the AC5 pinned contracts: {@link #bindAccepts()} fires at the
- * AD-25 ROK flip, {@link #connectionCloses()} fires exactly-once per channel, {@link #framedPdus()} is the
+ * AD-25 ROK couple, {@link #connectionCloses()} fires exactly-once per channel, {@link #framedPdus()} is the
  * PDU count (one fire per framed PDU), and the A-1 affinity smoke asserts zero DLR cross-bleed against
  * per-channel captures.
  *
  * <p><b>Not for production:</b> lives in {@code proxy/src/test}; the production default bean is
- * {@link NoopSpliceObserver}. Concurrency-safe because the relay's teardown / flip paths race (AD-25): the
+ * {@link NoopRelayObserver}. Concurrency-safe because the relay's teardown / couple paths race (AD-25): the
  * capturing queues are lock-free. Snapshot accessors return immutable {@link List} copies so assertions are
  * stable once the test has observed quiescence (the relay test owns the await/latch that precedes a
  * snapshot).
  */
-public final class CapturingSpliceObserver implements SpliceObserver {
+public final class CapturingRelayObserver implements RelayObserver {
 
-    /** A captured {@link SpliceObserver#onBindReject(SystemId, Verdict)} event. */
+    /** A captured {@link RelayObserver#onBindReject(SystemId, Verdict)} event. */
     public record BindReject(SystemId systemId, Verdict verdict) { }
 
-    /** A captured {@link SpliceObserver#onConnectionClosed(Direction, CloseReason)} event. */
+    /** A captured {@link RelayObserver#onConnectionClosed(Direction, CloseReason)} event. */
     public record ConnectionClose(Direction direction, CloseReason reason) { }
 
     private final ConcurrentLinkedQueue<Direction> framedPdus = new ConcurrentLinkedQueue<>();
@@ -53,12 +53,12 @@ public final class CapturingSpliceObserver implements SpliceObserver {
         connectionCloses.add(new ConnectionClose(direction, reason));
     }
 
-    /** Legs that fired {@link SpliceObserver#onFramedPdu(Direction)}, in arrival order (PDU count = size). */
+    /** Legs that fired {@link RelayObserver#onFramedPdu(Direction)}, in arrival order (PDU count = size). */
     public List<Direction> framedPdus() {
         return List.copyOf(framedPdus);
     }
 
-    /** Identities that fired {@link SpliceObserver#onBindAccept(SystemId)} (at the AD-25 ROK flip). */
+    /** Identities that fired {@link RelayObserver#onBindAccept(SystemId)} (at the AD-25 ROK couple). */
     public List<SystemId> bindAccepts() {
         return List.copyOf(bindAccepts);
     }

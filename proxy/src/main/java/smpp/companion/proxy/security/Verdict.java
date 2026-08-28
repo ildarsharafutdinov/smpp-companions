@@ -5,7 +5,7 @@ package smpp.companion.proxy.security;
  * exactly three payload-less permits — <b>no {@link Throwable}, no free-form reason string, no Nimbus type
  * crosses the port</b>. The ROPC adapter absorbs the "why"; the port carries only the verdict.
  *
- * <p>{@link Allow} = credentials verified (the bind may splice / relay). {@link DenyInvalid} = credentials
+ * <p>{@link Allow} = credentials verified (the bind may couple / relay). {@link DenyInvalid} = credentials
  * definitively invalid (e.g. an IdP 4xx). {@link DenyIndeterminate} = the verdict could not be reached
  * (timeout, network error, 5xx, a non-JWT token response &mdash; the JWT-only policy, Story 3.4 T1/T2,
  * 2026-08-27) &mdash; fail-closed per AD-11 (DENY on indeterminate).
@@ -17,7 +17,7 @@ package smpp.companion.proxy.security;
  */
 public sealed interface Verdict permits Verdict.Allow, Verdict.DenyInvalid, Verdict.DenyIndeterminate {
 
-    /** Credentials verified — the bind may be spliced / relayed (AD-12). The token verdict is discarded. */
+    /** Credentials verified — the bind may be coupled / relayed (AD-12). The token verdict is discarded. */
     record Allow() implements Verdict { }
 
     /** Credentials definitively invalid (e.g. an IdP 4xx) — DENY (AD-11). */

@@ -25,7 +25,7 @@ import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.codec.framer.SmppFrame;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
-import smpp.companion.proxy.observability.SpliceObserver;
+import smpp.companion.proxy.observability.RelayObserver;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
 import smpp.companion.proxy.security.BindCredential;
@@ -73,7 +73,7 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * remapped; ownership transfers to the egress write (that transfer IS the release).
  * <li><b>AD-25 forwarder split:</b> {@link EgressLeg} (this class's egress arm) forwards the SMSC's decoded
  * {@code bind_*_resp} to the legacy client; the T8 {@code RelayHandler} observes the same decoded PDU
- * read-only to flip and never forwards it. {@code EgressLeg} is appended by the per-bind connect assembly
+ * read-only to couple and never forwards it. {@code EgressLeg} is appended by the per-bind connect assembly
  * (before any read is armed — {@code AUTO_READ=false} guarantees no PDU can precede it) and does NOT
  * propagate decoded bind PDUs downstream: it is the bind-family's last consumer and owns the frame release,
  * a contract that stays stable when T8 inserts its handler earlier in the pipeline.
@@ -95,7 +95,7 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * {@link ChannelFutureListener#CLOSE} ("bind_resp error, then close" — walkthrough §5). A losing racer
  * ({@code beginTeardown} returned {@code null}) no-ops — never a {@code bind_resp} on a connection being
  * torn down. The verdict continuation re-checks the entry (absent or tearing-down → no-op — the AD-25
- * race-free re-check). Post-flip behavior is T8's plane: once {@code entry.spliced()}, decoded bind PDUs
+ * race-free re-check). Post-couple behavior is T8's plane: once {@code entry.coupled()}, decoded bind PDUs
  * are passed through untouched, and the general teardown site / exactly-once {@code onConnectionClosed}
  * live there.
  *
@@ -127,7 +127,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
 
     private final BindCredentialVerifier verifier;
     private final ConnectionRegistry registry;
-    private final SpliceObserver observer;
+    private final RelayObserver observer;
     private final RelayEgressInitializer egressInitializer;
     private final RelayChannelOptions channelOptions;
     private final EgressConnector connector;
@@ -156,7 +156,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * reverse arm targets the cell's single {@code smsc}; the forward arm routes per
      * {@code system_id} and dials TLS per routing entry).
      */
-    public BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, SpliceObserver observer,
+    public BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, RelayObserver observer,
                            ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
                            RelayChannelOptions channelOptions, RoutingTable routingTable,
                            SmppLegTlsFactory tlsFactory) {
@@ -169,7 +169,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * "injected failing ChannelFuture" — so tests can drive the connect-fail arm deterministically and pin
      * the egress-bootstrap wiring without a live socket.
      */
-    BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, SpliceObserver observer,
+    BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, RelayObserver observer,
                     ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
                     RelayChannelOptions channelOptions, RoutingTable routingTable,
                     SmppLegTlsFactory tlsFactory, EgressConnector connector) {
@@ -255,8 +255,8 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             // before the egress connects), then adjudicate.
             entry = registry.register(channel, new SystemId(req.systemId()));
             adjudicate(channel, entry, req);
-        } else if (entry.spliced()) {
-            // Post-flip (T8 flipped on the decoded ROK bind_resp): every PDU is T8's opaque splice. A
+        } else if (entry.coupled()) {
+            // Post-couple (T8 coupled on the decoded ROK bind_resp): every PDU is T8's opaque relay. A
             // bind-family PDU still DECODES — SmppCodec is structural, so "dormant post-couple" (AD-2)
             // means downstream handlers IGNORE the decode, not that it stops — which is why this arm
             // receives a decoded SmppBindRequest rather than a raw frame: channelRead0 only ever sees
@@ -264,13 +264,13 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             // pass-through itself is a pure fireChannelRead of the DECODED record (not refcounted —
             // SimpleChannelInboundHandler's auto-release of it is a no-op): the interceptor neither
             // releases nor forwards anything here; T8's RelayHandler sits AFTER this handler on the
-            // ingress pipeline and owns the frame there (it forwards req.originalFrame() as splice bytes
-            // or releases them per its splice lifecycle).
+            // ingress pipeline and owns the frame there (it forwards req.originalFrame() as relayed bytes
+            // or releases them per its relay lifecycle).
             ctx.fireChannelRead(req);
             return;
         } else {
             // RELAY-004: a bind handshake is already in flight on this connection (the entry exists, not
-            // spliced). Deterministic reject: the AD-33 generic deny answering the RETRY's sequence +
+            // coupled). Deterministic reject: the AD-33 generic deny answering the RETRY's sequence +
             // teardown of the pair (cancel the in-flight adjudication; no second egress pair).
             req.originalFrame().release();
             denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
@@ -539,8 +539,8 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     public void channelInactive(ChannelHandlerContext ctx) {
         Channel channel = ctx.channel();
         ConnectionEntry entry = registry.entryFor(channel);
-        if (entry == null || entry.spliced()) {
-            ctx.fireChannelInactive(); // nothing in flight, or T8's plane owns the post-flip teardown
+        if (entry == null || entry.coupled()) {
+            ctx.fireChannelInactive(); // nothing in flight, or T8's plane owns the post-couple teardown
             return;
         }
         // The legacy client vanished mid-handshake: teardown with NO deny (nobody left to answer — AD-32's
@@ -563,8 +563,8 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // channel and land in channelInactive.
         Channel channel = ctx.channel();
         ConnectionEntry entry = registry.entryFor(channel);
-        if (entry != null && entry.spliced()) {
-            // Post-flip: T8's plane — propagate so the RelayHandler stashes the CloseReason
+        if (entry != null && entry.coupled()) {
+            // Post-couple: T8's plane — propagate so the RelayHandler stashes the CloseReason
             // (DECODE_ERROR / PEER_RST) and performs the pair teardown; it owns the close.
             ctx.fireExceptionCaught(cause);
             return;
@@ -592,7 +592,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * the sole credential authority; its actual response is ground truth and is never collapsed, never
      * re-encoded) — by transferring {@link SmppBindResponse#originalFrame()} into the ingress write.
      * Consumes the decoded PDU (no downstream propagate): it is the bind family's last consumer, and the
-     * T8 flipper observes the same PDU from its earlier pipeline position.
+     * T8 couple unit observes the same PDU from its earlier pipeline position.
      *
      * <p>If the SMSC leg dies BEFORE answering (close/RST/unbind — no response PDU), the bind can never
      * complete: collapse to the AD-33 generic deny so the legacy socket never hangs. After the answer, the

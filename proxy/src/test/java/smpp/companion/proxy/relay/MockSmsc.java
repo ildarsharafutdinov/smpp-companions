@@ -55,7 +55,7 @@ import smpp.companion.codec.framer.SmppFrameDecoder;
  *       (non-blocking: the response is chained on a {@link CompletableFuture}, never an event-loop
  *       block).</li>
  *   <li>Byte-exact captures — {@link Session#bindFrame()} (the relay's AD-14 verbatim forward) and
- *   {@link Session#received()} (every spliced PDU, one entry per framed PDU: the mock's own
+ *   {@link Session#received()} (every relayed PDU, one entry per framed PDU: the mock's own
  *   production framer guarantees the boundary).</li>
  * </ul>
  *
@@ -228,7 +228,7 @@ public final class MockSmsc implements AutoCloseable {
             return bindFrame;
         }
 
-        /** Every framed PDU the relay spliced onto THIS SMSC socket, in arrival order. */
+        /** Every framed PDU relayed onto THIS SMSC socket, in arrival order. */
         public List<byte[]> received() {
             return List.copyOf(received);
         }
@@ -301,7 +301,7 @@ public final class MockSmsc implements AutoCloseable {
                 // A response PDU from the ESME side is a direction violation — capture nothing.
                 ((SmppBindPdu) msg).originalFrame().release();
             } else {
-                // Opaque spliced PDU (submit_sm etc.): capture the bytes; the base class's
+                // Opaque relayed PDU (submit_sm etc.): capture the bytes; the base class's
                 // auto-release owns the ByteBuf.
                 ByteBuf frame = (ByteBuf) msg;
                 byte[] bytes = new byte[frame.readableBytes()];

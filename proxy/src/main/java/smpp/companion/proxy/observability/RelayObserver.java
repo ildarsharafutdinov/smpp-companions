@@ -5,7 +5,7 @@ import smpp.companion.proxy.security.Verdict;
 
 /**
  * The observability seam the relay fires against a coupled ingress&harr;egress pair (AD-27). Story 2.2
- * AUTHORS this interface (2.1 scoped it OUT); {@link NoopSpliceObserver} is the seeded default bean, and
+ * AUTHORS this interface (2.1 scoped it OUT); {@link NoopRelayObserver} is the seeded default bean, and
  * Epic 4 swaps in the production Micrometer {@code /metrics} impl behind this UNCHANGED interface.
  *
  * <p><b>No PDU type, no content.</b> The triggers carry only a {@link Direction}, a {@link SystemId} (at
@@ -18,14 +18,14 @@ import smpp.companion.proxy.security.Verdict;
  *
  * <p><b>Pinned triggers (AC5):</b>
  * <ul>
- *   <li>{@link #onBindAccept(SystemId)} fires exactly at the AD-25 ROK flip (NOT at the verdict &mdash; the
- *       verdict precedes the egress bind; the flip ratifies the SMSC's ROK);</li>
+ *   <li>{@link #onBindAccept(SystemId)} fires exactly at the AD-25 ROK couple (NOT at the verdict &mdash; the
+ *       verdict precedes the egress bind; the couple ratifies the SMSC's ROK);</li>
  *   <li>{@link #onConnectionClosed(Direction, CloseReason)} fires exactly-once per channel (CAS-guarded at
  *       the {@code channelInactive} teardown site; the violation handler only stashes the reason and never
  *       calls this directly).</li>
  * </ul>
  */
-public interface SpliceObserver {
+public interface RelayObserver {
 
     /**
      * A framed PDU crossed a leg (pre- or post-couple). Carries no type or body &mdash; opaque framing is the
@@ -36,9 +36,9 @@ public interface SpliceObserver {
     void onFramedPdu(Direction direction);
 
     /**
-     * A bind handshake completed &mdash; the AD-25 splice flag flipped on a decoded ROK {@code bind_*_resp}.
-     * Fires exactly at the flip, NOT at the {@link Verdict} (the verdict precedes the egress bind; the flip
-     * ratifies the SMSC's ROK).
+     * A bind handshake completed &mdash; the AD-25 couple flag set on a decoded ROK {@code bind_*_resp}.
+     * Fires exactly at the couple, NOT at the {@link Verdict} (the verdict precedes the egress bind; the
+     * couple ratifies the SMSC's ROK).
      *
      * @param systemId the identity forwarded end-to-end (AD-14); non-null. For structured logging only, not a
      *                 metrics label (AD-19).

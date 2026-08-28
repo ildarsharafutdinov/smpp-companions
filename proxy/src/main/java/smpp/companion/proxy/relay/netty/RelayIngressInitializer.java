@@ -11,7 +11,7 @@ import smpp.companion.codec.framer.SmppFrameDecoder;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.Direction;
-import smpp.companion.proxy.observability.SpliceObserver;
+import smpp.companion.proxy.observability.RelayObserver;
 import smpp.companion.proxy.relay.BindInterceptor;
 import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.RelayHandler;
@@ -30,7 +30,7 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * handler classes).</b> The full ingress pipeline per AC4 is
  * {@code SslHandler? → SmppFrameDecoder → SmppCodec → BindInterceptor → RelayHandler}: the T7 entry
  * {@link BindInterceptor} (bind-family verifier gating + AD-33 collapse, AD-7/AD-25) and the T8
- * entry {@link RelayHandler} (the AD-25 single flipper + AD-32 bare-close + opaque splice) have
+ * entry {@link RelayHandler} (the AD-25 single couple unit + AD-32 bare-close + opaque relay) have
  * both LANDED; Story 3.3 ([B] topology) prepends the {@code SslHandler} <b>iff this cell's listener
  * is TLS</b> (reverse.mode-a/c — {@link SmppLegTlsFactory#listenerTls()}); the forward cells'
  * trusted leg and reverse.mode-b stay plaintext (AD-15/AD-12-amended — no TLS on the trusted legs).
@@ -48,7 +48,7 @@ public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
 
     private final BindCredentialVerifier verifier;
     private final ConnectionRegistry registry;
-    private final SpliceObserver observer;
+    private final RelayObserver observer;
     private final ProxyCompanionProperties properties;
     private final RelayEgressInitializer egressInitializer;
     private final RelayChannelOptions channelOptions;
@@ -72,9 +72,9 @@ public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
                 .addLast(new BindInterceptor(
                         verifier, registry, observer, properties, egressInitializer, channelOptions,
                         routingTable, tlsFactory))
-                // T8 (landed): the AD-25 flip reader (ingress side — the flip itself fires on the
+                // T8 (landed): the AD-25 couple reader (ingress side — the couple itself fires on the
                 // egress leg's RelayHandler, which rides this channel's event loop, AD-2) + the
-                // AD-32 pre-couple bare-close + the post-flip opaque splice toward the egress leg.
+                // AD-32 pre-couple bare-close + the post-couple opaque relay toward the egress leg.
                 .addLast(new RelayHandler(registry, observer, Direction.INGRESS));
     }
 }

@@ -25,7 +25,7 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * outbound writability signal, not an inbound cap). The low water mark is ONE max-sized frame
  * ({@link SmppFrame#MAX_COMMAND_LENGTH} — RELAY-026's single named value, never a literal): once a
  * leg's outbound buffer drains below a frame's worth of queued bytes, writability flips back and the
- * splice re-arms the peer leg's read &mdash; the "explicit low-water mark to re-arm read". The high
+ * relay re-arms the peer leg's read &mdash; the "explicit low-water mark to re-arm read". The high
  * water mark bounds that outbound buffer at
  * {@code MAX_COMMAND_LENGTH × companion.memory.max-inbound-depth}; the PER-CHANNEL INBOUND bound is
  * emergent from it: T8's write-completes-gates-read (AD-2) arms the peer leg's reads only while this
@@ -75,7 +75,7 @@ public final class RelayChannelOptions {
     /**
      * Applies the SAME substrate to a per-bind egress {@code Bootstrap} (the SMSC leg — T7 assembles
      * one per accepted bind, HexDumpProxy-style, with the ingress channel's event loop as its group).
-     * Identical options on both legs is the point: ingress and egress are one spliced data plane.
+     * Identical options on both legs is the point: ingress and egress are one coupled data plane.
      * NO {@code SO_REUSEADDR} here — that is acceptor-socket semantics (rebind over TIME_WAIT on a
      * listener); a connecting client socket has no use for it.
      *

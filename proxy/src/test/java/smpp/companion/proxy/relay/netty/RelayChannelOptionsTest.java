@@ -80,7 +80,7 @@ class RelayChannelOptionsTest {
         WriteBufferWaterMark egressMark = (WriteBufferWaterMark)
                 channelOptions.get(ChannelOption.WRITE_BUFFER_WATER_MARK);
         assertThat(egressMark)
-                .as("both legs carry the SAME watermark — one spliced data plane")
+                .as("both legs carry the SAME watermark — one coupled data plane")
                 .isNotNull();
         assertThat(egressMark.low()).isEqualTo(SmppFrame.MAX_COMMAND_LENGTH);
         assertThat(egressMark.high()).isEqualTo(SmppFrame.MAX_COMMAND_LENGTH * 64);

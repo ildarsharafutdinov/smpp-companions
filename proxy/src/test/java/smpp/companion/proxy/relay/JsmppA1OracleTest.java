@@ -38,10 +38,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Story 2.2 Task 10 / AC6(b) — <b>OBS-038, the independent A-1 conformance oracle</b> (the
  * load-bearing second half of AC6): the SAME affinity scenario as RELAY-011, but with the SMSC
  * side played by the {@link JsmppSmscServer} (jSMPP 3.0.2) instead of the production-codec
- * {@link MockSmsc}. jSMPP is a full second SMPP stack — it PARSES everything the relay splices
+ * {@link MockSmsc}. jSMPP is a full second SMPP stack — it PARSES everything the proxy relays
  * onto the egress sockets and CONSTRUCTS everything the legacy clients read back — so this test
  * shares NEITHER the production codec's bugs NOR its A-1 assumption: a mis-framed bind/submit,
- * a corrupted splice, or a cross-coupled pair makes the independent stack reject or garble the
+ * a corrupted relay, or a cross-coupled pair makes the independent stack reject or garble the
  * exchange and the test go RED.
  *
  * <p><b>The scenario (test-coverage-scenarios.md :1267–1271):</b> two CONCURRENT
@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * both {@code bind_*_resp} ROK (the oracle accepted two same-{@code system_id} binds, one per
  * connection); then a {@code submit_sm} on bind A yields {@code submit_sm_resp} + the DLR
  * {@code deliver_sm} on <b>bind A's channel ONLY — never bind B</b> (and symmetrically for B):
- * the socket-level read IS the tag&rarr;channel assertion (the {@code SpliceObserver} seam is
+ * the socket-level read IS the tag&rarr;channel assertion (the {@code RelayObserver} seam is
  * deliberately channel-blind, AC5 — the legacy TCP connection is the channel identity; the
  * capturing observer pins the trigger counts).
  *
@@ -68,7 +68,7 @@ class JsmppA1OracleTest {
     /**
      * SMPP 3.4 §5.1.2.1 command ids, pinned as LITERALS (independent of the production constants).
      * NOTE {@code deliver_sm = 0x00000005} — the spec's actual id (§5.1.2.1, verified against the
-     * repo PDF); the first draft pinned {@code 0x00000105}, a NON-EXISTENT id that the opaque-splice
+     * repo PDF); the first draft pinned {@code 0x00000105}, a NON-EXISTENT id that the opaque-relay
      * T9 mock never caught (any non-bind id works as an opaque tag carrier) but jSMPP's CONSTRUCTED
      * deliver_sm exposed immediately — another independent-oracle bite.
      */
@@ -190,13 +190,13 @@ class JsmppA1OracleTest {
                     .as("both pairs stayed coupled through the full exchange")
                     .isEqualTo(2);
 
-            // The pinned triggers: two ROK flips under the SAME identity (A-1's premise observed
-            // at the relay) and one onFramedPdu per spliced PDU — 2 submits + 2 deliver_sm_resps
+            // The pinned triggers: two ROK couples under the SAME identity (A-1's premise observed
+            // at the relay) and one onFramedPdu per relayed PDU — 2 submits + 2 deliver_sm_resps
             // read on the INGRESS legs, 2 submit_sm_resps + 2 DLRs read on the EGRESS legs (the
             // exact resp/DLR interleaving per pair is a fixture-internal wire race — counts, not
             // order).
             assertThat(harness.observer().bindAccepts())
-                    .as("onBindAccept fired exactly at each flip — twice, same system_id")
+                    .as("onBindAccept fired exactly at each couple — twice, same system_id")
                     .containsExactly(
                             new SystemId(new AsciiString(SYSTEM_ID)), new SystemId(new AsciiString(SYSTEM_ID)));
             List<Direction> framed = harness.observer().framedPdus();
@@ -257,7 +257,7 @@ class JsmppA1OracleTest {
      * the two C-octets + {@code replace_if_present_flag} and double-counted {@code sm_length} —
      * jSMPP's strict decomposer threw {@code ArrayIndexOutOfBoundsException} past the declared
      * {@code command_length} and answered NOTHING: precisely the independent-parser bite AC6(b)
-     * exists for; the MockSmsc never saw it because it splices submits opaquely.)
+     * exists for; the MockSmsc never saw it because it relays submits opaquely.)
      */
     private static byte[] submitSm(int sequence, String tag) {
         byte[] source = ascii("1111");
@@ -371,7 +371,7 @@ class JsmppA1OracleTest {
         int sequence = header.getInt(12);
         assertThat(commandLength).as("the resp's command_length covers the whole PDU").isEqualTo(resp.length);
         assertThat(commandId).as("submit_sm answered by submit_sm_resp").isEqualTo(SUBMIT_SM_RESP);
-        assertThat(commandStatus).as("ESME_ROK — jSMPP parsed + accepted the spliced submit_sm").isZero();
+        assertThat(commandStatus).as("ESME_ROK — jSMPP parsed + accepted the relayed submit_sm").isZero();
         assertThat(sequence)
                 .as("sequence integrity through the relay: the resp answers THIS submit's sequence")
                 .isEqualTo(expectedSequence);
@@ -406,7 +406,7 @@ class JsmppA1OracleTest {
         try {
             int first = socket.getInputStream().read();
             if (first < 0) {
-                throw new AssertionError("the relay closed the leg — expected a live spliced pair");
+                throw new AssertionError("the relay closed the leg — expected a live coupled pair");
             }
             throw new AssertionError("an extra byte arrived — a duplicate or cross-bled PDU (first byte "
                     + first + ")");

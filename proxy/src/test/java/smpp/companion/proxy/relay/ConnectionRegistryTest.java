@@ -60,7 +60,7 @@ class ConnectionRegistryTest {
         assertThat(entry.ingress()).isSameAs(ingress);
         assertThat(entry.systemId()).isEqualTo(systemId("legacy1"));
         assertThat(entry.egress()).isNull();
-        assertThat(entry.spliced()).isFalse();
+        assertThat(entry.coupled()).isFalse();
         assertThat(entry.tearingDown()).isFalse();
     }
 
@@ -112,14 +112,14 @@ class ConnectionRegistryTest {
     }
 
     @Test
-    @DisplayName("flipSpliced is CAS-once: exactly one caller performs the AD-25 flip")
-    void flipSplicedIsCasOnce() {
+    @DisplayName("couple is CAS-once: exactly one caller performs the AD-25 couple")
+    void coupleIsCasOnce() {
         ConnectionRegistry registry = new ConnectionRegistry();
         ConnectionEntry entry = registry.register(channel(), systemId("legacy1"));
 
-        assertThat(entry.flipSpliced()).isTrue();
-        assertThat(entry.flipSpliced()).isFalse();
-        assertThat(entry.spliced()).isTrue();
+        assertThat(entry.couple()).isTrue();
+        assertThat(entry.couple()).isFalse();
+        assertThat(entry.coupled()).isTrue();
     }
 
     @Test

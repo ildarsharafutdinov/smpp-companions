@@ -26,7 +26,7 @@ import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.codec.framer.SmppFrameDecoder;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
-import smpp.companion.proxy.observability.CapturingSpliceObserver;
+import smpp.companion.proxy.observability.CapturingRelayObserver;
 import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
@@ -78,7 +78,7 @@ class BindInterceptorForwardRoleTest {
     void routingMissDeniesOnTheWireWithoutAdjudication(@TempDir java.nio.file.Path dir) {
         CountingAllowVerifier verifier = new CountingAllowVerifier();
         ConnectionRegistry registry = new ConnectionRegistry();
-        CapturingSpliceObserver observer = new CapturingSpliceObserver();
+        CapturingRelayObserver observer = new CapturingRelayObserver();
         ProxyCompanionProperties properties = RelayTestFixtures.forwardAProperties(
                 RelayTestFixtures.freePort(), 8, RelayTestFixtures.smppTlsLegs(dir), REVERSE_HOST, REVERSE_PORT);
         BindInterceptor interceptor = new BindInterceptor(
@@ -121,7 +121,7 @@ class BindInterceptorForwardRoleTest {
     void routingHitAdjudicatesAndDialsTheRoutingTargetWithTls(@TempDir java.nio.file.Path dir) {
         CountingAllowVerifier verifier = new CountingAllowVerifier();
         ConnectionRegistry registry = new ConnectionRegistry();
-        CapturingSpliceObserver observer = new CapturingSpliceObserver();
+        CapturingRelayObserver observer = new CapturingRelayObserver();
         ProxyCompanionProperties properties = RelayTestFixtures.forwardAProperties(
                 RelayTestFixtures.freePort(), 8, RelayTestFixtures.smppTlsLegs(dir), REVERSE_HOST, REVERSE_PORT);
         DialCapturingConnector connector = new DialCapturingConnector();
@@ -206,7 +206,7 @@ class BindInterceptorForwardRoleTest {
     }
 
     private static EmbeddedChannel pipeline(
-            BindInterceptor interceptor, ConnectionRegistry registry, CapturingSpliceObserver observer) {
+            BindInterceptor interceptor, ConnectionRegistry registry, CapturingRelayObserver observer) {
         return new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor,
                 new RelayHandler(registry, observer, Direction.INGRESS));
