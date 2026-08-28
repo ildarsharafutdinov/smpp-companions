@@ -72,7 +72,7 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * ({@link SmppBindRequest#originalFrame()}) is forwarded to the SMSC byte-exact — never re-encoded, never
  * remapped; ownership transfers to the egress write (that transfer IS the release).
  * <li><b>AD-25 forwarder split:</b> {@link EgressLeg} (this class's egress arm) forwards the SMSC's decoded
- * {@code bind_*_resp} to the legacy client; the T8 {@code RelayHandler} observes the same decoded PDU
+ * {@code bind_*_resp} to the legacy client; the T8 {@code RelayEgressHandler} observes the same decoded PDU
  * read-only to couple and never forwards it. {@code EgressLeg} is appended by the per-bind connect assembly
  * (before any read is armed — {@code AUTO_READ=false} guarantees no PDU can precede it) and does NOT
  * propagate decoded bind PDUs downstream: it is the bind-family's last consumer and owns the frame release,
@@ -263,7 +263,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             // SmppBindPdu, and the only request-shaped PDU a legacy client can send is a bind. The
             // pass-through itself is a pure fireChannelRead of the DECODED record (not refcounted —
             // SimpleChannelInboundHandler's auto-release of it is a no-op): the interceptor neither
-            // releases nor forwards anything here; T8's RelayHandler sits AFTER this handler on the
+            // releases nor forwards anything here; T8's RelayIngressHandler sits AFTER this handler on the
             // ingress pipeline and owns the frame there (it forwards req.originalFrame() as relayed bytes
             // or releases them per its relay lifecycle).
             ctx.fireChannelRead(req);
@@ -419,7 +419,8 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     }
 
     /**
-     * The T8 {@code RelayHandler}'s AD-32 case-3 arm: a pre-couple non-bind violation on the ingress leg
+     * The T8 ingress relay leg's ({@code RelayIngressHandler}'s) AD-32 case-3 arm: a pre-couple non-bind
+     * violation on the ingress leg
      * bare-closes the pair. The interceptor owns this teardown because the pending-adjudication handles
      * ({@code cancelHttp} + zeroize) live HERE — the ordering is the pinned AC3/AD-32 sequence:
      * {@code beginTeardown} (remove + mark tearing-down BEFORE close) → {@code cancelHttp()} +
@@ -564,7 +565,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         Channel channel = ctx.channel();
         ConnectionEntry entry = registry.entryFor(channel);
         if (entry != null && entry.coupled()) {
-            // Post-couple: T8's plane — propagate so the RelayHandler stashes the CloseReason
+            // Post-couple: T8's plane — propagate so the relay handler stashes the CloseReason
             // (DECODE_ERROR / PEER_RST) and performs the pair teardown; it owns the close.
             ctx.fireExceptionCaught(cause);
             return;
@@ -586,7 +587,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
 
     /**
      * The egress-side arm of the bind handshake (AD-25: {@code BindInterceptor} forwards the
-     * {@code bind_*_resp}; the {@code RelayHandler} only observes it). One per-pair instance, appended to
+     * {@code bind_*_resp}; the {@code RelayEgressHandler} only observes it). One per-pair instance, appended to
      * the egress pipeline by the connect assembly after the codec prefix. Forwards the SMSC's decoded
      * {@code bind_*_resp} VERBATIM to the legacy client — ROK and non-ROK alike (RELAY-002c: the SMSC is
      * the sole credential authority; its actual response is ground truth and is never collapsed, never

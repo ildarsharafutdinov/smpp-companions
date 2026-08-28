@@ -10,28 +10,28 @@ import io.netty.handler.ssl.SslHandler;
 
 import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.framer.SmppFrameDecoder;
-import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.observability.RelayObserver;
 import smpp.companion.proxy.relay.ConnectionRegistry;
-import smpp.companion.proxy.relay.RelayHandler;
+import smpp.companion.proxy.relay.RelayEgressHandler;
 
 /**
  * The egress (SMSC- or reverse-facing) pipeline (AC4; AD-2/AD-3): one {@link SmppFrameDecoder}
- * then one {@link SmppCodec} then the egress {@link RelayHandler} per egress channel — the SAME
+ * then one {@link SmppCodec} then the egress {@link RelayEgressHandler} per egress channel — the SAME
  * codec prefix as the ingress leg ({@link RelayIngressInitializer}), because both legs of a coupled
  * pair are one framed-PDU data plane: the framer must delimit PDUs arriving FROM the peer (its
  * {@code bind_*_resp} and every post-couple PDU) exactly as on the ingress leg. Per-channel
- * INSTANCES (CODEC-014), created fresh in {@code initChannel}; the {@link RelayHandler} is
- * per-channel BY DESIGN — it carries the leg's {@link Direction} and its exactly-once close marker.
+ * INSTANCES (CODEC-014), created fresh in {@code initChannel}; the {@link RelayEgressHandler} is
+ * per-channel BY DESIGN — its {@code CoupledRelayHandler} base carries the leg's {@code Direction}
+ * and its exactly-once close marker.
  *
  * <p><b>Attachment point (owner decision 2026-08-15 — codec-only prefix in T6; T8 landed the
  * entry).</b> The full egress pipeline per AC4 is
- * {@code SslHandler? → SmppFrameDecoder → SmppCodec → RelayHandler}: the T8 {@link RelayHandler}
- * (the AD-25 couple reader + opaque relay toward the ingress leg) sits after {@code SmppCodec}. The
+ * {@code SslHandler? → SmppFrameDecoder → SmppCodec → RelayEgressHandler}: the T8 relay entry (the
+ * AD-25 single couple unit + opaque relay toward the ingress leg) sits after {@code SmppCodec}. The
  * per-bind egress {@code Bootstrap} (HexDumpProxy-style, grouped on the ingress channel's event
  * loop, options from {@link RelayChannelOptions}) installs this initializer, and its connect
  * assembly appends the {@code BindInterceptor.EgressLeg} bind-family forwarder AFTER the
- * {@link RelayHandler} (the couple unit propagates bind-family PDUs so the forwarder still sees them).
+ * {@link RelayEgressHandler} (the couple unit propagates bind-family PDUs so the forwarder still sees them).
  *
  * <p><b>Story 3.3 ([B] topology): the optional per-dial TLS seam.</b> The shared singleton (the
  * two-arg constructor — the REVERSE cells' plaintext SMSC dial, byte-identical to Story 2.2)
@@ -93,9 +93,9 @@ public final class RelayEgressInitializer extends ChannelInitializer<Channel> {
         channel.pipeline()
                 .addLast(new SmppFrameDecoder()) // per-channel instance (CODEC-014)
                 .addLast(new SmppCodec())
-                // T8 (landed): the AD-25 single couple unit + AD-32 bare-close + opaque relay. The
-                // couple itself runs HERE — the bind_resp arrives from the peer on this leg, which rides
-                // the ingress channel's event loop (AD-2 same-loop coupling).
-                .addLast(new RelayHandler(registry, observer, Direction.EGRESS));
+                // T8 (landed) / Story 3.4 T5 (split): the AD-25 single couple unit + AD-32 bare-close
+                // + opaque relay. The couple itself runs HERE — the bind_resp arrives from the peer on
+                // this leg, which rides the ingress channel's event loop (AD-2 same-loop coupling).
+                .addLast(new RelayEgressHandler(registry, observer));
     }
 }

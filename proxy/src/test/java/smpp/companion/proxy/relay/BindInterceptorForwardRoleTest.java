@@ -27,7 +27,6 @@ import smpp.companion.codec.framer.SmppFrameDecoder;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.CapturingRelayObserver;
-import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
 import smpp.companion.proxy.security.BindCredential;
@@ -209,7 +208,7 @@ class BindInterceptorForwardRoleTest {
             BindInterceptor interceptor, ConnectionRegistry registry, CapturingRelayObserver observer) {
         return new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor,
-                new RelayHandler(registry, observer, Direction.INGRESS));
+                new RelayIngressHandler(registry, observer));
     }
 
     // ---------- hand-authored PDU builders (raw bytes — independent of the codec) ----------

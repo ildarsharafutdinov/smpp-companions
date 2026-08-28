@@ -8,6 +8,8 @@
 > Tagging convention for JUnit 5: `@Tag("p0"|"p1"|"p2"|"p3")`, `@Tag("unit"|"fuzz"|"integration"|"conformance"|"perf"|"e2e")`, an area tag (`codec`/`relay`/`sec`/`obs`/`deploy`/`perf`/`e2e`), and `@DisplayName`. (No `@P0`/`@API`/`npx playwright` — this is a JVM backend, not Playwright/k6.)
 
 > **Vocabulary note (2026-08-28, Story 3.4 T4):** the relay vocabulary was UNIFIED — data-plane action `splice` → `relay` ("spliced PDU"/"spliced traffic" → "relayed PDU(s)", `RelayHandler.splice()` → `relayFramedPdu()`); pair-state transition `flip`/`spliced` → `couple`/`coupled` (`flipSpliced()` → `couple()`, `spliced()` → `coupled()`; the AD-25 flip = the couple); and the observability seam type `SpliceObserver` → `RelayObserver` (`NoopSpliceObserver` → `NoopRelayObserver`, `CapturingSpliceObserver` → `CapturingRelayObserver`; the 4 method names unchanged). Live row text below keeps its pre-T4 wording; read it through this mapping (spine AD-1/2/8/25/27/32 carry the dated amendment markers).
+>
+> **Split note (2026-08-28, Story 3.4 T5):** the couple unit `RelayHandler` was SPLIT into the per-leg `RelayIngressHandler`/`RelayEgressHandler` over the abstract base `CoupledRelayHandler` (D3, owner checkpoint same date; `RelayHandlerTest` split likewise into the two per-leg suites). Rows below naming `RelayHandler` as the couple unit read as `RelayEgressHandler` post-split; the flip/couple trigger is unchanged. Live row text stays.
 
 ---
 
