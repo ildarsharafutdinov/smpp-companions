@@ -4,10 +4,8 @@ import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.crypto.RSASSASigner;
-import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
-import com.nimbusds.jose.util.JSONObjectUtils;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpExchange;
@@ -100,6 +98,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * an exhausted adjudication deadline denies without a wire call, and a closed adapter
  * (use-after-close, deferred-work &sect;2.1 item 2) settles every verify fail-closed — never
  * hangs, never throws out of {@code verify()}.
+ *
+ * <p><b>AC3 (amended by Story 3.4 T2/D7, 2026-08-27) — TLS-as-sole-trust-anchor.</b> The 3.2-era
+ * local JWT defense-in-depth (signature, {@code typ}/{@code kid}, {@code iss}/{@code aud}/
+ * {@code exp}/{@code nbf}, the cached provider key set and its refresh) is REMOVED — the HTTPS
+ * client-authenticated provider link is the sole trust anchor, the proxy being the token's only
+ * consumer. The surviving gate is STRUCTURAL: a three-segment token allows on the endpoint verdict
+ * alone (hostile signature and claims change nothing), and the retired rows (typ absent/unexpected,
+ * kid miss, wrong signer, claim failures, cold cache, refresh-scheduler isolation — plus the
+ * component-level cache suite) were retired with the arm. The never-hit pins keep a REGISTERED,
+ * ALLOWING key-set handler reachable through the advertised discovery URI — zero hits proves no
+ * fetch path exists.
  *
  * <p><b>RED-on-neuter (AI-1):</b> every assertion is load-bearing — neuter the 400-error-semantics
  * branch (make 400 unconditionally DenyInvalid) and the other-400 test goes RED; fire sendAsync
@@ -269,175 +278,56 @@ class RopcBindCredentialVerifierTest {
         }
     }
 
-    // ── AC3: JWT defense-in-depth against the cached JWKS (T4) ────────────────────────────────
+    // ── AC3 (amended by Story 3.4 T2/D7, 2026-08-27): TLS-as-sole-trust-anchor — the structural gate ──
 
     @Test
-    @DisplayName("200 + JWT passing local defense-in-depth (typ/kid/sig/iss/aud/exp/nbf) → Allow")
-    void issuedJwtPassingDefenseInDepthYieldsAllow(@TempDir Path dir) throws Exception {
-        HttpsServer server = jwtIdP(key("t4-key"), new JOSEObjectType("JWT"), null);
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
-            awaitCachePopulated(adapter);   // the background initial refresh, before the bind
-            assertThat(awaitVerdict(verify(adapter)))
-                    .as("a 200 verdict confirmed by local defense-in-depth stands (AC3)")
-                    .isEqualTo(new Verdict.Allow());
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("200 + JWT with NO typ header → Allow (absent typ is tolerated, RFC 8725 §3.9 / AC3)")
-    void typHeaderAbsentToleratedYieldsAllow(@TempDir Path dir) throws Exception {
-        HttpsServer server = jwtIdP(key("t4-key"), null, null);
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
-            awaitCachePopulated(adapter);
-            assertThat(awaitVerdict(verify(adapter)))
-                    .as("absent typ is tolerated (AC3); only present-but-unexpected denies")
-                    .isEqualTo(new Verdict.Allow());
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("200 + JWT with an UNEXPECTED typ header → DenyIndeterminate (cross-JWT confusion must not verify)")
-    void typHeaderUnexpectedYieldsDenyIndeterminate(@TempDir Path dir) throws Exception {
-        // "Bearer" is the PAYLOAD-claim value training data conflates with the header; the pinned
-        // fixture's HEADER literal is "JWT" (live-verified 2026-08-19 — see EXPECTED_TYP).
-        HttpsServer server = jwtIdP(key("t4-key"), new JOSEObjectType("Bearer"), null);
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
-            awaitCachePopulated(adapter);
-            assertThat(awaitVerdict(verify(adapter)))
-                    .as("typ=Bearer in the HEADER is unexpected for this provider (its header literal is JWT)")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("kid miss → DenyIndeterminate NOW, background refresh scheduled, verdict never waits for it")
-    void kidMissDeniesNowAndRefreshesInBackground(@TempDir Path dir) throws Exception {
-        RSAKey key = key("t4-key");
-        AtomicReference<String> servedKid = new AtomicReference<>("rotated-in");   // NOT in the JWKS
-        CountDownLatch refreshGate = new CountDownLatch(1);
-        AtomicInteger jwksHits = new AtomicInteger();
-        HttpsServer server = standInIdP(
-                ex -> {
-                    drain(ex);
-                    respond(ex, 200, tokenBody(jwt(key, servedKid.get(), new JOSEObjectType("JWT"),
-                            b -> validClaims(b, issuerOf(ex)))));
-                },
-                null,
-                ex -> {
-                    // The INITIAL fetch (hit 1) serves; every later refresh BLOCKS — the bind's
-                    // verdict must settle without waiting for the refresh it triggered.
-                    if (jwksHits.incrementAndGet() > 1) {
-                        try {
-                            refreshGate.await();
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }
-                    respond(ex, 200, jwksBody(key));
-                });
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
-            awaitCachePopulated(adapter);   // hit 1: the JWKS holds kid "t4-key" only
-            assertThat(awaitVerdict(verify(adapter)))
-                    .as("a kid miss is UNVERIFIABLE, not invalid — deny now (AC3, no foreground retry)")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
-            assertThat(refreshGate.getCount())
-                    .as("the kid-miss refresh is still held — the verdict above did NOT wait on it")
-                    .isEqualTo(1);
-            awaitCondition("the kid-miss background refresh to reach the gated endpoint",
-                    () -> jwksHits.get() >= 2);
-            assertThat(jwksHits.get())
-                    .as("the kid miss scheduled the background refresh (hit 2, currently gated)")
-                    .isGreaterThanOrEqualTo(2);
-            servedKid.set("t4-key");   // a matching-kid token on the SAME cached set
-            assertThat(awaitVerdict(verify(adapter)))
-                    .as("the miss denied only the absent kid — a cached kid still Allows")
-                    .isEqualTo(new Verdict.Allow());
-        } finally {
-            refreshGate.countDown();   // ALWAYS release the held handler (exception-safe cleanup)
-            server.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("kid present but signature by a DIFFERENT key → DenyIndeterminate (unverifiable, not invalid)")
-    void wrongSignerYieldsDenyIndeterminate(@TempDir Path dir) throws Exception {
-        // A Story 3.2 T10 mutation-pass finding: the original shape used jwtIdP(key("forger"), …,
-        // key("t4-key")), which stamps the SIGNING key's kid ("forger") in the header — the cache
-        // misses and the KID-MISS arm denies; the signature line was unreachable (a neutered verify()
-        // stayed green — the DisplayName's "kid present" was false). The bite-able shape is the
-        // substitution attack: header kid = the CACHED key's id, signature = the forger's — only the
-        // signature arm can catch this.
+    @DisplayName("200 + three-segment JWT → Allow from the endpoint verdict ALONE (D7): hostile signature + "
+            + "claims ignored, ZERO provider-key fetches")
+    void jwtVerdictDerivesFromTheEndpointAlone(@TempDir Path dir) throws Exception {
+        // The row that replaced the whole 3.2-T4 defense-in-depth matrix: the served token fails
+        // EVERY former local check at once — signed by a FORGER key whose kid is advertised nowhere,
+        // typ "Bearer" in the header (the former unexpected value), wrong iss, wrong aud, expired
+        // exp — and STILL allows, because the verdict is the token endpoint's own HTTPS-authenticated
+        // response. The key-set endpoint (reachable via the advertised discovery URI) is registered
+        // with a counting, ALLOWING handler: zero hits proves no fetch path exists at all.
         RSAKey forger = key("forger");
-        RSAKey cached = key("t4-key");
+        AtomicInteger keySetHits = new AtomicInteger();
         HttpsServer server = standInIdP(
                 ex -> {
                     drain(ex);
-                    respond(ex, 200, tokenBody(jwt(forger, cached.getKeyID(),
-                            new JOSEObjectType("JWT"), b -> validClaims(b, issuerOf(ex)))));
+                    respond(ex, 200, tokenBody(jwt(forger, "cached-nowhere", new JOSEObjectType("Bearer"),
+                            b -> b.issuer("https://evil-issuer.example")
+                                    .audience("wrong-audience")
+                                    .expirationTime(Date.from(Instant.now().minusSeconds(600))))));
                 },
                 null,
-                jwksHandler(cached));
+                countingHandler(keySetHits),
+                null);
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
-            awaitCachePopulated(adapter);
             assertThat(awaitVerdict(verify(adapter)))
-                    .as("a 200 overruled by failed local signature verification → DenyIndeterminate (DENY wins)")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+                    .as("a three-segment token allows on the endpoint verdict alone — no signature "
+                            + "verification, no claim checks (D7/AC3 amended)")
+                    .isEqualTo(new Verdict.Allow());
+            assertThat(keySetHits.get())
+                    .as("the provider-key endpoint must never be fetched — the whole cache arm is gone")
+                    .isEqualTo(0);
         } finally {
             server.stop(0);
         }
     }
 
     @Test
-    @DisplayName("claim failures: wrong iss / wrong aud / missing exp / expired exp / future nbf → DenyIndeterminate")
-    void claimFailuresYieldDenyIndeterminate(@TempDir Path dir) throws Exception {
-        RSAKey key = key("t4-key");
-        AtomicReference<Consumer<JWTClaimsSet.Builder>> servedSpec = new AtomicReference<>(b -> { });
-        HttpsServer server = standInIdP(
-                ex -> {
-                    drain(ex);
-                    respond(ex, 200, tokenBody(jwt(key, "t4-key", new JOSEObjectType("JWT"), servedSpec.get())));
-                },
-                null,
-                jwksHandler(key));
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
-            awaitCachePopulated(adapter);
-            String iss = base(server);   // the base is known only now — the handler serves the spec
-            servedSpec.set(b -> validClaims(b, iss).issuer("https://evil-issuer.example"));
-            assertThat(awaitVerdict(verify(adapter))).as("issuer mismatch").isInstanceOf(Verdict.DenyIndeterminate.class);
-
-            servedSpec.set(b -> validClaims(b, iss).audience("wrong-audience"));
-            assertThat(awaitVerdict(verify(adapter))).as("audience mismatch").isInstanceOf(Verdict.DenyIndeterminate.class);
-
-            servedSpec.set(b -> b.issuer(iss).audience("smpp-client-confidential"));   // no exp claim at all
-            assertThat(awaitVerdict(verify(adapter))).as("missing exp").isInstanceOf(Verdict.DenyIndeterminate.class);
-
-            servedSpec.set(b -> validClaims(b, iss).expirationTime(Date.from(Instant.now().minusSeconds(600))));
-            assertThat(awaitVerdict(verify(adapter))).as("expired (past the 60s skew)").isInstanceOf(Verdict.DenyIndeterminate.class);
-
-            servedSpec.set(b -> validClaims(b, iss).notBeforeTime(Date.from(Instant.now().plusSeconds(600))));
-            assertThat(awaitVerdict(verify(adapter))).as("nbf in the future (past the 60s skew)")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("200 + three-segment-but-malformed token → DenyIndeterminate WITHOUT a wire round 2 (the structural dispatch)")
-    void malformedJwtDeniesWithoutIntrospection(@TempDir Path dir) throws Exception {
+    @DisplayName("200 + three-segment-but-garbage token → Allow (the structural gate never parses content; "
+            + "no wire round 2)")
+    void threeSegmentTokenIsNeverLocallyParsed(@TempDir Path dir) throws Exception {
         AtomicInteger introHits = new AtomicInteger();
         HttpsServer server = standInIdP(
                 ex -> {
                     drain(ex);
-                    // "aaa.bbb.ccc" IS three segments, so it is JWT territory: SignedJWT.parse fails
-                    // locally. The introspection endpoint is registered and counting — nothing may
-                    // be sent there since the arm's removal (Story 3.4 T1).
+                    // "aaa.bbb.ccc" IS three segments — structurally a JWS. Under D7 the content is
+                    // never parsed (the 3.2-era local SignedJWT.parse deny died with verification),
+                    // so the endpoint verdict alone decides. The retired arm's endpoint is still
+                    // registered and counting — nothing may be sent there (Story 3.4 T1).
                     respond(ex, 200, tokenBody("aaa.bbb.ccc"));
                 },
                 null,
@@ -449,10 +339,11 @@ class RopcBindCredentialVerifierTest {
                 });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
-                    .as("a malformed JWT is locally unverifiable → DenyIndeterminate (AC2)")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+                    .as("a JWT-SHAPED token is adjudicable on shape alone — the gate counts segments, "
+                            + "it never parses (D7/AC3 amended)")
+                    .isEqualTo(new Verdict.Allow());
             assertThat(introHits.get())
-                    .as("a JWT-SHAPED token never reaches the introspection endpoint (the dispatch boundary)")
+                    .as("a JWT-SHAPED token never reaches the retired round-2 endpoint (the dispatch boundary)")
                     .isEqualTo(0);
         } finally {
             server.stop(0);
@@ -469,7 +360,7 @@ class RopcBindCredentialVerifierTest {
         // an ALLOWING handler (200 + active:true — the row that once ALLOWed): any hit would flip
         // this row's meaning, so introHits == 0 proves the deny is the D6 policy arm itself, not a
         // wire failure misread as fail-closed.
-        HttpsServer server = opaqueIdP(introHandler(introHits, 200, "{\"active\":true}"));
+        HttpsServer server = opaqueIdP(countingHandler(introHits));
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("a non-JWT (opaque) token is not adjudicable under the JWT-only policy (D6/AD-11)")
@@ -482,95 +373,6 @@ class RopcBindCredentialVerifierTest {
                     .as("the WARN names the token shape and the JWT-only policy (D6)")
                     .contains("non-JWT (opaque) access token")
                     .contains("JWT-only");
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("cold cache: the bind denies against an EMPTY cache without waiting for the JWKS fetch")
-    void coldCacheDeniesWithoutWaitingForJwks(@TempDir Path dir) throws Exception {
-        RSAKey key = key("t4-key");
-        CountDownLatch jwksGate = new CountDownLatch(1);
-        HttpsServer server = standInIdP(
-                ex -> {
-                    drain(ex);
-                    respond(ex, 200, tokenBody(jwt(key, "t4-key", new JOSEObjectType("JWT"),
-                            b -> validClaims(b, issuerOf(ex)))));
-                },
-                null,
-                ex -> {
-                    try {
-                        jwksGate.await();   // the JWKS endpoint NEVER answers until released
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    }
-                    respond(ex, 200, jwksBody(key));
-                });
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server, Duration.ofSeconds(4), 8,
-                Duration.ofMillis(200)))) {   // short TTL — the periodic refresh recovers the cold cache
-            // The initial refresh is gated: the cache is cold, and the bind must STILL settle fast —
-            // the bind path verifies against the CACHED set only (AC3: no foreground fetch, ever).
-            long start = System.nanoTime();
-            assertThat(awaitVerdict(verify(adapter)))
-                    .as("a cold cache is unverifiable → fail-closed, no wire wait on the bind path")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
-            assertThat((System.nanoTime() - start) / 1_000_000)
-                    .as("the bind did not block on the held JWKS fetch")
-                    .isLessThan(2_000L);
-        } finally {
-            jwksGate.countDown();   // release the held refresh before the adapter/server go away
-            server.stop(0);
-        }
-        // A fresh adapter against a healthy JWKS endpoint Allows the same token: the cold deny was
-        // the cache's STATE, not a verdict (no verdict caching, AD-12).
-        HttpsServer recovered = jwtIdP(key, new JOSEObjectType("JWT"), null);
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, recovered))) {
-            awaitCachePopulated(adapter);
-            assertThat(awaitVerdict(verify(adapter)))
-                    .as("a populated cache flips the same token's verdict to Allow (re-validate every bind)")
-                    .isEqualTo(new Verdict.Allow());
-        } finally {
-            recovered.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("bind saturation does not starve the JWKS refresh (§2.1 item 6a — separate schedulers)")
-    void bindSaturationDoesNotStarveJwksRefresh(@TempDir Path dir) throws Exception {
-        RSAKey key = key("t4-key");
-        CountDownLatch requestReceived = new CountDownLatch(1);
-        CountDownLatch hold = new CountDownLatch(1);
-        AtomicInteger jwksHits = new AtomicInteger();
-        HttpsServer server = standInIdP(
-                ex -> {
-                    try {
-                        requestReceived.countDown();
-                        drain(ex);
-                        hold.await();   // bind #1 parks here, holding the lone admission permit
-                        respond(ex, 401, "{}");
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    } catch (IOException ioe) {
-                        // best-effort late write after release — not a verdict signal
-                    }
-                },
-                null,
-                ex -> {
-                    jwksHits.incrementAndGet();
-                    respond(ex, 200, jwksBody(key));
-                });
-        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server, Duration.ofSeconds(4), 1,
-                Duration.ofMillis(150)))) {   // max-in-flight = 1; refresh-ahead every 75ms
-            VerdictRequest held = verify(adapter);   // acquires the lone permit and parks
-            assertTrue(requestReceived.await(5, TimeUnit.SECONDS), "bind #1 must reach the token endpoint");
-            try {
-                awaitCondition("≥3 JWKS refreshes while every admission permit is held by binds",
-                        () -> jwksHits.get() >= 3);
-            } finally {
-                hold.countDown();   // ALWAYS release (exception-safe cleanup)
-            }
-            awaitVerdict(held);   // drain the pool task before close
         } finally {
             server.stop(0);
         }
@@ -817,7 +619,7 @@ class RopcBindCredentialVerifierTest {
         Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret\n");
         try (RopcBindCredentialVerifier adapter = adapter(reverseBProperties(store, secret, base(server),
-                Duration.ofSeconds(4), 8, Duration.ofMinutes(5)))) {
+                Duration.ofSeconds(4), 8))) {
             // Reserved-octet identity and password prove the encoder percent-encodes from the raw bytes
             // (space → %20, '@' → %40, '+' → %2B) — a toString/URLEncoder route would render differently.
             BindCredential credential = new BindCredential(
@@ -910,13 +712,11 @@ class RopcBindCredentialVerifierTest {
     @Test
     @DisplayName("AC6 zeroization on the Allow path: the ROPC form and the access-token response body are wiped")
     void buffersZeroizedOnAllow(@TempDir Path dir) throws Exception {
-        RSAKey signingKey = key("t6-allow");
-        HttpsServer server = jwtIdP(signingKey, null, null);
+        HttpsServer server = jwtIdP(key("t6-allow"));
         try {
             ProxyCompanionProperties props = properties(dir, server);
             RecordingHttpClient recording = recordingClient(props);
             try (RopcBindCredentialVerifier adapter = adapter(props, recording)) {
-                awaitCachePopulated(adapter);
                 assertThat(awaitVerdict(verify(adapter)))
                         .as("the JWT happy path allows (precondition)")
                         .isInstanceOf(Verdict.Allow.class);
@@ -967,7 +767,7 @@ class RopcBindCredentialVerifierTest {
             // maxInFlight < 1 — direct construction bypasses the @Min(1) annotation; without this guard
             // Semaphore(0) is valid and EVERY bind silently denies (fail-closed but broken).
             assertThatThrownBy(() -> adapter(reverseBProperties(store, secret, base(server),
-                    Duration.ofSeconds(4), 0, Duration.ofMinutes(5))))
+                    Duration.ofSeconds(4), 0)))
                     .as("the typed admission-capacity guard (AD-28(4))")
                     .isInstanceOf(IllegalArgumentException.class);
 
@@ -975,7 +775,7 @@ class RopcBindCredentialVerifierTest {
             // pins the NOT-READABLE arm specifically (not just the shared refusal substrings) so the
             // two guard arms cannot mask each other under mutation.
             assertThatThrownBy(() -> adapter(reverseBProperties(store, dir.resolve("missing"), base(server),
-                    Duration.ofSeconds(4), 8, Duration.ofMinutes(5))))
+                    Duration.ofSeconds(4), 8)))
                     .as("a missing client-secret file refuses startup")
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("client-secret-path")
@@ -985,7 +785,7 @@ class RopcBindCredentialVerifierTest {
             // Blank/whitespace secret file — an empty credential is a misconfiguration, not a secret.
             Path blank = Files.writeString(dir.resolve("blank-secret"), " \n");
             assertThatThrownBy(() -> adapter(reverseBProperties(store, blank, base(server),
-                    Duration.ofSeconds(4), 8, Duration.ofMinutes(5))))
+                    Duration.ofSeconds(4), 8)))
                     .as("a blank client-secret file refuses startup")
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("client-secret-path")
@@ -1034,19 +834,14 @@ class RopcBindCredentialVerifierTest {
 
     private static ProxyCompanionProperties properties(Path dir, HttpsServer server, Duration timeout,
             int maxInFlight) throws IOException {
-        return properties(dir, server, timeout, maxInFlight, Duration.ofMinutes(5));
-    }
-
-    private static ProxyCompanionProperties properties(Path dir, HttpsServer server, Duration timeout,
-            int maxInFlight, Duration jwksCacheTtl) throws IOException {
         Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
-        return reverseBProperties(store, secret, base(server), timeout, maxInFlight, jwksCacheTtl);
+        return reverseBProperties(store, secret, base(server), timeout, maxInFlight);
     }
 
     /** A reverse&times;B properties record (full AD-34 TLS lists, yml-template oidc budgets). */
     private static ProxyCompanionProperties reverseBProperties(Path idpStore, Path secretPath,
-            String providerUrl, Duration timeout, int maxInFlight, Duration jwksCacheTtl) {
+            String providerUrl, Duration timeout, int maxInFlight) {
         return new ProxyCompanionProperties(
                 new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
@@ -1061,7 +856,7 @@ class RopcBindCredentialVerifierTest {
                                 URI.create(providerUrl), "smpp-client-confidential", secretPath.toString(),
                                 new ProxyCompanionProperties.TrustStore(idpStore.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                timeout, maxInFlight, jwksCacheTtl)), null));
+                                timeout, maxInFlight)), null));
     }
 
     /**
@@ -1069,11 +864,13 @@ class RopcBindCredentialVerifierTest {
      * (the AC7 equality check) with the Keycloak realm endpoint layout, and {@code tokenEndpointBase}
      * (default: own base) controlling where the discovered {@code token_endpoint} points — a dead-port
      * base yields an unreachable token endpoint with a well-formed discovery document. The optional
-     * {@code jwksHandler} serves the discovered {@code jwks_uri} (the T4 refresh target) and the
-     * optional {@code introHandler} the discovered {@code introspection_endpoint} — a field the
-     * adapter no longer reads (Story 3.4 T1, 2026-08-27), still advertised by the document below
-     * DELIBERATELY so the D6 pin's never-hit assertion bites against a reachable, allowing
-     * endpoint. The CALLER owns {@code stop(0)} — always in a {@code finally}.
+     * {@code keySetHandler} and {@code introHandler} serve the two RETIRED discovery fields —
+     * {@code jwks_uri} (removed with local JWT verification, Story 3.4 T2) and
+     * {@code introspection_endpoint} (removed with the opaque-token arm, Story 3.4 T1) — which the
+     * document below still advertises DELIBERATELY: the never-hit pins need a reachable, allowing
+     * endpoint, and every boot through this stand-in also proves omission-tolerance is not required
+     * (extra fields are ignored, absent fields are accepted). The CALLER owns {@code stop(0)} —
+     * always in a {@code finally}.
      */
     private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase)
             throws IOException {
@@ -1081,19 +878,14 @@ class RopcBindCredentialVerifierTest {
     }
 
     private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase,
-            @Nullable HttpHandler jwksHandler) throws IOException {
-        return standInIdP(tokenHandler, tokenEndpointBase, jwksHandler, null);
-    }
-
-    private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase,
-            @Nullable HttpHandler jwksHandler, @Nullable HttpHandler introHandler) throws IOException {
+            @Nullable HttpHandler keySetHandler, @Nullable HttpHandler introHandler) throws IOException {
         HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(OidcDiscoveryStandIn.fixtureServerSslContext()));
         // A real pool, not the default single dispatcher thread: several tests park ONE handler on a
-        // latch while OTHER contexts must keep serving (the JWKS refresh during a held bind, the
-        // token call during a gated refresh) — with the default executor the parked handler starves
-        // them all. Daemon threads so a parked handler can never hold the test JVM open (stop(0)
-        // does not shut an explicit executor down); latches are still released in finally regardless.
+        // latch while OTHER contexts must keep serving — with the default executor the parked
+        // handler starves them all. Daemon threads so a parked handler can never hold the test JVM
+        // open (stop(0) does not shut an explicit executor down); latches are still released in
+        // finally regardless.
         server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(8, r -> {
             Thread t = new Thread(r, "stand-in-idp");
             t.setDaemon(true);
@@ -1113,8 +905,8 @@ class RopcBindCredentialVerifierTest {
             }
         });
         server.createContext(TOKEN_PATH, tokenHandler);
-        if (jwksHandler != null) {
-            server.createContext(JWKS_PATH, jwksHandler);
+        if (keySetHandler != null) {
+            server.createContext(JWKS_PATH, keySetHandler);
         }
         if (introHandler != null) {
             server.createContext(INTROSPECTION_PATH, introHandler);
@@ -1123,7 +915,7 @@ class RopcBindCredentialVerifierTest {
         return server;
     }
 
-    /** A stand-in IdP issuing an OPAQUE access token; {@code introHandler} serves round 2 (T5). */
+    /** A stand-in IdP issuing an OPAQUE access token; {@code introHandler} serves the retired round 2. */
     private static HttpsServer opaqueIdP(HttpHandler introHandler) throws IOException {
         return standInIdP(
                 ex -> {
@@ -1135,16 +927,16 @@ class RopcBindCredentialVerifierTest {
                 introHandler);
     }
 
-    /** A counting introspection handler answering {@code status}/{@code body} on every hit. */
-    private static HttpHandler introHandler(AtomicInteger hits, int status, String body) {
+    /** A counting handler answering {@code status}/{@code body} on every hit (the never-hit pins). */
+    private static HttpHandler countingHandler(AtomicInteger hits) {
         return ex -> {
             hits.incrementAndGet();
             drain(ex);
-            respond(ex, status, body);
+            respond(ex, 200, "{\"keys\":[],\"active\":true}");   // would satisfy either retired arm
         };
     }
 
-    // ── AC3 fixtures: forged JWTs + the stand-in JWKS endpoint ─────────────────────────────────
+    // ── AC3 fixtures: forged JWTs (the token body is what matters now — content is never parsed) ──
 
     /** A fresh 2048-bit RSA signing key with the given {@code kid} (the forged-token workhorse). */
     private static RSAKey key(String kid) {
@@ -1156,32 +948,20 @@ class RopcBindCredentialVerifierTest {
     }
 
     /**
-     * A stand-in IdP that issues a VALID, properly-signed JWT (kid = the signing key's own) whose
-     * claims carry the serving server's issuer, against a JWKS endpoint serving {@code jwksKey}'s
-     * public half (default: the signing key's — pass a different key to forge a wrong signature).
+     * A stand-in IdP that issues a properly-signed JWT (kid = the signing key's own, typ
+     * {@code JWT}) whose claims carry the serving server's issuer — a shape-faithful happy-path
+     * provider. Since Story 3.4 T2 the adapter never parses the token, but the fixture keeps
+     * minting real JWTs so the Allow rows exercise exactly what a pinned Keycloak serves. No
+     * key-set endpoint is registered — none may be fetched.
      */
-    private static HttpsServer jwtIdP(RSAKey signingKey, @Nullable JOSEObjectType typ,
-            @Nullable RSAKey jwksKey) throws IOException {
+    private static HttpsServer jwtIdP(RSAKey signingKey) throws IOException {
         return standInIdP(
                 ex -> {
                     drain(ex);
-                    respond(ex, 200, tokenBody(jwt(signingKey, signingKey.getKeyID(), typ,
-                            b -> validClaims(b, issuerOf(ex)))));
+                    respond(ex, 200, tokenBody(jwt(signingKey, signingKey.getKeyID(),
+                            new JOSEObjectType("JWT"), b -> validClaims(b, issuerOf(ex)))));
                 },
-                null,
-                jwksHandler(jwksKey == null ? signingKey : jwksKey));
-    }
-
-    /** Serves {@code key}'s public half as the JWKS document (what a real provider publishes). */
-    private static HttpHandler jwksHandler(RSAKey key) {
-        return ex -> {
-            drain(ex);
-            respond(ex, 200, jwksBody(key));
-        };
-    }
-
-    private static String jwksBody(RSAKey key) {
-        return JSONObjectUtils.toJSONString(new JWKSet(List.of(key.toPublicJWK())).toJSONObject(true));
+                null);
     }
 
     /**
@@ -1222,12 +1002,7 @@ class RopcBindCredentialVerifierTest {
         return "{\"access_token\":\"" + accessToken + "\",\"token_type\":\"Bearer\",\"expires_in\":300}";
     }
 
-    /** Polls until the adapter's background initial JWKS refresh has landed (the bind-ready gate). */
-    private static void awaitCachePopulated(RopcBindCredentialVerifier adapter) {
-        awaitCondition("the adapter's initial JWKS refresh", () -> adapter.jwksCache().current() != null);
-    }
-
-    /** Polls {@code condition} every 10ms up to 5s — background refreshes land on their own scheduler. */
+    /** Polls {@code condition} every 10ms up to 5s — asynchronous effects land on their own threads. */
     private static void awaitCondition(String what, java.util.function.BooleanSupplier condition) {
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         while (System.nanoTime() < deadline) {
@@ -1272,7 +1047,7 @@ class RopcBindCredentialVerifierTest {
      * exchange (a {@code CancellationException} in its cause chain is the abort proof); (c) the
      * response {@code byte[]} BY REFERENCE — the handler-wrapping {@code thenApply} passes the
      * same array the adapter's {@code response.body()} returns, i.e. the access-token bytes the
-     * wipe must clear. JWKS fetches flow through too (GET, no body) — callers filter by URI path.
+     * wipe must clear. Callers filter recorded exchanges by URI path.
      */
     private static final class RecordingHttpClient extends HttpClient {
 
@@ -1293,7 +1068,7 @@ class RopcBindCredentialVerifierTest {
 
         @Override
         public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, BodyHandler<T> handler) {
-            byte[] body = null;   // null for body-less exchanges (the JWKS GET)
+            byte[] body = null;   // null for body-less exchanges (GETs carry no form)
             if (request.bodyPublisher().orElse(null)
                     instanceof RopcBindCredentialVerifier.FormPublisher publisher) {
                 body = publisher.buffer();   // the adapter's exact form array, by reference
@@ -1405,7 +1180,7 @@ class RopcBindCredentialVerifierTest {
         /** One recorded adapter exchange: the exact request form, the wire future, the response body. */
         private static final class Exchange {
             final URI uri;
-            final byte[] requestBody;   // null for body-less exchanges (the JWKS GET)
+            final byte[] requestBody;   // null for body-less exchanges (GETs carry no form)
             final AtomicReference<byte[]> responseBody = new AtomicReference<>();
             volatile CompletableFuture<?> future;
 

@@ -26,7 +26,8 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
 
 /**
  * Story 3.2 T2 (AC7) — the IdP client {@link SSLContext} factory: the TLS underpinning of the
- * proxy&rarr;provider link (discovery now; the ROPC token/JWKS calls from T3 on).
+ * proxy&rarr;provider link (discovery now; the ROPC token call from T3 on — the sole trust anchor
+ * since local JWT verification was removed, Story 3.4 T2, 2026-08-27).
  * Every <b>reverse</b> cell's {@code companion.reverse.mode-*.oidc.trust-store} is loaded at bean
  * initialization at the full AD-13 depth &mdash; the 5-state PKIX load the T1 config validator
  * deliberately defers here (user amendment 2, 2026-08-18): a bad store (wrong format, wrong

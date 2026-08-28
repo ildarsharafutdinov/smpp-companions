@@ -228,8 +228,7 @@ class DirectMemoryBudgetStartupCheckTest {
                         "companion.reverse.mode-b.oidc.trust-store.path=" + idpTrustStore,
                         "companion.reverse.mode-b.oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
                         "companion.reverse.mode-b.oidc.timeout=4s",
-                        "companion.reverse.mode-b.oidc.max-in-flight=64",
-                        "companion.reverse.mode-b.oidc.jwks-cache-ttl=5m");
+                        "companion.reverse.mode-b.oidc.max-in-flight=64");
     }
 
     /**

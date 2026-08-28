@@ -109,8 +109,9 @@ public final class OidcDiscoveryStandIn {
     /**
      * Minimal but shape-faithful discovery doc; endpoints mirror the Keycloak realm layout. The
      * 3.2-era {@code introspection_endpoint} field was removed with the RFC 7662 arm (Story 3.4
-     * T1, 2026-08-27) — every boot through this stand-in now also proves a document omitting the
-     * retired field is ACCEPTED.
+     * T1, 2026-08-27) and the {@code jwks_uri} field with local JWT verification (Story 3.4 T2,
+     * same day) — every boot through this stand-in now also proves a document omitting both
+     * retired fields is ACCEPTED (the requirement is issuer + token endpoint only).
      */
     private static String discoveryDocument(String base) {
         String realm = base + "/realms/smpp-companions/protocol/openid-connect";
@@ -118,10 +119,9 @@ public final class OidcDiscoveryStandIn {
                 {
                   "issuer": "%s",
                   "token_endpoint": "%s/token",
-                  "jwks_uri": "%s/certs",
                   "grant_types_supported": ["password", "authorization_code", "client_credentials", "refresh_token"]
                 }
-                """.formatted(base, realm, realm);
+                """.formatted(base, realm);
     }
 
     /**

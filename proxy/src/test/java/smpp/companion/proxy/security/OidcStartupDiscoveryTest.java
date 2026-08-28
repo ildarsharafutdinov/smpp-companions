@@ -73,10 +73,10 @@ class OidcStartupDiscoveryTest {
                 .isEqualTo(standIn);
         String realm = standIn + "/realms/smpp-companions/protocol/openid-connect";
         assertThat(metadata.tokenEndpoint()).isEqualTo(URI.create(realm + "/token"));
-        assertThat(metadata.jwksUri()).isEqualTo(URI.create(realm + "/certs"));
-        // Story 3.4 T1 (2026-08-27): the stand-in's document no longer carries the retired
-        // introspection_endpoint field — reaching these assertions IS the omission-accepted pin
-        // (the field-completeness requirement shrank with the RFC 7662 arm).
+        // Story 3.4 T1+T2 (2026-08-27): the stand-in's document no longer carries the retired
+        // introspection_endpoint OR jwks_uri fields — reaching these assertions IS the
+        // omission-accepted pin (the field-completeness requirement shrank to issuer + token
+        // endpoint with the removed adjudication arms).
     }
 
     @Test
@@ -146,10 +146,10 @@ class OidcStartupDiscoveryTest {
     @DisplayName("a discovery document omitting token_endpoint refuses startup (incomplete provider metadata)")
     void missingEndpointFieldRefusesStartup(@TempDir Path dir) throws IOException {
         // Field-completeness is checked BEFORE the issuer equality (both refusals are legitimate;
-        // this document isolates the missing-field arm by keeping the other fields well-formed).
+        // this document isolates the missing-field arm — the retired introspection/jwks fields are
+        // deliberately ABSENT too, so their omission is proven accepted on the same boot).
         HttpsServer server = adHocDiscoveryServer(200,
-                base -> "{\"issuer\": \"placeholder\", \"introspection_endpoint\": \"https://x/introspect\","
-                        + " \"jwks_uri\": \"https://x/certs\"}");
+                base -> "{\"issuer\": \"placeholder\"}");
         try {
             assertThatThrownBy(() -> discovery(reverseBProperties(idpStore(dir), base(server))))
                     .isInstanceOf(IllegalStateException.class)
@@ -242,14 +242,14 @@ class OidcStartupDiscoveryTest {
 
     /**
      * A minimal valid discovery document with the Keycloak realm endpoint layout. The retired
-     * {@code introspection_endpoint} field is not served (Story 3.4 T1, 2026-08-27) — like the
-     * shared stand-in's document, omission must stay ACCEPTED.
+     * {@code introspection_endpoint} (Story 3.4 T1) and {@code jwks_uri} (Story 3.4 T2) fields are
+     * not served (both 2026-08-27) — like the shared stand-in's document, omission must stay
+     * ACCEPTED (the requirement is issuer + token endpoint only).
      */
     private static String discoveryDoc(String issuer, String grants) {
         return """
-                {"issuer": "%s", "token_endpoint": "%s/token",
-                 "jwks_uri": "%s/certs", "grant_types_supported": [%s]}"""
-                .formatted(issuer, realmOf(issuer), realmOf(issuer), grants);
+                {"issuer": "%s", "token_endpoint": "%s/token", "grant_types_supported": [%s]}"""
+                .formatted(issuer, realmOf(issuer), grants);
     }
 
     private static String realmOf(String base) {
@@ -299,7 +299,7 @@ class OidcStartupDiscoveryTest {
                                 URI.create(providerUrl), "smpp-client-confidential", "/run/secrets/oidc-client-secret",
                                 new ProxyCompanionProperties.TrustStore(idpStore.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                Duration.ofSeconds(4), 64, Duration.ofMinutes(5))), null));
+                                Duration.ofSeconds(4), 64)), null));
     }
 
     /** A forward×A properties record — no oidc node anywhere (AD-12 amended 2026-08-18). */
@@ -335,7 +335,6 @@ class OidcStartupDiscoveryTest {
                 "--companion.reverse.mode-b.oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
                 "--companion.reverse.mode-b.oidc.timeout=4s",
                 "--companion.reverse.mode-b.oidc.max-in-flight=64",
-                "--companion.reverse.mode-b.oidc.jwks-cache-ttl=5m",
                 "--companion.memory.max-inbound-depth=1",
                 "--companion.memory.concurrent-pairs=1",
                 "--companion.memory.safety-factor=1.0",

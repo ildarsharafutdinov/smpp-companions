@@ -105,16 +105,19 @@ companion:
   #       client-secret-path: /run/secrets/oidc-client-secret   # sole provider client auth (AD-18; the
   #                                  # RFC 8705 client-mtls-keystore arm was removed pre-release, 2026-08-19)
   #       trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit }   # never cacerts (AD-13)
-  #       # The three adapter budgets (required keys; values below are the documented defaults):
+  #       # The two adapter budgets (required keys; values below are the documented defaults):
   #       timeout: 4s               # OIDC_TIMEOUT: per provider call, keep within 2s..5s (PERF-3) and
   #                                  # <= companion.bind.adjudication-deadline — not validated, an operator contract
   #       max-in-flight: 64         # concurrent-adjudication admission cap (AD-28(4)); saturated -> fail-closed
   #                                  # DenyIndeterminate WITHOUT a wire call; a rejection threshold, not a queue
-  #       jwks-cache-ttl: 5m        # cached-JWKS TTL before background refresh (AD-28(2))
   #       # JWT-only adjudication (Story 3.4 T1, 2026-08-27): the token endpoint must issue JWT access
   #       # tokens — an opaque (non-JWT) token response denies fail-closed (DenyIndeterminate + WARN, D6);
   #       # there is no second-arm fallback. Remediation: configure the client/realm to issue JWT
   #       # access tokens.
+  #       # TLS-as-sole-trust-anchor (Story 3.4 T2, 2026-08-27): the provider link is the sole trust
+  #       # anchor — no local JWT signature verification, no cached provider keys. The former third
+  #       # budget key (the key-cache TTL) is REMOVED; a config still carrying it refuses startup
+  #       # (ignoreUnknownFields=false, and the binder's unknown-field error names it — loud).
   #   mode-b:                       # PLAINTEXT internet leg, direct client->reverse (no forward proxy);
   #                                 # opt-in ack REQUIRED to start (SEC-052) — still adjudicates ("plaintext+ROPC")
   #     smsc: { host: smsc.carrier.example, port: 2775 }
@@ -122,7 +125,7 @@ companion:
   #     oidc: { provider-url: https://idp.example.com/realms/smpp-companions, client-id: smpp-client-confidential,
   #             client-secret-path: /run/secrets/oidc-client-secret,
   #             trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit },
-  #             timeout: 4s, max-in-flight: 64, jwks-cache-ttl: 5m }
+  #             timeout: 4s, max-in-flight: 64 }
   #   mode-c:                       # internet leg, mTLS listener = server cert + trust store REQUIREing the
   #                                 # forward's per-instance client cert (AD-13: REQUIRE never WANT)
   #     smsc: { host: smsc.carrier.example, port: 2775 }
@@ -131,4 +134,4 @@ companion:
   #     oidc: { provider-url: https://idp.example.com/realms/smpp-companions, client-id: smpp-client-confidential,
   #             client-secret-path: /run/secrets/oidc-client-secret,
   #             trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit },
-  #             timeout: 4s, max-in-flight: 64, jwks-cache-ttl: 5m }
+  #             timeout: 4s, max-in-flight: 64 }

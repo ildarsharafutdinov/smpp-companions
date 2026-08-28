@@ -128,9 +128,11 @@ public final class TestCompanionConfigs {
      * discovery stand-in (its issuer echoes its base URL — what the T2 startup check requires);
      * provider client auth is the required client_secret arm (the RFC 8705 mTLS arm was removed
      * 2026-08-19); the IdP trust store anchors the fixture CA (which
-     * signed the stand-in's server cert, so the config stays valid from T2 on). The three budget keys
+     * signed the stand-in's server cert, so the config stays valid from T2 on). The two budget keys
      * are REQUIRED — stated explicitly at the yml-template defaults (the
      * companion.bind.adjudication-deadline T7 pattern: runner boots don't load application.yml).
+     * (2026-08-27, Story 3.4 T2: the third former budget key — the key-cache TTL — was removed
+     * with local JWT verification; configs here no longer carry it.)
      * The secret file carries REAL content (T7): full-app boots construct the ROPC adapter bean,
      * which loads it — an empty file would refuse startup (SEC-060).
      */
@@ -143,7 +145,6 @@ public final class TestCompanionConfigs {
         props.put(b + ".oidc.trust-store.password", RelayTestFixtures.IDP_STORE_PASSWORD);
         props.put(b + ".oidc.timeout", "4s");
         props.put(b + ".oidc.max-in-flight", "64");
-        props.put(b + ".oidc.jwks-cache-ttl", "5m");
     }
 
     private void common() {

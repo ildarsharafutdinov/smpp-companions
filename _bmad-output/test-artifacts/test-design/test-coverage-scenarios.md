@@ -43,7 +43,7 @@
 ### 1.3 Critic-fix application map (what changed and why)
 
 **ADDED `[critic-fix: ADDED]` — closes P0/P1 coverage holes + NFR-evidence gaps:**
-- `SEC-093` — introspection HTTP-error DENY matrix (network-error / 3xx / 4xx≠default → DenyIndeterminate); closes the asymmetric R1 hole (ROPC path exhaustive, introspection path wasn't).
+- `SEC-093` — introspection HTTP-error DENY matrix (network-error / 3xx / 4xx≠default → DenyIndeterminate); closes the asymmetric R1 hole (ROPC path exhaustive, introspection path wasn't). *(Both SEC-013..019 + SEC-093 were later RETIRED with the introspection arm itself — Story 3.4 T1, 2026-08-27; see §4.2.)*
 - `SEC-094` — JWT/ROPC no-verdict-cache focused unit (same `BindCredential` twice → token endpoint hit twice); mirrors SEC-019 for the JWT path (AD-12 load-bearing invariant).
 - `SEC-095` — extend SEC-042 (type) + SEC-045 (sink-escape) to the OIDC `client_secret` for the non-mTLS confidential-client path.
 - `SEC-096` / `SEC-097` — R17 role×mode cells: reverse+A trust-store-missing → refuse; positive forward+A-starts-without-SMSC.
@@ -448,7 +448,7 @@ Level: integration · Priority: P2 · Risks: R32 · NFR: REL-3, PERF-3, SEC-1
 Level: integration · Priority: P1 · Risks: R11 · NFR: REL-1, REL-3, AD-8, AD-22
 - Technique: with N coupled pairs mid-splice, fire SIGTERM (Spring SmartLifecycle graceful-shutdown callback); enumerate the registry drain; assert in-flight PDUs either complete within the timeout or are cleanly closed (no partial frame), and registry size reaches 0.
 - Tooling: Spring Boot test slice exercising SmartLifecycle; in-JVM mock SMSC; capturing SpliceObserver; sequence-number integrity on the drained streams; injectable Clock to bound the drain window deterministically.
-- Notes: R11 relay/concurrency slice. AD-22 step 3 (drain in-flight splices by enumerating the registry). Defect class: shutdown closes channels mid-write, truncating a PDU (corrupt) or dropping a completed PDU silently (REL-1). The full AD-22 7-step ordering (JWKS/VT drain) is owned by the OBS/bootstrap area (OBS-016); this scenario owns the relay drain step. (OBS-015's re-assertion of this zero-drop invariant was dropped as duplicated; OBS-015 keeps only the e2e packaging/process-exit aspect.)
+- Notes: R11 relay/concurrency slice. AD-22 step 3 (drain in-flight splices by enumerating the registry). Defect class: shutdown closes channels mid-write, truncating a PDU (corrupt) or dropping a completed PDU silently (REL-1). The full AD-22 step ordering is owned by the OBS/bootstrap area (OBS-016 — 5 steps since the two JWKS drain steps died with local JWT verification, Story 3.4 T2, 2026-08-27); this scenario owns the relay drain step. (OBS-015's re-assertion of this zero-drop invariant was dropped as duplicated; OBS-015 keeps only the e2e packaging/process-exit aspect.)
 
 **RELAY-023** — ALLOW verdict racing SIGTERM does NOT couple: adjudication is cancelled (shutdownNow on the VT pool) fail-closed, flag never flips, legacy gets bind_resp error
 Level: integration · Priority: P1 · Risks: R11 · NFR: REL-3, FR-SEC-5, AD-11, AD-22, AD-28
@@ -483,8 +483,8 @@ The crown jewels. Owns the P0 set R1 (fail-closed enumeration, decomposed per-br
 **SEC-001** — Deny bind (DenyInvalid) when the ROPC token endpoint returns HTTP 401
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3, FR-AUTH-1
 - Technique: parametrized negative via the BindCredentialVerifier port; injected fake IdP HTTP returns 401; assert Verdict=DenyInvalid (definitive invalid credential).
-- Tooling: JUnit5 @ParameterizedTest + AssertJ; in-JVM fake OIDC HTTP (WireMock-equivalent) + fake JWKS source + injectable Clock.
-- Notes: Branch-1 of the exhaustive AD-11 matrix. DenyInvalid (not Indeterminate) because 401 is a definitive credential rejection; pin the subtype.
+- Tooling: JUnit5 @ParameterizedTest + AssertJ; in-JVM fake OIDC HTTP (WireMock-equivalent) + injectable Clock. *(The fake JWKS source clause died with local verification, Story 3.4 T2, 2026-08-27.)*
+- Notes: Branch-1 of the exhaustive AD-11 matrix. DenyInvalid (not Indeterminate) because 401 is a definitive credential rejection; pin the subtype. (The matrix's non-401 deny cause re-worded 2026-08-27, Story 3.4 T1+T2: not "fails local verification" but "is not a 200 + three-segment token".)
 
 **SEC-002** — Deny bind (DenyIndeterminate) when ROPC returns 200 with a non-JWT JSON body
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
@@ -506,6 +506,7 @@ Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: parametrized negative; fake IdP returns 200 with a structurally invalid JWT string (truncated/garbage); assert DenyIndeterminate, no exception escapes.
 - Tooling: JUnit5 + fake IdP HTTP + AssertJ; Nimbus parse failure absorbed by the adapter.
+- **Status (Story 3.4 T2, 2026-08-27): EXPECTATION INVERTED — re-pointed.** The adapter no longer parses token content: a three-segment-but-garbage token now yields `Allow` (pinned by `threeSegmentTokenIsNeverLocallyParsed`), and the deny this row wanted survives only for tokens that are NOT three-segment (the D6 arm, pinned by `opaqueTokenDeniesFailClosedWithoutAWireRound2`). Nimbus is no longer on the token path at all.
 
 **SEC-006** — Deny bind (DenyIndeterminate) when ROPC returns a 3xx redirect
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
@@ -537,48 +538,59 @@ Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 Level: unit · Priority: P0 · Risks: R1, R20 · NFR: FR-SEC-5, SEC-3
 - Technique: fake JWKS missing the token kid; assert immediate DenyIndeterminate, exactly one background refresh scheduled, the bind path performs zero synchronous refreshes (AD-11).
 - Tooling: JUnit5 + fake JWKS source (refresh-counting) + injectable Clock + AssertJ.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 
 **SEC-012** — Deny bind (DenyInvalid) on verdict/local-JWT disagreement (200 valid-looking JWT, local JWKS verification fails)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: fake IdP returns 200 + a JWT whose signature does not verify against cached JWKS; assert DenyInvalid (DENY always wins on defense-in-depth disagreement).
 - Tooling: JUnit5 + fake IdP HTTP + fake JWKS + AssertJ.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.** (This row's premise — a local verify that can disagree with the endpoint — is exactly what died.)
 
 ### 4.2 RFC 7662 introspection DENY matrix (AD-11, R1) — exhaustive per-branch
+
+*(Section RETIRED 2026-08-27, Story 3.4 T1 — the opaque-token introspection arm was removed from the production adapter (user-directed; spine AD-12 amendment). Every row below is structurally unimplementable in production: no second wire arm exists, and a non-JWT token response denies at the D6 arm. The AC8 ratification record and the test-tier `RopcSlice*` slice (own container) keep the historical path green.)*
 
 **SEC-013** — Deny opaque-token bind (DenyInvalid) when introspection returns active:false
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: parametrized negative via port; fake introspection endpoint returns 200 {"active":false}; assert DenyInvalid.
 - Tooling: JUnit5 + fake introspection HTTP + AssertJ.
 - Notes: Opaque-token RFC7662 path enumeration.
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 
 **SEC-014** — Deny opaque-token bind (DenyIndeterminate) when introspection returns non-JSON
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: fake introspection returns 200 text/plain; assert DenyIndeterminate.
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 - Tooling: JUnit5 + fake introspection HTTP + AssertJ.
 
 **SEC-015** — Deny opaque-token bind (DenyIndeterminate) when introspection 200 JSON omits the active field
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: fake introspection returns 200 {} (no active); assert DenyIndeterminate.
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 - Tooling: JUnit5 + fake introspection HTTP + AssertJ.
 
 **SEC-016** — Deny opaque-token bind (DenyIndeterminate) when introspection active is the wrong JSON type
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: parametrized across {"active":"true"}, {"active":1}, {"active":"yes"}; assert DenyIndeterminate (only boolean true accepts).
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 - Tooling: JUnit5 @ParameterizedTest + fake introspection HTTP + AssertJ.
 
 **SEC-017** — Deny opaque-token bind (DenyIndeterminate) when introspection returns 5xx
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: fake introspection returns 503; assert DenyIndeterminate.
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 - Tooling: JUnit5 + fake introspection HTTP + AssertJ.
 
 **SEC-018** — Deny opaque-token bind (DenyIndeterminate) on introspection timeout
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, PERF-3, SEC-3
 - Technique: injectable clock; introspection stalls past deadline; assert DenyIndeterminate.
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 - Tooling: JUnit5 + injectable Clock + fake introspection HTTP + AssertJ.
 
 **SEC-019** — Introspection verdict is never cached — a second identical opaque-token bind re-queries the IdP
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: issue the same opaque token twice via verify(); assert the introspection HTTP endpoint is hit twice (no verdict cache; mirrors the no-verdict-cache JWT rule).
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 - Tooling: JUnit5 + counting fake introspection HTTP + AssertJ.
 
 **SEC-093** `[critic-fix: ADDED]` — Introspection HTTP-failure DENY matrix (network-error / 3xx / 4xx≠default → DenyIndeterminate)
@@ -586,29 +598,35 @@ Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: parametrized negative via the BindCredentialVerifier port mirroring SEC-007/008/010 for the introspection path: (a) introspection network error (ConnectException / ConnectionResetException / EOF) → DenyIndeterminate; (b) 3xx redirect (302/307) → DenyIndeterminate (no redirect follow to an untrusted endpoint); (c) 4xx other than the active:false semantic (400/403/429) → DenyIndeterminate. Exception absorbed; no Nimbus/IO type crosses the port.
 - Tooling: JUnit5 @ParameterizedTest + AssertJ + fake introspection HTTP (WireMock-equivalent).
 - Notes: [critic-fix] Closes the asymmetric R1 P0 hole: the ROPC path (SEC-001..010) was exhaustively enumerated but the introspection path was missing network-error, 3xx, and 4xx branches that AD-11 explicitly names ('anything other than HTTP 200 + JSON + boolean active:true → DENY'). One missed branch = accept-on-indeterminate = the worst defect class.
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 
 **SEC-094** `[critic-fix: ADDED]` — JWT/ROPC no-verdict-cache: the same BindCredential re-hits the token endpoint (mirrors SEC-019 for the JWT path)
 Level: unit · Priority: P0 · Risks: R1, R8 · NFR: FR-SEC-5, SEC-3
-- Technique: issue the same BindCredential (same system_id + password) twice via verify(); assert the ROPC token endpoint is hit exactly twice (counting fake IdP) — proving no verdict cache on the JWT path. JWKS may be cached; the verdict is not. Mirrors SEC-019 (introspection).
+- Technique: issue the same BindCredential (same system_id + password) twice via verify(); assert the ROPC token endpoint is hit exactly twice (counting fake IdP) — proving no verdict cache on the JWT path. Mirrors SEC-019 (introspection). *("JWKS may be cached" clause died with the cache, Story 3.4 T2, 2026-08-27 — nothing is cached now.)*
 - Tooling: JUnit5 + counting fake IdP HTTP + AssertJ.
-- Notes: [critic-fix] AD-12 load-bearing invariant ('re-validate every bind; cache JWKS only'). The no-verdict-cache rule for the JWT path was asserted only by reference (SEC-019 covers introspection; PERF-015 only implies it by counting adjudications). A verdict cache on the JWT path = credential-bypass-equivalent hole.
+- Notes: [critic-fix] AD-12 load-bearing invariant ('re-validate every bind'; the 'cache JWKS only' qualifier died with the cache, Story 3.4 T2, 2026-08-27). The no-verdict-cache rule for the JWT path was asserted only by reference (SEC-019 covers introspection; PERF-015 only implies it by counting adjudications). A verdict cache on the JWT path = credential-bypass-equivalent hole.
 
 ### 4.3 JWT defense-in-depth (alg/kid/exp/nbf/iss/aud/sig) — R1
+
+*(Section RETIRED 2026-08-27, Story 3.4 T2 — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7). Every row below guards a verification that no longer exists; the only surviving token check is the structural three-segment gate (library-free), pinned by the two D7 successor rows noted per-entry.)*
 
 **SEC-020** — Reject JWT with alg=none (DenyInvalid)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3, SEC-4
 - Technique: spec-derived JWT vector with header {"alg":"none"} and no signature; assert DenyInvalid.
 - Tooling: JUnit5 + hand-crafted JWT vectors (independent of Nimbus generation) + AssertJ.
 - Notes: Oracle-independence (blind-spot 1): vectors are spec-derived, not generated by Nimbus.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 
 **SEC-021** — Reject JWT alg-confusion (RS256 token where HS256 is expected, and vice versa)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3, SEC-4
 - Technique: parametrized alg-confusion vectors (RS<->HS key confusion); assert DenyInvalid, the public key is never reinterpreted as an HMAC secret.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 - Tooling: JUnit5 + hand-crafted JWT vectors + Nimbus verify + AssertJ.
 
 **SEC-022** — Reject JWT kid path/key-injection (kid with traversal or referencing an attacker key)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3, SEC-4
 - Technique: vectors with kid containing '../', absolute paths, or a value not in JWKS; assert DenyIndeterminate and that no file/path lookup occurs on the kid.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 - Tooling: JUnit5 + crafted JWT vectors + fake JWKS + AssertJ.
 
 **SEC-023** — Reject JWT past exp with no false-accept across the configured skew window (injectable clock)
@@ -616,32 +634,37 @@ Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: injectable clock parametrized across exp boundary (just-before/just-after exp, at skew edge); assert DenyInvalid once exp passes, no late allow inside skew beyond the bound.
 - Tooling: JUnit5 @ParameterizedTest + injectable Clock + AssertJ.
 - Notes: Injectable clock (blind-spot 5) for time-based JWT adjudication. (Not TLS cert-path — see SEC-037.)
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 
 **SEC-024** — Reject JWT with nbf in the future with no false-accept (injectable clock)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: injectable clock parametrized across nbf boundary; assert DenyInvalid before nbf.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 - Tooling: JUnit5 @ParameterizedTest + injectable Clock + AssertJ.
 
 **SEC-025** — Reject JWT with iss mismatch (DenyInvalid)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: valid-signature JWT with wrong issuer claim; assert DenyInvalid.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 - Tooling: JUnit5 + crafted JWT vectors + AssertJ.
 
 **SEC-026** — Reject JWT with aud mismatch (DenyInvalid)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: valid-signature JWT with wrong audience claim; assert DenyInvalid.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 - Tooling: JUnit5 + crafted JWT vectors + AssertJ.
 
 **SEC-027** — Reject JWT with a tampered signature (DenyInvalid)
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3, SEC-4
 - Technique: take a valid JWT, flip a payload byte, re-encode; assert DenyInvalid (signature verification failure).
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — local JWT signature/claim verification was removed from the production adapter (user-directed, TLS-as-sole-trust-anchor, spine AD-12/D7; the proxy is the issued token's only consumer). No production code path examines token content past the three-segment count, so this row is structurally unimplementable; the successor pins are `RopcBindCredentialVerifierTest.jwtVerdictDerivesFromTheEndpointAlone` + `threeSegmentTokenIsNeverLocallyParsed`.**
 - Tooling: JUnit5 + crafted JWT vectors + AssertJ.
 
 ### 4.4 ROPC/IdP happy-path interop against real Keycloak 26.x (R2 — the gate-blocker)
 
 **SEC-028** — ROPC JWT happy path against a real Keycloak 26.x yields Allow, discards the token, and relays the ORIGINAL bind
 Level: integration · Priority: P0 · Risks: R2 · NFR: SEC-3, FR-AUTH-1, FR-SEC-1, PRIV-1
-- Technique: end-to-end AD-12 path 1: ROPC -> valid JWT -> local JWKS verify -> Allow; assert the token is not relayed and the original bind PDU reaches the SMSC unchanged.
+- Technique: end-to-end AD-12 path 1: ROPC -> 200 + three-segment JWT -> Allow (re-pointed 2026-08-27, Story 3.4 T2: the local-JWKS-verify step died; the structural gate is the only token check); assert the token is not relayed and the original bind PDU reaches the SMSC unchanged.
 - Tooling: Testcontainers Keycloak 26.x (or equivalent real IdP) + in-JVM mock SMSC capturing the forwarded bind + AssertJ.
 - Notes: Confirms the ROPC happy path on the most fragile dependency; aligns with Story 3.1 viability gate. Nightly tier.
 
@@ -649,6 +672,7 @@ Level: integration · Priority: P0 · Risks: R2 · NFR: SEC-3, FR-AUTH-1, FR-SEC
 Level: integration · Priority: P0 · Risks: R2 · NFR: SEC-3, FR-AUTH-1
 - Technique: AD-12 path 2: configure realm to issue opaque tokens; assert introspection active:true -> Allow.
 - Tooling: Testcontainers Keycloak 26.x + AssertJ.
+- **Status (Story 3.4 T1, 2026-08-27): RETIRED — the RFC 7662 introspection arm was removed from the production adapter (user-directed, JWT-only adjudication; spine AD-12 amendment). No production code path can exercise this row; the successor pin is `RopcBindCredentialVerifierTest.opaqueTokenDeniesFailClosedWithoutAWireRound2` (a non-JWT token response denies fail-closed with zero wire round-2). The test-tier `RopcSlice*` slice keeps the historical ratification green in its own container.**
 
 **SEC-030** — Provider authentication via mTLS RFC 8705 (not client_secret) reaches the token endpoint
 Level: integration · Priority: P0 · Risks: R2 · NFR: SEC-3, FR-AUTH-1, FR-AUTH-4
@@ -742,7 +766,7 @@ Level: unit · Priority: P0 · Risks: R8 · NFR: PRIV-1, FR-SEC-1
 - Tooling: JUnit5 @ParameterizedTest + AssertJ; deterministic via fake verifier + injectable Clock.
 - Notes: This is the deterministic zeroization evidence. SEC-048/049 are best-effort fragility guards that DEPEND on this for the actual guarantee.
 
-**SEC-047** — Token byte[] is discarded and zeroized after local verify; the ORIGINAL bind (not the token) is forwarded to the SMSC
+**SEC-047** — Token byte[] is discarded and zeroized; the ORIGINAL bind (not the token) is forwarded to the SMSC *(title re-worded 2026-08-27, Story 3.4 T2 — "after local verify" died with local verification; the discard/zeroize/relay-original behavior is unchanged)*
 Level: integration · Priority: P0 · Risks: R8, R2 · NFR: PRIV-1, FR-SEC-1
 - Technique: after an Allow, assert the token byte[] is zeroed and the bytes forwarded to the SMSC are the original bind_transceiver PDU (system_id/password preserved end-to-end, no token on the wire).
 - Tooling: in-JVM mock SMSC (captures forwarded PDU) + fake IdP + AssertJ.
@@ -1132,11 +1156,11 @@ Level: e2e · Priority: P1 · Risks: R11, R5 · NFR: REL-3, REL-1
 - Tooling: JUnit5 + in-JVM real socket pair + in-JVM mock SMSC on codec; capturing SpliceObserver; Spring Boot test lifecycle; injectable Clock to bound the timeout deterministically; AssertJ on the sequence ledger.
 - Notes: [critic-fix] SCOPE-REDUCED — keeps ONLY the e2e packaging / process-exit-within-timeout aspect for Epic-5 acceptance. The re-assertion of splice zero-drop was DROPPED as duplicated (owned by RELAY-022's isolated relay-drain invariant: no-partial-frame, registry→0). The packaged-shape SIGTERM→PID-1 propagation is R34 (DEPLOY-006); this is the in-JVM end-to-end.
 
-**OBS-016** — AD-22 7-step shutdown macro-ordering holds (acceptor stop before in-flight DENY before splice drain before exit)
+**OBS-016** — AD-22 shutdown macro-ordering holds (acceptor stop before in-flight DENY before splice drain before exit) *(re-worded 2026-08-27, Story 3.4 T2: 7 steps → 5 — the jwks-refresh-stopped and jwks-cache-closed events died with local JWT verification; spine AD-22 amendment)*
 Level: integration · Priority: P1 · Risks: R11 · NFR: REL-3
-- Technique: phase-ordering probe: install a capturing lifecycle listener that records an ordered event list (acceptor-stopped, adjudications-denied, drain-started, drain-completed, jwks-refresh-stopped, jwks-cache-closed, vt-drained, exit); trigger SIGTERM; assert the recorded sequence matches the AD-22 order pairwise (each step's first timestamp ≤ next step's first timestamp).
-- Tooling: JUnit5 + Spring Boot SmartLifecycle test; capturing shutdown orchestrator listener; fake verifier/routing/JWKS; AssertJ on ordered event list.
-- Notes: Macro ordering. The load-bearing JWKS refresh-then-close sub-ordering is asserted separately in OBS-018 (sub-case, most-missed). Pairwise-timestamp assertion avoids over-constraining concurrent steps.
+- Technique: phase-ordering probe: install a capturing lifecycle listener that records an ordered event list (acceptor-stopped, adjudications-denied, drain-started, drain-completed, vt-drained, exit — the jwks-refresh-stopped/jwks-cache-closed events died with local JWT verification, Story 3.4 T2, 2026-08-27); trigger SIGTERM; assert the recorded sequence matches the AD-22 order pairwise (each step's first timestamp ≤ next step's first timestamp).
+- Tooling: JUnit5 + Spring Boot SmartLifecycle test; capturing shutdown orchestrator listener; fake verifier/routing; AssertJ on ordered event list.
+- Notes: Macro ordering. Pairwise-timestamp assertion avoids over-constraining concurrent steps. *(The JWKS refresh-then-close sub-ordering note died with the cache, Story 3.4 T2, 2026-08-27 — OBS-018 retired; see below.)*
 
 **OBS-017** — A new bind attempted after the acceptor stops is rejected/DENYed (no new session accepted during shutdown)
 Level: integration · Priority: P1 · Risks: R11, R1 · NFR: REL-3, FR-SEC-5
@@ -1149,6 +1173,7 @@ Level: integration · Priority: P1 · Risks: R11, R20 · NFR: REL-3
 - Technique: micro-ordering seam: inject a fake JWKS cache whose close() records a nano-time stamp + a flag, and a fake refresh ScheduledExecutorService whose shutdown()+awaitTermination() records a stamp; trigger SIGTERM; assert refresh-shutdown timestamp < cache-close timestamp and that no refresh task runs after close(); assert cache.close() is invoked exactly once.
 - Tooling: JUnit5 + fake AtomicReference<JwkSet> cache wrapper + fake ScheduledExecutorService; injectable Clock for deterministic timestamps; AssertJ ordering.
 - Notes: AD-22 steps 4→5 — the subtle ordering the register calls out. The AD-8 cache exposes close() precisely for this; exploit that seam.
+- **Status (Story 3.4 T2, 2026-08-27): RETIRED — the JWKS cache, its refresh executor, and the AD-22 steps 4→5 ordering all died with local JWT verification (spine AD-22/AD-28(2) amendments). `AdjudicationLifecycleTest`'s stop-body pins now cover deny-in-flight → client/secret release only.**
 
 **OBS-019** — An in-flight adjudication at SIGTERM is DENYed fail-closed and its token discarded (no partial-verdict Allow race)
 Level: integration · Priority: P1 · Risks: R11, R1, R8 · NFR: REL-3, FR-SEC-5, PRIV-1

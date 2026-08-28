@@ -83,7 +83,7 @@ context: []
 
 **Execution:**
 - [x] T1 — JWT-only adjudication: delete the RFC 7662 arm (`introspect`/`mapIntrospection`/`introspectRequest`, the discovery `introspection_endpoint` requirement, the metadata component, stand-in/fixture serving); non-JWT token response → the D6 fail-closed arm; sweep yml comments + matrix rows; register the policy in the discovery/probe docs surface. (AC1)
-- [ ] T2 — TLS-as-sole-trust-anchor: delete `verifyJwt`'s signature/kid/typ verification and `JwksCache` (class + refresh VT + `oidc.jwks-cache-ttl` knob + `jwks_uri` requirement); keep the structural JWT-ness gate per D7; spine amendments AD-12 / AD-8(c) / AD-28(2) + epics 4-path + register + TEA rows, dated markers + `.memlog.md` entries (rationale: owner 2026-08-27 — the proxy is the token's only consumer; the HTTPS client-authenticated provider link is the trust anchor). (AC2, AC3)
+- [x] T2 — TLS-as-sole-trust-anchor: delete `verifyJwt`'s signature/kid/typ verification and `JwksCache` (class + refresh VT + `oidc.jwks-cache-ttl` knob + `jwks_uri` requirement); keep the structural JWT-ness gate per D7; spine amendments AD-12 / AD-8(c) / AD-28(2) + epics 4-path + register + TEA rows, dated markers + `.memlog.md` entries (rationale: owner 2026-08-27 — the proxy is the token's only consumer; the HTTPS client-authenticated provider link is the trust anchor). (AC2, AC3)
 - [ ] T3 — THE UMBRELLA DECISION, FIRST among the refactoring tasks (owner checkpoint): state-manager variant (single manager vs per-role managers — one fork with the interceptor role-split at manager altitude), mechanics (sealed decision returned to the caller vs executor-facing port), and state-absorption scope (`pendingVerdict`/`pendingPassword`? `EgressLeg.answered`? `CLOSE_*` attributes?). Recorded as a dated `.memlog.md` `(decision)` entry + Design Notes addendum BEFORE T5/T6 execute. (AC4)
 - [ ] T4 — Couple-vocabulary unification: code identifiers to `couple`-variants (`spliced()` → `coupled()`, `flipSpliced()` → successor named once with the T3 state names); relay prose + test names/assertion strings swept; spine-sweep scope per D1's resolution; full deliberate re-targeting list. (AC5)
 - [ ] T5 — `RelayHandler` direction-split: two per-leg classes over one shared post-couple splice component; flip structural-by-type; `CLOSE_*` key strategy per D5; `RelayPipelineInitializersTest` re-pointed; AD-25 dated spine marker + memlog entry. (AC6)
@@ -153,6 +153,7 @@ context: []
 ### Agent Model Used
 
 GLM (claude-code CLI), 2026-08-27 — T1 execution.
+GLM (claude-code CLI), 2026-08-28 — T2 execution (main + test halves + the AD-5/8/10/12/28 spine markers landed in the 2026-08-27 tree; this session completed the residual spine sweep, the epics/TEA/register propagation, the memlog entry, the gates, and the bookkeeping).
 
 ### Debug Log References
 
@@ -160,6 +161,14 @@ GLM (claude-code CLI), 2026-08-27 — T1 execution.
 - XML counts: **340 tests, 0 failed, 0 errors, 0 skipped** (49 suites) — baseline 352 − 12 retired + 0 added-retirement + 1 new D6 pin = 340. ✓
 - `grep -rn "7662\|introspect" proxy/src/main` → empty (removal completeness, src/main half of the gate; the `jwks|Jwks` half remains for T2).
 - New D6 row confirmed executed in `TEST-…RopcBindCredentialVerifierTest.xml`.
+
+**T2 (2026-08-28):**
+
+- `./gradlew clean build :buildSrc:test` → BUILD SUCCESSFUL (2m 23s), Docker daemon up (Testcontainers Keycloak).
+- XML counts: **324 tests, 0 failed, 0 errors, 0 skipped** (48 suites) — 340 post-T1 − 16, every delta enumerated in the T2 Completion Notes. ✓
+- `grep -rn "7662\|introspect\|jwks\|Jwks" proxy/src/main` → **empty** (the removal-completeness gate T1 left half-open is now fully green).
+- Spine post-sweep grep: zero JWKS/introspection sites without an amendment marker (only intended markers + `RopcSlice`-family historical references remain).
+- `git diff -- proxy/src | grep ^+ | grep -c "FIXME\|@Disabled"` → 0; `grep -rn "MUTATED" proxy/src` → empty.
 
 ### Completion Notes List
 
@@ -170,6 +179,15 @@ GLM (claude-code CLI), 2026-08-27 — T1 execution.
 - **Discovery completeness shrink pin:** the shared `OidcDiscoveryStandIn` and the `OidcStartupDiscoveryTest` doc template stopped serving `introspection_endpoint` — every happy-path discovery row now also proves omission-ACCEPTED (comment pinned at the assertion site); `metadata.introspectionEndpoint()` assertion deleted with the component. `missingEndpointFieldRefusesStartup` unchanged (still omits `token_endpoint`, still refuses).
 - **Deliberately UNCHANGED (dispositions):** the `RopcSlice*` family + `KeycloakFixture.INTROSPECTION_ENDPOINT` — the slice is the historical-ratification artifact (the 2026-08-19 mTLS removal set the precedent: product-arm removals leave the slice; `RopcSliceLiveTest` path 2 keeps the 7662 ratification, its own container). `AdjudicationLifecycleTest`'s embedded discovery doc still serves `introspection_endpoint` (ignored field, zero behavioral effect) — its doc line carries `jwks_uri` too and is rewritten wholesale by T2; deferring avoids double-churn. The ad-hoc `standInIdP` fixture doc KEEPS advertising the endpoint deliberately (the D6 never-hit pin needs a reachable, allowing target).
 - `jwks`/`Jwks` references intentionally survive everywhere (JwksCache, knob, `jwks_uri` requirement) — T2's removal, not T1's.
+
+**T2 — TLS-as-sole-trust-anchor (2026-08-28; code halves dated 2026-08-27 in-tree):**
+
+- **Main half (2026-08-27 tree):** `verifyJwt` deleted with its Nimbus JOSE/JWT imports, `CLAIM_SKEW`, `EXPECTED_TYP`, and the `jwks` field — the dispatch now returns `Allow` directly past the three-segment gate (D7: content past the segment count is never parsed, no library on the token path); `JwksCache` deleted whole (class + AD-28(2) refresh VT); `OidcStartupDiscovery` drops the `jwks_uri` requirement + metadata component (requirement = issuer + token endpoint, both still HTTPS-fail-fast); `ProxyCompanionProperties.Oidc` loses `jwksCacheTtl` + its `@NotNull`/`@DurationMin` messages (HV import pruned); `close()` loses the `jwks.close()` step — the AD-22 stop body is deny-in-flight → release client + zeroize secret; `application.yml` two-budget template + T2 policy block; `AdjudicationLifecycle`/`IdpSslContextFactory`/`Verdict` javadoc sweeps.
+- **Stale-key AC (AC2):** new `ac8_staleKeyCacheTtlKeyRefuses` binds the formerly-valid `jwks-cache-ttl: 5m` and asserts refusal + the key named in the message (the `amendment_strayForwardOidcKeyRefuses` pattern) — retirement is loud, `ignoreUnknownFields=false`.
+- **Test deltas (enumerated, AC10):** `JwksCacheTest` **−7 rows** (suite deleted with the class: initial-populate, retain-on-failed-refresh, whole-swap, empty-set-no-swap, periodic, close-stops-scheduler, non-positive-TTL-refusal); `RopcBindCredentialVerifierTest` 31 → 24 — retired nine verify-path rows (defense-in-depth pass; typ absent; typ unexpected; kid-miss + background refresh; wrong signer; claim failures; cold-cache; saturation-vs-refresh starvation; malformed-JWT dispatch), added **two D7 pins**: `jwtVerdictDerivesFromTheEndpointAlone` (a 3-segment token with a *hostile* signature and wrong claims must `Allow` — the verdict is provably the endpoint's, not a local check's) and `threeSegmentTokenIsNeverLocallyParsed` (3-segment garbage `Allow`s; the D6 deny fires only off the segment count); `CompanionConfigMatrixTest` — `ac8_absentOidcBudgetKeyRefuses` ValueSource 3→2 (−1 execution), `ac8_oidcJwksCacheTtlNonPositiveRefuses` retired (−2 executions), `ac8_staleKeyCacheTtlKeyRefuses` added (+1). Live suite: path 1 re-pointed to the structural gate (no `awaitCachePopulated`), stays 3 rows. Net: **340 − 7 − 7 − 2 = 324**.
+- **Contract sweep (this session):** spine — six marker sites landed 2026-08-27 (AD-5 single-fork note, AD-8(c) retirement, AD-10 holdings, AD-12 rule + ratification, AD-28(2) retirement) + twelve residual sites 2026-08-28 (module map, AD-4 blocking-call list, AD-11 OIDC enumeration re-worded — note the malformed-JWT deny arm is *gone*, three-segment garbage now `Allow`s per D7, AD-22 drain steps 4–5 retired, AD-33 deny-cause list, AD-36 Nimbus-role amendment, register 3.1-verdict dated update + outage-row re-word, conventions state row, deployment graph, package map, deferred-tuning row); epics.md — seven sites (AD-12 bullet ×2 + summary row, two register rows, tuning row, the 4-path production-scope note at the Epic-3 risk gate); TEA — §4.2 + §4.3 RETIRED banners + per-row statuses (SEC-011/012/013..019/093/029/OBS-018 retired; SEC-005 expectation INVERTED with successor pins named; wording notes on SEC-001/002/028/047/094/OBS-016); `.memlog.md` — one T1+T2 `(amendment)` entry with the full Propagated list (T1 wrote none; both halves amend the same AD-12 cluster, so one record covers the pair).
+- **Deliberately UNCHANGED (dispositions):** `RopcSlice*` + `KeycloakFixture` keep all four AC8 paths green as the historical ratification (the 2026-08-19 precedent); epics' AD-summary mirrors for AD-5/8/10/11/22/28 + its module-map line stay the frozen planning snapshot (the 8705 precedent — spine markers govern; flagged in the memlog for the next full re-distill); `nimbus-jose-jwt` dependency + the `com.nimbusds..` crypto-allowlist entry stand (discovery-JSON parsing only, per D7).
+- **Observed, out of T2 scope (feeds T7 ledger hygiene):** TEA `SEC-030` (the mTLS/8705 live row) carries no retirement marker from the 2026-08-19 Story 3.2 removal — a pre-existing TEA gap, not touched by this story's diff discipline (no silent rides); T7 should mark it when sweeping the ledger.
 
 ### RED-on-neuter mutation ledger (T8 / AI-1)
 
@@ -187,3 +205,20 @@ GLM (claude-code CLI), 2026-08-27 — T1 execution.
 - `proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierLiveTest.java` — path 2 + stand-in/control apparatus retired, imports pruned, javadoc/`@DisplayName` amended
 - `proxy/src/test/java/smpp/companion/proxy/security/OidcStartupDiscoveryTest.java` — metadata assertion retarget, doc template swept
 - `proxy/src/test/java/smpp/companion/proxy/testsupport/OidcDiscoveryStandIn.java` — stopped serving `introspection_endpoint`
+
+**T2 (2026-08-28; code halves dated 2026-08-27 in-tree):**
+- `proxy/src/main/java/smpp/companion/proxy/security/JwksCache.java` — DELETED (class + AD-28(2) refresh VT + TTL guard)
+- `proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java` — `verifyJwt`/kid/typ/claim arms deleted; dispatch → `Allow` past the structural gate (D7); `jwksCache()` accessor + `jwks.close()` step removed; Nimbus imports pruned to `JSONObjectUtils`; dated javadoc amendments
+- `proxy/src/main/java/smpp/companion/proxy/security/OidcStartupDiscovery.java` — `jwks_uri` requirement + metadata component removed; javadoc amendments
+- `proxy/src/main/java/smpp/companion/proxy/config/ProxyCompanionProperties.java` — `jwksCacheTtl` component + `@NotNull`/`@DurationMin` messages + HV import removed; stale-key retirement javadoc
+- `proxy/src/main/java/smpp/companion/proxy/security/AdjudicationLifecycle.java`, `IdpSslContextFactory.java`, `Verdict.java` — stop-body + trust-anchor + DenyIndeterminate-example javadoc sweeps
+- `proxy/src/main/resources/application.yml` — two-budget template, `jwks-cache-ttl` template lines removed, T2 policy block
+- `proxy/src/test/java/smpp/companion/proxy/security/JwksCacheTest.java` — DELETED (−7 rows)
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierTest.java` — 9 verify rows retired, 2 D7 pins added
+- `proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierLiveTest.java` — path 1 re-pointed, `awaitCachePopulated` deleted
+- `proxy/src/test/java/smpp/companion/proxy/config/CompanionConfigMatrixTest.java` — ttl rows retired, stale-key refusal row added, javadoc dated note
+- `proxy/src/test/java/smpp/companion/proxy/config/TestCompanionConfigs.java`, `CompanionRoleFailFastTest.java`, `security/AdjudicationLifecycleTest.java`, `security/IdpSslContextFactoryTest.java`, `security/OidcStartupDiscoveryTest.java`, `relay/netty/DirectMemoryBudgetStartupCheckTest.java`, `relay/netty/RelayServerLifecycleTest.java`, `testsupport/OidcDiscoveryStandIn.java`, `testsupport/RelayTestFixtures.java` — 6-arg `Oidc` ctor sweep, knob args dropped, discovery docs stop serving `jwks_uri` (omission-accepted pins at the assertion sites)
+- `_bmad-output/planning-artifacts/architecture/…/ARCHITECTURE-SPINE.md` — 18 dated amendment sites (AD-4/5/8/10/11/12×2/22/28/33/36 + register ×2 + conventions + module/package maps + deployment graph + deferred row)
+- `_bmad-output/planning-artifacts/architecture/…/.memlog.md` — one T1+T2 `(amendment)` entry (append-only)
+- `_bmad-output/planning-artifacts/epics.md` — 7 dated sites (AD-12 ×3, register ×2, tuning row, 4-path note)
+- `_bmad-output/test-artifacts/test-design/test-coverage-scenarios.md` — §4.2/§4.3 retirement banners + 22 row statuses/notes (incl. SEC-005 inversion, OBS-018 retirement)

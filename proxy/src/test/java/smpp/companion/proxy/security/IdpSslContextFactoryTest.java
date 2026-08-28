@@ -264,12 +264,12 @@ class IdpSslContextFactoryTest {
         return properties(protocols, tls12, tls13, null, reverse);
     }
 
-    /** The T1 7-component oidc node (yml-template budget defaults) over the given IdP trust store. */
+    /** The oidc node (yml-template budget defaults) over the given IdP trust store. */
     private static ProxyCompanionProperties.Oidc oidc(Path idpStore, String password, String providerUrl) {
         return new ProxyCompanionProperties.Oidc(
                 java.net.URI.create(providerUrl), "smpp-client-confidential", "/run/secrets/oidc-client-secret",
                 new ProxyCompanionProperties.TrustStore(idpStore.toString(), password),
-                Duration.ofSeconds(4), 64, Duration.ofMinutes(5));
+                Duration.ofSeconds(4), 64);
     }
 
     /** A valid PKCS12 with ZERO entries — the SEC-050 zero-{@code trustedCertEntry} state. */

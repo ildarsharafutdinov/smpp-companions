@@ -347,15 +347,17 @@ class CompanionConfigMatrixTest {
 
     // --- Story 3.2 T1 (AC8; re-targeted to the reverse role by the AD-12 amendment of 2026-08-18 —
     //     every reverse cell adjudicates, forward cells carry no oidc node): the reshaped oidc.*
-    //     surface. Structural conformance is annotation-level (@NotNull requiredness — the three
+    //     surface. Structural conformance is annotation-level (@NotNull requiredness — the two
     //     budget keys are required, their defaults live in the application.yml reverse template;
-    //     @Min(1) on max-in-flight, @NotBlank on client-id, @DurationMin(nanos=1) on jwks-cache-ttl
-    //     — the HV annotation because jakarta @Positive cannot validate Duration, HV000030); the
+    //     @Min(1) on max-in-flight, @NotBlank on client-id); the
     //     validator adds FILE EXISTENCE for every configured path. The
     //     timeout window (2s..5s, PERF-3) and the deeper material checks (trust-store PKIX load) are
     //     deliberately NOT validated here — they are an operator contract (yml comment) and the
     //     T2+ adapter's SSLContext build
-    //     (fail-closed bean-init refusal) respectively. ---
+    //     (fail-closed bean-init refusal) respectively.
+    //     (2026-08-27, Story 3.4 T2: the third former budget key — the key-cache TTL — was REMOVED
+    //     with local JWT verification; its @DurationMin row and requiredness value retired with it,
+    //     and the stale-key refusal row below pins the loud retirement.) ---
 
     @Test
     @DisplayName("AD-12 amendment: a stray companion.forward.mode-a.oidc.* key is rejected (node is structurally gone)")
@@ -392,7 +394,7 @@ class CompanionConfigMatrixTest {
     }
 
     @ParameterizedTest(name = "AC8: absent oidc.{0} -> refuse (required budget key, @NotNull)")
-    @ValueSource(strings = {"timeout", "max-in-flight", "jwks-cache-ttl"})
+    @ValueSource(strings = {"timeout", "max-in-flight"})
     @DisplayName("AC8: an absent oidc budget key -> refuse (the defaults ship in the yml template, not the record)")
     void ac8_absentOidcBudgetKeyRefuses(String key) {
         assertRefused(TestCompanionConfigs.reverseA(dir).remove("companion.reverse.mode-a.oidc." + key),
@@ -415,14 +417,21 @@ class CompanionConfigMatrixTest {
                 .run(ctx -> assertThat(ctx).as("max-in-flight=1 is the legal floor").hasNotFailed());
     }
 
-    @ParameterizedTest(name = "AD-28(2): oidc.jwks-cache-ttl {0} -> refuse (@DurationMin(nanos=1))")
-    @ValueSource(strings = {"0s", "-30s"})
-    @DisplayName("AD-28(2): a non-positive oidc.jwks-cache-ttl -> refuse (binds the exact invalid value)")
-    void ac8_oidcJwksCacheTtlNonPositiveRefuses(String bad) {
-        // zero/negative TTL would spin or throw in the T2 refresh-ahead scheduler — refuse at bind.
-        assertRefused(TestCompanionConfigs.reverseA(dir)
-                        .put("companion.reverse.mode-a.oidc.jwks-cache-ttl", bad),
-                "AC8 jwks-cache-ttl " + bad, "jwks-cache-ttl must be positive");
+    @Test
+    @DisplayName("Story 3.4 T2: a stale oidc.jwks-cache-ttl key -> refuse (the retired budget key is gone, loudly)")
+    void ac8_staleKeyCacheTtlKeyRefuses() {
+        // 2026-08-27, Story 3.4 T2: the key-cache TTL knob died with local JWT verification and its
+        // cached provider key set. ignoreUnknownFields=false means a config still carrying the
+        // (formerly valid) key refuses startup — the retirement is loud, never a silent ignore, and
+        // the refusal names the key (the amendment_strayForwardOidcKeyRefuses pattern).
+        runner(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.jwks-cache-ttl", "5m"))
+                .run(ctx -> {
+                    assertThat(ctx).as("the retired key-cache TTL key must refuse startup").hasFailed();
+                    assertThat(chainMessages(ctx.getStartupFailure()))
+                            .as("the refusal must name the stale key")
+                            .anyMatch(msg -> msg.contains("jwks-cache-ttl"));
+                });
     }
 
     @Test
@@ -783,7 +792,7 @@ class CompanionConfigMatrixTest {
                                 new ProxyCompanionProperties.Oidc(java.net.URI.create("https://idp.example.com"), "smpp-client",
                                         "/run/secrets/oidc-client-secret",
                                         new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
-                                        Duration.ofSeconds(4), 64, Duration.ofMinutes(5))),
+                                        Duration.ofSeconds(4), 64)),
                         null, null));
     }
 
