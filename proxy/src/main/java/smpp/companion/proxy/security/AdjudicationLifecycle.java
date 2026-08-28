@@ -10,8 +10,10 @@ import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
  * Story 3.2 T7 (AC1) — the adjudicator's {@link SmartLifecycle}: owns the AD-22 stop window for the
  * cell's {@link BindCredentialVerifier}. On reverse cells (the verifier is the
  * {@link RopcBindCredentialVerifier}) {@link #stop()} runs the adapter's full AD-22 body — deny
- * in-flight ({@code shutdownNow()} + bounded drain) then the JWKS-refresh-before-client-close
- * ordering; on forward cells (the always-allow stand-in) there is nothing to stop and the stop is a
+ * in-flight ({@code shutdownNow()} + bounded drain), then release the shared provider client and
+ * the client secret (the 3.2-era key-cache-refresh-before-client-close step died with local JWT
+ * verification, Story 3.4 T2, 2026-08-27); on forward cells (the always-allow stand-in) there is
+ * nothing to stop and the stop is a
  * pure flag flip. Phase discipline: {@link #getPhase()} sits strictly BELOW
  * {@code RelayServerLifecycle.RELAY_ACCEPTOR_PHASE} — Spring stops higher phases first, so the SMPP
  * acceptor (no new binds) stops BEFORE the adjudicator drains (AD-22 step order).
@@ -55,9 +57,9 @@ public final class AdjudicationLifecycle implements SmartLifecycle {
         }
         running = false;
         if (verifier instanceof RopcBindCredentialVerifier adapter) {
-            // The AD-22 body lives in the adapter (it owns the pool, the JWKS refresh, the shared
-            // client and the client secret): deny in-flight with a bounded drain, then the
-            // refresh-before-client-close ordering. Idempotent on its own — the Spring destroy
+            // The AD-22 body lives in the adapter (it owns the pool, the shared
+            // client and the client secret): deny in-flight with a bounded drain, then release.
+            // Idempotent on its own — the Spring destroy
             // call is the never-started-lifecycle backstop.
             adapter.close();
         }

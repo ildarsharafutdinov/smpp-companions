@@ -244,8 +244,7 @@ class RelayServerLifecycleTest {
                         "companion.reverse.mode-b.oidc.trust-store.path=" + idpTrustStore,
                         "companion.reverse.mode-b.oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
                         "companion.reverse.mode-b.oidc.timeout=4s",
-                        "companion.reverse.mode-b.oidc.max-in-flight=64",
-                        "companion.reverse.mode-b.oidc.jwks-cache-ttl=5m");
+                        "companion.reverse.mode-b.oidc.max-in-flight=64");
     }
 
     /**
@@ -287,8 +286,7 @@ class RelayServerLifecycleTest {
                         b + ".oidc.trust-store.path=" + idpTrustStore,
                         b + ".oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
                         b + ".oidc.timeout=4s",
-                        b + ".oidc.max-in-flight=64",
-                        b + ".oidc.jwks-cache-ttl=5m");
+                        b + ".oidc.max-in-flight=64");
         if ("mode-c".equals(mode)) {
             builder.properties(
                     b + ".trust-store.path=" + legs.trustStore(),

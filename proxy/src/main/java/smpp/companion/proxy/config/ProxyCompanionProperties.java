@@ -7,8 +7,6 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
-import org.hibernate.validator.constraints.time.DurationMin;
-
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
@@ -233,16 +231,20 @@ public record ProxyCompanionProperties(
      * (2026-08-19: the optional RFC 8705 {@code client-mtls-keystore} arm was removed pre-release
      * &mdash; {@code client_secret} is the sole provider client auth.)
      *
-     * <p><b>Budget keys are REQUIRED</b> ({@code timeout}, {@code max-in-flight},
-     * {@code jwks-cache-ttl} are all {@code @NotNull}; there is NO compact-ctor normalization and no
+     * <p><b>Budget keys are REQUIRED</b> ({@code timeout} and {@code max-in-flight} are
+     * {@code @NotNull}; there is NO compact-ctor normalization and no
      * default constants). <b>Structural note &mdash; why branch keys cannot carry live yml
      * defaults:</b> the yml branch templates are commented, and any uncommented
      * {@code companion.<role>.<mode>} key binds that branch for EVERY deployment, so every other
      * cell's boot refuses ("found 2", AD-17 single-branch). yml is therefore a DOCUMENTATION
-     * surface: the reverse template carries the documented values ({@code 4s} / {@code 64} /
-     * {@code 5m}) an operator copies when uncommenting, while a hand-rolled config that omits a
+     * surface: the reverse template carries the documented values ({@code 4s} / {@code 64})
+     * an operator copies when uncommenting, while a hand-rolled config that omits a
      * budget key refuses startup &mdash; the {@code companion.bind.adjudication-deadline} pattern
      * (runner/test configs state them explicitly; runner boots do not load application.yml).
+     * (2026-08-27, Story 3.4 T2: a third former budget key &mdash; the key-cache TTL &mdash; was
+     * REMOVED with local JWT verification and the cached provider key set; a config still carrying
+     * the retired key refuses startup under {@code ignoreUnknownFields = false}, and the binder's
+     * unknown-field error names it &mdash; deliberately loud.)
      *
      * <p><b>Operator guidance &mdash; JWT-only adjudication (Story 3.4 T1, 2026-08-27):</b> the
      * provider's token endpoint must issue JWT access tokens. A non-JWT (opaque) token response
@@ -281,13 +283,6 @@ public record ProxyCompanionProperties(
      *        unbounded admission). Size it comfortably above the expected concurrent bind rate so
      *        saturation means a provider stall, not normal load. Required key; the yml reverse
      *        template documents {@code 64} &mdash; no in-record default.
-     * @param jwksCacheTtl how long the locally cached JWKS is served before the background refresh
-     *        swaps it (AD-28(2)); must be positive. Refresh-ahead keeps verification offline in the
-     *        common case; a kid miss triggers an immediate background refresh but never a
-     *        foreground refresh-and-retry on the bind path. Positivity is annotation-enforced
-     *        ({@code @DurationMin(nanos = 1)} &mdash; strictly positive; the HV-specific annotation
-     *        because jakarta {@code @Positive} has no Duration validator, HV000030); the yml
-     *        reverse template documents {@code 5m} &mdash; no in-record default.
      */
     public record Oidc(
             @NotNull(message = "OIDC provider-url is required (reverse performs OIDC, AD-12, SEC-054) — refusing to start.")
@@ -303,10 +298,7 @@ public record ProxyCompanionProperties(
             Duration timeout,                     // .timeout (2s..5s window + <= adjudication-deadline = documented operator contract, NOT validated; yml documents 4s)
             @NotNull(message = "OIDC max-in-flight is required (reverse, AD-28(4)) — refusing to start.")
             @Min(value = 1, message = "oidc.max-in-flight must be >= 1 — refusing to start (AD-28(4)).")
-            Integer maxInFlight,                  // .max-in-flight (admission cap; yml documents 64 — no in-record default)
-            @NotNull(message = "OIDC jwks-cache-ttl is required (reverse, AD-28(2)) — refusing to start.")
-            @DurationMin(nanos = 1, message = "oidc.jwks-cache-ttl must be positive (AD-28(2)) — refusing to start.")
-            Duration jwksCacheTtl                 // .jwks-cache-ttl (@DurationMin(nanos=1) = strictly positive; jakarta @Positive cannot validate Duration; yml documents 5m — no in-record default)
+            Integer maxInFlight                   // .max-in-flight (admission cap; yml documents 64 — no in-record default)
     ) {
 
         /**

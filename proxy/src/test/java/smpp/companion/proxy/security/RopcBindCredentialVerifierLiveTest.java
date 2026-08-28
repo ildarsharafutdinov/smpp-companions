@@ -29,9 +29,12 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
  * path was removed pre-release, 2026-08-19 — {@code client_secret} is the sole provider client
  * auth, {@link RopcSliceLiveTest} path 3 keeps the historical ratification; the RFC 7662
  * introspection interop leg was removed by Story 3.4 T1, 2026-08-27 — JWT-only adjudication,
- * the unit suite's D6 pin owns the non-JWT deny): (1) JWT happy path &rarr; {@code Allow} —
- * fully live: startup discovery &rarr; trust-only TLS &rarr; ROPC &rarr; live JWKS fetch &rarr;
- * local Nimbus defense-in-depth; (2) bad credentials &rarr; {@code DenyInvalid} both ways the
+ * the unit suite's D6 pin owns the non-JWT deny; the local JWT verification leg — live JWKS
+ * fetch + Nimbus defense-in-depth — was removed by Story 3.4 T2, 2026-08-27: the token
+ * endpoint's HTTPS-authenticated response is the sole trust anchor, the unit suite's D7 pins
+ * own the structural gate): (1) JWT happy path &rarr; {@code Allow} — fully live: startup
+ * discovery &rarr; trust-only TLS &rarr; ROPC &rarr; the structural three-segment gate;
+ * (2) bad credentials &rarr; {@code DenyInvalid} both ways the
  * fixture exhibits them (400 {@code invalid_grant}, 401 {@code invalid_client}).
  *
  * <p>Each test constructs the adapter exactly as the T7 wiring does
@@ -64,11 +67,10 @@ class RopcBindCredentialVerifierLiveTest {
     static Path DIR;
 
     @Test
-    @DisplayName("path 1 — valid ROPC → 200 + JWT → cached-JWKS defense-in-depth → Allow (fully live)")
+    @DisplayName("path 1 — valid ROPC → 200 + three-segment JWT → Allow on the endpoint verdict alone (fully live)")
     void path1_jwtHappyPathYieldsAllow() throws Exception {
         ProxyCompanionProperties properties = properties("smpp-confidential-secret");
         try (RopcBindCredentialVerifier adapter = adapter(properties)) {
-            awaitCachePopulated(adapter);   // the live JWKS initial refresh, before the bind
             Verdict verdict = awaitVerdict(
                     verify(adapter, cred(KeycloakFixture.TEST_USER, KeycloakFixture.TEST_PASS)));
             assertThat(verdict).isEqualTo(new Verdict.Allow());
@@ -133,7 +135,7 @@ class RopcBindCredentialVerifierLiveTest {
                                 URI.create(providerUrl), KeycloakFixture.CLIENT_A_ID, secret.toString(),
                                 new ProxyCompanionProperties.TrustStore(store.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                Duration.ofSeconds(4), 8, Duration.ofMinutes(5))), null));
+                                Duration.ofSeconds(4), 8)), null));
     }
 
     /** Verifies via the port, binding the context in a scope (models real relay usage). */
@@ -149,22 +151,5 @@ class RopcBindCredentialVerifierLiveTest {
 
     private static Verdict awaitVerdict(VerdictRequest request) throws Exception {
         return request.future().get(20, TimeUnit.SECONDS);
-    }
-
-    /** Polls the adapter's initial live JWKS refresh (every 10ms up to 10s — Docker-leg slack). */
-    private static void awaitCachePopulated(RopcBindCredentialVerifier adapter) {
-        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-        while (System.nanoTime() < deadline) {
-            if (adapter.jwksCache().current() != null) {
-                return;
-            }
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("interrupted awaiting the live JWKS refresh", e);
-            }
-        }
-        throw new IllegalStateException("the adapter's initial JWKS refresh did not land within 10s");
     }
 }

@@ -59,7 +59,7 @@ public final class RelayTestFixtures {
                 URI.create(OidcDiscoveryStandIn.url()), "smpp-client-confidential",
                 "/run/secrets/oidc-client-secret",
                 new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
-                Duration.ofSeconds(4), 64, Duration.ofMinutes(5));
+                Duration.ofSeconds(4), 64);
     }
 
     /**

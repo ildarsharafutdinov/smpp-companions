@@ -7,7 +7,8 @@ package smpp.companion.proxy.security;
  *
  * <p>{@link Allow} = credentials verified (the bind may splice / relay). {@link DenyInvalid} = credentials
  * definitively invalid (e.g. an IdP 4xx). {@link DenyIndeterminate} = the verdict could not be reached
- * (timeout, network error, 5xx, JWKS {@code kid} miss) &mdash; fail-closed per AD-11 (DENY on indeterminate).
+ * (timeout, network error, 5xx, a non-JWT token response &mdash; the JWT-only policy, Story 3.4 T1/T2,
+ * 2026-08-27) &mdash; fail-closed per AD-11 (DENY on indeterminate).
  * The distinction between the two DENY permits is informative; <b>both deny</b>. Adding a permit breaks the
  * port's sealed contract (Story 2.1 AC8 ratifies this exact set as "immutable henceforth").
  *
@@ -22,6 +23,6 @@ public sealed interface Verdict permits Verdict.Allow, Verdict.DenyInvalid, Verd
     /** Credentials definitively invalid (e.g. an IdP 4xx) — DENY (AD-11). */
     record DenyInvalid() implements Verdict { }
 
-    /** Verdict indeterminate (timeout / network error / 5xx / JWKS {@code kid} miss) — fail-closed DENY (AD-11). */
+    /** Verdict indeterminate (timeout / network error / 5xx / non-JWT token response) — fail-closed DENY (AD-11). */
     record DenyIndeterminate() implements Verdict { }
 }

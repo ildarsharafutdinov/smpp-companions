@@ -75,7 +75,7 @@ class CompanionRoleFailFastTest {
                                 new Oidc(java.net.URI.create("https://idp.example.com"), "smpp-client-confidential",
                                         "/run/secrets/oidc-client-secret",
                                         new TrustStore("/run/secrets/idp-truststore.p12", null),
-                                        Duration.ofSeconds(4), 64, Duration.ofMinutes(5)))));
+                                        Duration.ofSeconds(4), 64))));
     }
 
     @Test

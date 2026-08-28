@@ -150,9 +150,10 @@ class AdjudicationLifecycleTest {
         }));
         server.createContext("/.well-known/openid-configuration", (HttpHandler) ex -> {
             String realm = base(server) + "/realms/smpp-companions/protocol/openid-connect";
+            // The retired introspection/jwks fields are not served (Story 3.4 T1+T2, 2026-08-27) —
+            // the requirement is issuer + token endpoint only, and this boot proves omission-accepted.
             byte[] document = ("{\"issuer\": \"" + base(server) + "\", \"token_endpoint\": \"" + realm
-                    + "/token\", \"introspection_endpoint\": \"" + realm + "/token/introspect\", \"jwks_uri\": \""
-                    + realm + "/certs\", \"grant_types_supported\": [\"password\"]}")
+                    + "/token\", \"grant_types_supported\": [\"password\"]}")
                     .getBytes(StandardCharsets.UTF_8);
             respond(ex, 200, document);
         });
@@ -191,7 +192,7 @@ class AdjudicationLifecycleTest {
                                 URI.create(providerUrl), "smpp-client-confidential", secret.toString(),
                                 new ProxyCompanionProperties.TrustStore(store.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                timeout, 8, Duration.ofMinutes(5))), null));
+                                timeout, 8)), null));
     }
 
     /** The deadline must outlive the test window — the per-REQUEST budget (oidc.timeout) is the real bound. */

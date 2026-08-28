@@ -1,12 +1,6 @@
 package smpp.companion.proxy.security;
 
-import com.nimbusds.jose.JOSEObjectType;
-import com.nimbusds.jose.crypto.RSASSAVerifier;
-import com.nimbusds.jose.jwk.JWK;
-import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.util.JSONObjectUtils;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 
 import io.netty.util.AsciiString;
 
@@ -25,7 +19,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -93,13 +86,18 @@ import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
  * ({@code BodyPublishers.ofByteArray} would copy the whole credential-bearing form into heap
  * chunks no wipe can reach, JDK-source verified) — so the registered array is the one and only copy.
  *
- * <p><b>Issued-token adjudication (Story 3.2 T4).</b> A 200 body carrying a JWT is adjudicated
- * <b>locally</b> against {@link JwksCache}'s cached set (signature, {@code typ} per RFC 8725
- * &sect;3.9, {@code iss}/{@code aud}/{@code exp}/{@code nbf} per the clock) &mdash; the AC3
- * defense-in-depth: the token-endpoint 200 is necessary but not sufficient, DENY wins on any local
- * failure. The verify is pure CPU against the <i>cached</i> set &mdash; the bind path NEVER fetches
- * JWKS in the foreground (a {@code kid} miss denies now and schedules a background refresh,
- * {@code AD-12}).
+ * <p><b>TLS-as-sole-trust-anchor (Story 3.4 T2 / D7, 2026-08-27 — supersedes the 3.2-T4 local JWT
+ * defense-in-depth).</b> Local signature verification and everything that fed it — the verify arm,
+ * the cached provider key set, its background refresh thread, its TTL knob, and the discovery
+ * key-set URI requirement — is REMOVED: the proxy is the issued token's ONLY consumer (it never
+ * forwards, caches, nor shows it to anyone), and re-proving the provider's honesty locally guards
+ * against a threat
+ * that already owns the AD-12-mandated HTTPS, client-authenticated provider link the keys came
+ * over. {@code Allow} therefore derives from the token endpoint's own response alone; the only
+ * surviving token check is the STRUCTURAL three-segment (JWS) gate — the provider
+ * &quot;issues JWTs&quot; requirement, cheap and library-free. Unverified claim checks
+ * ({@code typ}/{@code iss}/{@code aud}/{@code exp}/{@code nbf}/{@code kid}) went with the
+ * verification — theater once the endpoint verdict already decided (amendment record: AD-12).
  *
  * <p><b>JWT-only policy (Story 3.4 T1 / D6, 2026-08-27 — supersedes the 3.2-era AC4 opaque-token
  * fallback).</b> There is no second wire arm: a 200 body whose token is not a three-segment JWS
@@ -113,28 +111,11 @@ import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
 @Slf4j
 public final class RopcBindCredentialVerifier implements BindCredentialVerifier, AutoCloseable {
 
-    /**
-     * Clock-skew tolerance for the JWT {@code exp}/{@code nbf} claim checks (the ratified slice's
-     * value; NTP precondition A-4 keeps real drift far below it).
-     */
-    private static final Duration CLAIM_SKEW = Duration.ofSeconds(60);
-
-    /**
-     * The JOSE-header {@code typ} an issued access token carries (RFC 8725 &sect;3.9 explicit typing).
-     * Live-verified against the pinned fixture on 2026-08-19 (Keycloak 26.7.0, ROPC via client A,
-     * header decoded straight off the wire): {@code {"alg":"RS256","typ":"JWT","kid":...}} &mdash;
-     * <b>"JWT"</b>, not "Bearer" (the {@code "typ":"Bearer"} on that token is the PAYLOAD claim, a
-     * different field that RFC 8725 &sect;3.9 does not govern). Absent {@code typ} is tolerated per
-     * AC3; a present-but-unexpected value denies.
-     */
-    private static final JOSEObjectType EXPECTED_TYP = new JOSEObjectType("JWT");
-
     private final OidcProviderMetadata metadata;
     private final String clientId;
     private final ClientSecret clientSecret;    // ASCII, file-loaded (AD-18); wiped on close (AD-10)
     private final Duration callTimeout;         // oidc.timeout — the per-round-trip budget
     private final HttpClient http;              // the ONE shared provider-facing client (AD-36)
-    private final JwksCache jwks;               // cached public keys only — verdicts are never cached (AD-12)
     private final ExecutorService adjudicationPool;   // bounded VT pool (AD-28(4)); the semaphore bounds it
     private final Semaphore admission;
 
@@ -182,8 +163,6 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         this.clientSecret = ClientSecret.load(
                 Path.of(oidc.clientSecretPath()), resolved.keyPrefix() + ".oidc.client-secret-path");
         this.callTimeout = Objects.requireNonNull(oidc.timeout(), "timeout");
-        this.jwks = new JwksCache(this.http, metadata.jwksUri(),
-                Objects.requireNonNull(oidc.jwksCacheTtl(), "jwksCacheTtl"), this.callTimeout);
         this.adjudicationPool = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("ropc-adjudication-", 0).factory());
         this.admission = new Semaphore(maxInFlight);
@@ -272,9 +251,10 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
 
     /**
      * The structured fan-out (AD-5). JEP 505 fifth-preview API — {@code open(Joiner)}, NOT the JDK
-     * 21/22 {@code ShutdownOnFailure} subclass shape. One forked arm: the token exchange. The T4
-     * JWT defense-in-depth needs no fork: it is pure CPU against the cached JWKS (AC3 forbids a
-     * foreground fetch on the bind path). The scope is what makes the adjudication shuttable from
+     * 21/22 {@code ShutdownOnFailure} subclass shape. One forked arm: the token exchange — the
+     * ONLY arm since the 3.2-T4 local JWT verify was removed (Story 3.4 T2, 2026-08-27); the
+     * issued-token check is a structural segment count, not a forked verification.
+     * The scope is what makes the adjudication shuttable from
      * the teardown path (AD-25): {@code cancelHttp()} cancels the exchange &rarr; the forked
      * {@code join} throws &rarr; fail-closed below &rarr; the scope closes with the subtask.
      * (History: the 3.2-era opaque-token round joined INLINE on the pool thread — the
@@ -330,12 +310,13 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     }
 
     /**
-     * The AC2/AC3 issued-token dispatch. A 200 body must carry an {@code access_token}; a
-     * three-segment (JWS) token goes to local JWT defense-in-depth, anything else is a non-JWT
-     * (opaque) token &rarr; the D6 fail-closed deny (Story 3.4 T1, 2026-08-27 — there is no
-     * second wire arm to ask). This structural dispatch is what keeps the malformed-JWT row
-     * (three segments that do not parse &mdash; JWT territory, denied locally by {@link #verifyJwt})
-     * distinct from the opaque row.
+     * The AC2 issued-token dispatch (amended by Story 3.4 T1/T2, 2026-08-27). A 200 body must
+     * carry an {@code access_token}; the token is checked ONLY structurally: exactly three
+     * {@code '.'}-separated segments (a JWS) is the provider's &quot;issues JWT access
+     * tokens&quot; requirement satisfied — {@code Allow}, derived from the endpoint verdict alone
+     * (D7: no signature verification, no claim checks, no provider-key fetch). Anything else is a
+     * non-JWT (opaque) token &rarr; the D6 fail-closed deny (there is no second wire arm to ask).
+     * The segment count is deliberately library-free — no Nimbus type touches the token.
      */
     private Verdict adjudicateIssuedToken(byte[] body) {
         String token = accessToken(body);
@@ -358,7 +339,10 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
                     + "operator remediation: configure the client/realm to issue JWT access tokens.");
             return new Verdict.DenyIndeterminate();
         }
-        return verifyJwt(token);
+        // D7 (Story 3.4 T2, 2026-08-27): the TLS client-authenticated provider link is the sole
+        // trust anchor — the proxy is this token's only consumer, so nothing re-proves the
+        // provider's signature locally. Content past the segment count is never parsed.
+        return new Verdict.Allow();
     }
 
     /** The {@code access_token} of a 200 token-endpoint body; {@code null} when absent or unparseable. */
@@ -368,66 +352,6 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             return JSONObjectUtils.getString(document, "access_token");
         } catch (ParseException e) {
             return null;   // not JSON → no token → unverifiable
-        }
-    }
-
-    /**
-     * Local JWT defense-in-depth against the CACHED JWKS (AC3 &mdash; the ratified slice's
-     * {@code verifyWithJwks}, productionized). Every failure &mdash; including an empty cache and a
-     * {@code kid} miss &mdash; is <b>unverifiable, not invalid</b>: {@code DenyIndeterminate}, never
-     * {@code DenyInvalid} (AD-11; DENY wins on disagreement with the provider's 200). No foreground
-     * JWKS fetch ever happens on this path; a {@code kid} miss denies NOW and schedules the
-     * background refresh ({@link JwksCache#requestRefresh()}, AD-12).
-     */
-    @SuppressWarnings("JavaUtilDate")   // reason: Nimbus's claim accessors are java.util.Date-typed —
-    // the JOSE API boundary; the logic itself works in Instant and converts only at the call sites.
-    private Verdict verifyJwt(String token) {
-        JWKSet cached = jwks.current();
-        if (cached == null) {
-            // Cold cache (the initial refresh has not landed yet): unverifiable, never a wire wait here.
-            jwks.requestRefresh();
-            return new Verdict.DenyIndeterminate();
-        }
-        try {
-            SignedJWT jwt = SignedJWT.parse(token);
-            // RFC 8725 §3.9 explicit typing: absent typ is tolerated (AC3), a present-but-unexpected
-            // one denies — cross-JWT confusion (an id_token or refresh token replayed as an access
-            // token) must not verify. The expected literal is fixture-verified — see EXPECTED_TYP.
-            JOSEObjectType typ = jwt.getHeader().getType();
-            if (typ != null && !EXPECTED_TYP.equals(typ)) {
-                return new Verdict.DenyIndeterminate();
-            }
-            String kid = jwt.getHeader().getKeyID();
-            if (kid == null) {
-                return new Verdict.DenyIndeterminate();
-            }
-            JWK key = cached.getKeyByKeyId(kid);
-            if (key == null) {
-                jwks.requestRefresh();   // kid rotation: deny now + background refresh, no foreground retry
-                return new Verdict.DenyIndeterminate();
-            }
-            if (!jwt.verify(new RSASSAVerifier(key.toRSAKey()))) {
-                return new Verdict.DenyIndeterminate();   // unverifiable signature → fail-closed
-            }
-            JWTClaimsSet claims = jwt.getJWTClaimsSet();
-            if (!metadata.issuer().equals(claims.getIssuer())) {
-                return new Verdict.DenyIndeterminate();
-            }
-            if (claims.getAudience() == null || !claims.getAudience().contains(clientId)) {
-                return new Verdict.DenyIndeterminate();
-            }
-            Instant now = Instant.now();
-            if (claims.getExpirationTime() == null
-                    || claims.getExpirationTime().before(Date.from(now.minus(CLAIM_SKEW)))) {
-                return new Verdict.DenyIndeterminate();
-            }
-            if (claims.getNotBeforeTime() != null
-                    && claims.getNotBeforeTime().after(Date.from(now.plus(CLAIM_SKEW)))) {
-                return new Verdict.DenyIndeterminate();
-            }
-            return new Verdict.Allow();   // defense-in-depth passed — the 200 verdict stands
-        } catch (Exception e) {
-            return new Verdict.DenyIndeterminate();   // malformed JWT / non-RSA key / Nimbus failure → fail-closed
         }
     }
 
@@ -652,23 +576,15 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     }
 
     /**
-     * The JWKS cache handle, package-private for the component-level tests (the slice's
-     * {@code verifyWithJwks} package-private precedent): cold-cache and refresh-cycle behavior is a
-     * {@link JwksCache} contract, asserted directly rather than through full binds.
-     */
-    JwksCache jwksCache() {
-        return jwks;
-    }
-
-    /**
      * The T7 AD-22 stop body (invoked by {@link AdjudicationLifecycle}; also the inferred destroy
      * method — idempotent, the failed-boot backstop). Order: <b>deny in-flight FIRST</b> —
      * {@code shutdownNow()} interrupts every pool task (each settles its pin fail-closed in its
      * catch) and {@code awaitTermination} bounds the drain at the per-request budget + 1s, logging
      * fail-closed and proceeding on timeout (the hard close below aborts whatever exchanges
-     * remain, and every aborted join settles {@code DenyIndeterminate}) — <b>then</b> the JWKS
-     * refresh stops (AD-22: refresh before the cache's own client closes, so no refresh races it)
-     * and the shared client + the client secret are released.
+     * remain, and every aborted join settles {@code DenyIndeterminate}) — <b>then</b> the shared
+     * client and the client secret are released. (The 3.2-era key-cache-refresh-before-client-close
+     * step died with the cache — Story 3.4 T2, 2026-08-27; the pool and the one shared client are
+     * the adapter's whole executor surface now, AD-28.)
      */
     @Override
     public void close() {
@@ -688,7 +604,6 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             log.warn("the adjudication drain was interrupted — proceeding with the hard close "
                     + "(every in-flight adjudication settles DenyIndeterminate; AD-22 fail-closed).");
         }
-        jwks.close();   // AD-22: stop the refresh scheduler before the client it fetches through closes
         http.close();
         clientSecret.zeroize();   // AD-10: the adapter's own secret material
     }
