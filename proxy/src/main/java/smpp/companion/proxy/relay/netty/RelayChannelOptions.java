@@ -37,7 +37,8 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * precisely {@code max-inbound-depth} frames. This ties
  * the per-channel byte bound to the SAME depth input the AD-30 budget formula multiplies by
  * ({@code MemoryBudget.compute}), so the per-channel bound, the watermark, and the direct-memory
- * budget cannot drift apart. The gating behavior itself lives in the T8 {@code RelayHandler} (reads
+ * budget cannot drift apart. The gating behavior itself lives in the T8 relay handlers ({@code CoupledRelayHandler}
+ * base; reads
  * are armed on the ingress leg only once the egress pair is coupled), which is why the options land
  * here in T6 and the read-demand logic lands with the handlers.
  *

@@ -26,12 +26,13 @@ import smpp.companion.proxy.security.SystemId;
  * <p><b>Thread-safety:</b> the couple flag and the tearing-down mark are {@link AtomicBoolean}s CASed exactly
  * once, so the two event loops (ingress + egress) and the AD-25 Deny-callback can race on teardown without
  * double-firing side-effects. {@link #beginTearingDown()} is the race-free guard the handlers re-check
- * (AC3); {@link #couple()} is the single AD-25 couple transition the {@code RelayHandler} owns. The egress
+ * (AC3); {@link #couple()} is the single AD-25 couple transition the {@code RelayEgressHandler} owns. The egress
  * channel is {@code volatile} (written once on the egress event loop, read on either). The {@link SystemId}
  * and ingress id are final (set at construction).
  *
- * <p>This type is relay-internal: {@code BindInterceptor} / {@code RelayHandler} (Story 2.2 T7 / T8) read and
- * couple it; it never crosses a package boundary (no metrics handle, no observer payload).
+ * <p>This type is relay-internal: {@code BindInterceptor} / the per-leg relay handlers (Story 2.2 T7 / T8,
+ * split in Story 3.4 T5) read and couple it; it never crosses a package boundary (no metrics handle, no
+ * observer payload).
  */
 @Accessors(fluent = true)
 @RequiredArgsConstructor(access = AccessLevel.PACKAGE)
@@ -63,8 +64,9 @@ public final class ConnectionEntry {
     }
 
     /**
-     * Couple the pair exactly once (AD-25 &mdash; the single couple unit is the {@code RelayHandler} on the
-     * ingress event loop). Returns {@code true} iff THIS call performed the transition; use that to fire
+     * Couple the pair exactly once (AD-25 &mdash; the single couple unit is the {@code RelayEgressHandler}
+     * on the ingress event loop; structural-by-type since the Story 3.4 T5 split, only that class calls
+     * this). Returns {@code true} iff THIS call performed the transition; use that to fire
      * {@code onBindAccept} exactly at the couple (AC5), never at the verdict.
      *
      * @return {@code true} iff this call performed the couple (the pair transitioned to relaying).

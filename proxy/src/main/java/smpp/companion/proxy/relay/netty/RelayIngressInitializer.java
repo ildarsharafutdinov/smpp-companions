@@ -10,11 +10,10 @@ import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.framer.SmppFrameDecoder;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
-import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.observability.RelayObserver;
 import smpp.companion.proxy.relay.BindInterceptor;
 import smpp.companion.proxy.relay.ConnectionRegistry;
-import smpp.companion.proxy.relay.RelayHandler;
+import smpp.companion.proxy.relay.RelayIngressHandler;
 import smpp.companion.proxy.security.BindCredentialVerifier;
 import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
@@ -28,10 +27,11 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  *
  * <p><b>Attachment points (owner decision 2026-08-15 — codec-only prefix in T6; no placeholder
  * handler classes).</b> The full ingress pipeline per AC4 is
- * {@code SslHandler? → SmppFrameDecoder → SmppCodec → BindInterceptor → RelayHandler}: the T7 entry
- * {@link BindInterceptor} (bind-family verifier gating + AD-33 collapse, AD-7/AD-25) and the T8
- * entry {@link RelayHandler} (the AD-25 single couple unit + AD-32 bare-close + opaque relay) have
- * both LANDED; Story 3.3 ([B] topology) prepends the {@code SslHandler} <b>iff this cell's listener
+ * {@code SslHandler? → SmppFrameDecoder → SmppCodec → BindInterceptor → RelayIngressHandler}: the T7
+ * entry {@link BindInterceptor} (bind-family verifier gating + AD-33 collapse, AD-7/AD-25) and the T8
+ * entry {@link RelayIngressHandler} (the ingress leg of the T5 direction-split over
+ * {@code CoupledRelayHandler}: AD-32 bare-close via the interceptor delegation + the post-couple
+ * opaque relay) have both LANDED; Story 3.3 ([B] topology) prepends the {@code SslHandler} <b>iff this cell's listener
  * is TLS</b> (reverse.mode-a/c — {@link SmppLegTlsFactory#listenerTls()}); the forward cells'
  * trusted leg and reverse.mode-b stay plaintext (AD-15/AD-12-amended — no TLS on the trusted legs).
  * The singleton initializer is per-CELL parametric through the injected factory bean (the TLS
@@ -72,9 +72,9 @@ public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
                 .addLast(new BindInterceptor(
                         verifier, registry, observer, properties, egressInitializer, channelOptions,
                         routingTable, tlsFactory))
-                // T8 (landed): the AD-25 couple reader (ingress side — the couple itself fires on the
-                // egress leg's RelayHandler, which rides this channel's event loop, AD-2) + the
-                // AD-32 pre-couple bare-close + the post-couple opaque relay toward the egress leg.
-                .addLast(new RelayHandler(registry, observer, Direction.INGRESS));
+                // T8 (landed) / Story 3.4 T5 (split): the ingress relay leg (the couple itself fires
+                // on the egress leg's RelayEgressHandler, which rides this channel's event loop,
+                // AD-2) + the AD-32 pre-couple bare-close delegation + the post-couple opaque relay.
+                .addLast(new RelayIngressHandler(registry, observer));
     }
 }

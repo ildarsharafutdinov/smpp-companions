@@ -299,8 +299,9 @@ public final class RelayTestFixtures {
      * constructor-carrying; T8 made the egress initializer constructor-carrying too): the default
      * verifier/observer/registry beans, the mode-b properties, the egress initializer, and the shared
      * substrate options. The registry/observer instances are SHARED between the two initializers —
-     * Spring wires the same singleton beans into both, and the egress-leg RelayHandler (the AD-25
-     * couple unit) must resolve the same registry the ingress interceptor wrote. One home for the same
+     * Spring wires the same singleton beans into both, and the egress-leg relay handler
+     * ({@code RelayEgressHandler} — the AD-25 couple unit since the Story 3.4 T5 split) must resolve
+     * the same registry the ingress interceptor wrote. One home for the same
      * drift reason as {@link #modeBProperties} — a constructor-signature change breaks ONE fixture.
      */
     public static RelayIngressInitializer modeBIngressInitializer(int bindPort) {

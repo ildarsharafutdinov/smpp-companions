@@ -8,7 +8,8 @@ import smpp.companion.proxy.security.Verdict;
 
 /**
  * A thread-safe capturing {@link RelayObserver} for the relay tests &mdash; T7 {@code BindInterceptor},
- * T8 {@code RelayHandler}, and the T9 in-JVM mock consume this. Records every trigger in concurrent
+ * the T8 per-leg relay handlers ({@code RelayIngressHandler}/{@code RelayEgressHandler} since the
+ * Story 3.4 T5 split), and the T9 in-JVM mock consume this. Records every trigger in concurrent
  * structures so a test can AssertJ-assert the AC5 pinned contracts: {@link #bindAccepts()} fires at the
  * AD-25 ROK couple, {@link #connectionCloses()} fires exactly-once per channel, {@link #framedPdus()} is the
  * PDU count (one fire per framed PDU), and the A-1 affinity smoke asserts zero DLR cross-bleed against

@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Story 2.2 Task 9 / AC6(a)+AC7 &mdash; the A-1 mechanics smoke on REAL SOCKETS (RELAY-011, the
  * load-bearing CI proof) plus the REL-1 transit roundtrip, both driven end-to-end through the REAL
  * acceptor ({@code RelayServerLifecycle.start()} &rarr; the production ingress/egress initializers
- * &rarr; {@code BindInterceptor} + {@code RelayHandler}) against the {@link MockSmsc} in-JVM mock on
+ * &rarr; {@code BindInterceptor} + the per-leg relay handlers) against the {@link MockSmsc} in-JVM mock on
  * the production codec. The legacy clients are plain blocking loopback sockets; every PDU is
  * hand-authored wire bytes (independent of the codec under test), with the REL-1 bind additionally
  * driven from the codec module's GOLDEN VECTOR corpus (byte-exact AD-14 through two real sockets +

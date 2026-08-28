@@ -13,61 +13,53 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.DecoderException;
 import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
-import lombok.RequiredArgsConstructor;
 
 import smpp.companion.codec.bind.SmppBindPdu;
-import smpp.companion.codec.bind.SmppBindRequest;
-import smpp.companion.codec.bind.SmppBindResponse;
 import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.observability.RelayObserver;
 
 /**
- * The data-plane relay handler (AC3/AC7; AD-2/AD-3/AD-25/AD-27/AD-32) — the second of the two per-channel
- * handlers, one instance per LEG ({@code Direction} is the only per-instance state beyond the shared
- * beans). The ingress pipeline is {@code framer → codec → BindInterceptor → RelayHandler}; the egress
- * pipeline is {@code framer → codec → RelayHandler} (then T7's per-pair {@code EgressLeg} bind-family
- * forwarder, appended by the connect assembly). It owns exactly four things:
+ * The shared post-couple component of the two per-leg data-plane relay handlers (AC3/AC7/AC8;
+ * AD-2/AD-3/AD-27/AD-32) — the Story 3.4 T5 direction-split base (D3, owner checkpoint 2026-08-28):
+ * {@link RelayIngressHandler} and {@link RelayEgressHandler} extend this class, one instance per LEG.
+ * The base owns everything the two legs do IDENTICALLY:
  *
  * <ul>
- * <li><b>The AD-25 single couple (THE load-bearing invariant):</b> the couple flag is set by EXACTLY ONE
- * site — {@link #channelRead} on the <b>egress</b> leg (the {@code bind_*_resp} arrives from the SMSC on
- * the egress channel, which rides the ingress channel's event loop — AD-2 same-loop coupling, so the couple
- * runs "on the ingress event loop" as AC3/AD-25 word it) — upon the DECODED
- * {@link SmppBindResponse#isOk()} predicate: never a peeked {@code command_id}, never "any frame from
- * egress", never at the verdict. {@link RelayObserver#onBindAccept} fires EXACTLY at the couple. A non-ROK
- * response does NOT couple: it is propagated first (the {@code EgressLeg} forwards it verbatim — AD-32 case
- * 4 / RELAY-002c) and THEN the pair tears down ({@link CloseReason#BIND_FAILED_NON_ROK}). The couple
- * re-checks the {@link ConnectionRegistry} entry (absent or tearing-down &rarr; consume + fail-closed
- * close, no couple — the AD-25 race-free re-check).
- * <li><b>The post-couple opaque relay (AD-2/AD-3, REL-1):</b> once {@link ConnectionEntry#coupled()},
- * EVERY PDU — {@code unbind} included, and a stray bind-family decode included ({@code SmppCodec} is
- * structural: "dormant post-couple" means downstream handlers ignore the decode, so the relay forwards
- * {@link SmppBindPdu#originalFrame()}) — is forwarded as the framed {@link ByteBuf} to the peer leg,
- * byte-exact, one fire of {@link RelayObserver#onFramedPdu(Direction)} per relayed PDU. NO live
- * pipeline surgery: the coupling is the couple flag's one write, not a {@code pipeline.remove()}. Backpressure
- * is the AD-2 substrate: the write-completion listener re-arms the source leg's read only while the peer stays
- * writable, and {@link #channelWritabilityChanged} performs the explicit low-water re-arm (the peer's
- * outbound buffer drained below one max frame) — the emergent per-channel inbound bound of AD-30.
- * <li><b>The AD-32 pre-couple uniform bare-close:</b> pre-couple, on EITHER leg, everything that is not
- * bind-family emits NO response and closes. On the ingress leg the teardown is delegated to the upstream
- * {@link BindInterceptor} ({@link BindInterceptor#teardownForPreCoupleViolation(Channel)}) because the
- * pending-adjudication handles ({@code cancelHttp} + zeroize) live there — preserving the pinned AC3
- * ordering (remove + mark BEFORE close → cancel + wipe → close). On the egress leg, closing is enough:
- * {@code EgressLeg.channelInactive} collapses the dead bind via AD-33. The ONE case-4 exception: an SMSC
- * {@code generic_nack} is the SMSC's own answer — forwarded VERBATIM to the legacy client first, then
- * teardown ({@link CloseReason#GENERIC_NACK_PRE_BIND}). The offending {@code command_id} is read only to
- * detect that one case ({@code getInt(4)}, no codec helper — AD-19) and is never emitted anywhere.
- * <li><b>The exactly-once close telemetry (AD-27):</b> {@link RelayObserver#onConnectionClosed} fires
- * ONLY at the {@link #channelInactive} site, guarded by a CAS on the channel attribute; every other path
- * merely STASHES a {@link CloseReason} on the channel for {@code channelInactive} to read. An unstashed
- * close defaults to {@link CloseReason#PEER_HALF_CLOSE} for a coupled pair (the RELAY-008 contract — the
- * peer FINned) and {@link CloseReason#OTHER} for a pre-couple leg (the handshake's own planes closed it).
- * A peer teardown propagates its reason onto the leg it closes. {@link #exceptionCaught} classifies
- * {@link DecoderException} &rarr; {@link CloseReason#DECODE_ERROR} (the CODEC-021 header-only
- * {@code bind_resp} path — {@code isOk()} is never reached) and {@link IOException} &rarr;
- * {@link CloseReason#PEER_RST} (how a live NIO channel surfaces a reset, pre-inactive).
+ * <li><b>The single read prelude:</b> the AD-25 race-free re-check (an absent or tearing-down entry
+ * &rarr; consume the frame and fail-closed close the stray leg — no couple, no forward) and the
+ * {@link ConnectionEntry#coupled()} branch — post-couple, EVERY PDU (a stray bind-family decode
+ * included; {@code SmppCodec} is structural, so "dormant post-couple" means the relay forwards
+ * {@link SmppBindPdu#originalFrame()}) is handed to {@link #relayFramedPdu} as opaque framed bytes.
+ * The pre-couple window is the SUBCLASS's: {@link #readPreCouple(ChannelHandlerContext, ConnectionEntry,
+ * Object)} is the one leg-specific hook (pre-couple is the bind-handshake plane, never the per-PDU
+ * hot path — AC8: zero virtual dispatch per relayed PDU).
+ * <li><b>The post-couple opaque relay (AD-2/AD-3, REL-1):</b> byte-exact forwarding to the peer leg,
+ * one fire of {@link RelayObserver#onFramedPdu(Direction)} per relayed PDU. NO live pipeline surgery:
+ * the coupling is the couple flag's one write, not a {@code pipeline.remove()}. Backpressure is the
+ * AD-2 substrate: the write-completion listener re-arms the source leg's read only while the peer
+ * stays writable, and {@link #channelWritabilityChanged} performs the explicit low-water re-arm (the
+ * peer's outbound buffer drained below one max frame) — the emergent per-channel inbound bound of
+ * AD-30.
+ * <li><b>The shared teardown + exactly-once close telemetry (AD-27/AD-32):</b> the race-free
+ * {@link #teardownPair} ordering (stash on BOTH legs, {@code beginTeardown} — remove + mark
+ * tearing-down BEFORE close — then close peer + self; a losing racer no-ops, RELAY-005), the
+ * post-couple halves of {@link #channelInactive} (RELAY-008/010) and {@link #exceptionCaught}
+ * (DecoderException &rarr; {@link CloseReason#DECODE_ERROR}; IOException &rarr; {@link CloseReason#PEER_RST}),
+ * and {@link #fireClosedExactlyOnce} — {@link RelayObserver#onConnectionClosed} fires ONLY at the
+ * {@code channelInactive} site, CAS-guarded per channel; every other path merely STASHES a
+ * {@link CloseReason}. An unstashed close defaults to {@link CloseReason#PEER_HALF_CLOSE} for a
+ * coupled pair (the RELAY-008 contract) and {@link CloseReason#OTHER} for a pre-couple leg.
+ * <li><b>The {@code CLOSE_REASON}/{@code CLOSE_FIRED} channel-attribute keys</b> — hoisted here from
+ * the pre-split handler-private namespace (Story 3.4 T5 resolves D5: both per-leg classes share the
+ * base's keys; runtime-only attributes, no wire effect — the reason SEMANTICS stay Epic-4).
  * </ul>
+ *
+ * <p><b>The ONE residual direction conditional (T9-sanctioned):</b> {@link #peerOf(ConnectionEntry,
+ * Channel)} — the base field-compare ternary over the {@code direction} field (a base FIELD set via
+ * the protected ctor, NOT an abstract method — AC8). No other {@code Direction} branch exists in the
+ * split: pre-couple direction behavior lives in the subclass TYPES (AD-25's couple in exactly one of
+ * them — structural-by-TYPE, AC6).
  *
  * <p><b>RELAY logging rule (T3):</b> this handler observes {@code SystemId} only — never a
  * {@code SmppBindRequest}/{@code Password}/{@code BindCredential} object, never a password
@@ -76,28 +68,27 @@ import smpp.companion.proxy.observability.RelayObserver;
 @SuppressWarnings("FutureReturnValueIgnored") // reason: close() on the relay's own channels is a
 // fire-and-forget fail-closed control operation — a failed close merely means the channel was already
 // closing (the desired end state); every write whose completion we ACT on carries a listener.
-@RequiredArgsConstructor
-public final class RelayHandler extends ChannelInboundHandlerAdapter {
+public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
 
     /** The {@link CloseReason} stash a violation/teardown path leaves for the {@code channelInactive} site. */
-    private static final AttributeKey<CloseReason> CLOSE_REASON =
-            AttributeKey.valueOf(RelayHandler.class, "closeReason");
+    protected static final AttributeKey<CloseReason> CLOSE_REASON =
+            AttributeKey.valueOf(CoupledRelayHandler.class, "closeReason");
 
     /** The exactly-once guard for {@link RelayObserver#onConnectionClosed} (CAS per channel, AC5). */
-    private static final AttributeKey<AtomicBoolean> CLOSE_FIRED =
-            AttributeKey.valueOf(RelayHandler.class, "closeFired");
-
-    /**
-     * SMPP 3.4 §4.3 {@code generic_nack} — the ONE opaque {@code command_id} the pre-couple policy must
-     * distinguish (AD-32 case 4: the SMSC's own answer is ground truth and is forwarded verbatim). Not
-     * exported by {@code SmppCommandIds} because it is NOT bind-family (AD-27 declares it
-     * opaque-relayed); this is a local classification constant, not a redefinition of the bind set.
-     */
-    private static final int GENERIC_NACK = 0x80000000;
+    protected static final AttributeKey<AtomicBoolean> CLOSE_FIRED =
+            AttributeKey.valueOf(CoupledRelayHandler.class, "closeFired");
 
     private final ConnectionRegistry registry;
-    private final RelayObserver observer;
+    /** The observability seam — {@code protected} for the one subclass trigger: {@code onBindAccept} at the couple. */
+    protected final RelayObserver observer;
     private final Direction direction;
+
+    /** @param direction the leg this instance serves — the only per-instance state beyond the shared beans. */
+    protected CoupledRelayHandler(ConnectionRegistry registry, RelayObserver observer, Direction direction) {
+        this.registry = registry;
+        this.observer = observer;
+        this.direction = direction;
+    }
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) {
@@ -106,8 +97,12 @@ public final class RelayHandler extends ChannelInboundHandlerAdapter {
 
     // ---------------------------------------------------------------- the single read path
 
+    /**
+     * The shared read prelude — final so no subclass can bypass it: the AD-25 race-free re-check, then
+     * the post-couple opaque relay, then (pre-couple only) the subclass hook.
+     */
     @Override
-    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    public final void channelRead(ChannelHandlerContext ctx, Object msg) {
         Channel channel = ctx.channel();
         ConnectionEntry entry = registry.entryFor(channel);
         if (entry == null || entry.tearingDown()) {
@@ -123,60 +118,19 @@ public final class RelayHandler extends ChannelInboundHandlerAdapter {
             relayFramedPdu(ctx, entry, msg instanceof SmppBindPdu pdu ? pdu.originalFrame() : (ByteBuf) msg);
             return;
         }
-        if (msg instanceof SmppBindResponse response) {
-            if (response.isOk()) {
-                // THE AD-25 couple — the only couple() call site in the relay. fire-and-arm order:
-                // couple first (the state transition), observe exactly at the couple, then hand the
-                // decoded PDU to the EgressLeg forwarder (the AD-25 split: RelayHandler never forwards it).
-                if (entry.couple()) {
-                    observer.onBindAccept(entry.systemId());
-                    entry.ingress().read(); // arm the post-couple data plane on both legs (AUTO_READ=false)
-                    channel.read();
-                }
-                ctx.fireChannelRead(response);
-                return;
-            }
-            // Non-ROK: do NOT couple; tear down — but the SMSC's own answer reaches the legacy client
-            // FIRST (AD-32 case 4 / RELAY-002c; fireChannelRead runs the EgressLeg forward synchronously
-            // on this event loop, so the write is queued before the closes are).
-            ctx.fireChannelRead(response);
-            teardownPair(channel, entry, CloseReason.BIND_FAILED_NON_ROK);
-            return;
-        }
-        if (msg instanceof SmppBindRequest) {
-            // Pre-couple bind family is the cooperative set (AD-32): the interceptor plane owns it. On
-            // the egress leg that is the EgressLeg (a bind REQUEST from the SMSC is a direction
-            // violation it collapses); on the ingress leg the interceptor consumed it upstream, so this
-            // arm is egress-only in practice — propagate, never consume bind-family here.
-            ctx.fireChannelRead(msg);
-            return;
-        }
-        ByteBuf frame = (ByteBuf) msg; // opaque non-bind — the codec's only other output shape
-        if (direction == Direction.EGRESS && frame.getInt(4) == GENERIC_NACK) {
-            // AD-32 case 4: the SMSC's own answer to the bind — ground truth, forwarded VERBATIM (no
-            // couple, no collapse); the write takes the frame's ownership, then the pair tears down.
-            entry.ingress().writeAndFlush(frame);
-            teardownPair(channel, entry, CloseReason.GENERIC_NACK_PRE_BIND);
-            return;
-        }
-        // RELAY-002 (ingress) / RELAY-003 (egress): the AD-32 uniform bare-close — no response, no
-        // leak. The offending command_id is never read on the ingress path at all (non-bind is already
-        // structural: the codec emitted it opaque because it is not bind-family) and never emitted.
-        releaseFrame(frame);
-        stash(channel, CloseReason.PRE_COUPLE_NON_BIND_PDU);
-        if (direction == Direction.INGRESS) {
-            BindInterceptor interceptor = channel.pipeline().get(BindInterceptor.class);
-            if (interceptor != null) {
-                interceptor.teardownForPreCoupleViolation(channel); // beginTeardown → cancel+wipe → close both
-                return;
-            }
-            channel.close(); // defensive: no interceptor in this pipeline — bare close anyway
-            return;
-        }
-        // Egress leg: closing here is the whole violation — EgressLeg.channelInactive sees the bind
-        // died unanswered and collapses it to the AD-33 generic deny (R32 propagation, no leak).
-        channel.close();
+        readPreCouple(ctx, entry, msg);
     }
+
+    /**
+     * The one leg-specific hook: the pre-couple window (AD-32), where the two legs differ. The ingress
+     * leg delegates its violations to the upstream {@code BindInterceptor} (the pending-adjudication
+     * handles live there); the egress leg owns the AD-25 couple (the only {@code ConnectionEntry#couple()}
+     * call site — structural-by-TYPE, AC6) and the case-4 {@code generic_nack} arm. Never called
+     * post-couple (the prelude's {@code coupled()} branch owns that plane).
+     *
+     * @param entry the live, not-yet-coupled pair entry (re-checked by the prelude; non-null).
+     */
+    protected abstract void readPreCouple(ChannelHandlerContext ctx, ConnectionEntry entry, Object msg);
 
     // ---------------------------------------------------------------- the post-couple relay (AD-2/REL-1)
 
@@ -237,7 +191,7 @@ public final class RelayHandler extends ChannelInboundHandlerAdapter {
      * + mark tearing-down BEFORE close), then close the peer and this leg. A losing racer no-ops
      * (RELAY-005) — never a write on a pair someone else is tearing down.
      */
-    private void teardownPair(Channel self, ConnectionEntry entry, CloseReason reason) {
+    protected void teardownPair(Channel self, ConnectionEntry entry, CloseReason reason) {
         stash(self, reason);
         Channel peer = peerOf(entry, self);
         if (peer != null) {
@@ -325,7 +279,8 @@ public final class RelayHandler extends ChannelInboundHandlerAdapter {
         return CloseReason.OTHER;
     }
 
-    private static void stash(Channel channel, CloseReason reason) {
+    /** Stashes the close reason for the {@code channelInactive} site (AD-27: never fires directly). */
+    protected static void stash(Channel channel, CloseReason reason) {
         channel.attr(CLOSE_REASON).set(reason);
     }
 
@@ -335,7 +290,7 @@ public final class RelayHandler extends ChannelInboundHandlerAdapter {
     }
 
     /** Releases a pipeline message: the framed {@link ByteBuf}, or a decoded PDU's retained original frame. */
-    private static void releaseFrame(Object msg) {
+    protected static void releaseFrame(Object msg) {
         if (msg instanceof SmppBindPdu pdu) {
             pdu.originalFrame().release();
         } else {

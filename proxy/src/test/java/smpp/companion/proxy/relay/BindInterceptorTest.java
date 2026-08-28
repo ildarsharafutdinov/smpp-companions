@@ -115,11 +115,12 @@ class BindInterceptorTest {
         BindInterceptor interceptor = new BindInterceptor(
                 verifier, registry, observer, properties, egressInitializer, channelOptions,
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
-        // The REAL production ingress pipeline (AC4): framer → codec → BindInterceptor → RelayHandler —
-        // T8 added the last entry; both legs carry one per-channel RelayHandler sharing these beans.
+        // The REAL production ingress pipeline (AC4): framer → codec → BindInterceptor →
+        // RelayIngressHandler — T8 added the last entry; both legs carry one per-channel relay
+        // handler (RelayIngressHandler/RelayEgressHandler, the Story 3.4 T5 split) sharing these beans.
         ingress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor,
-                new RelayHandler(registry, observer, Direction.INGRESS));
+                new RelayIngressHandler(registry, observer));
     }
 
     @AfterEach
@@ -330,8 +331,8 @@ class BindInterceptorTest {
         assertThat(bytesOf(toLegacy))
                 .as("VERBATIM — the SMSC's own status, system_id AND unparsed TLV tail, not a 16-byte synth")
                 .isEqualTo(smscResp);
-        // T8 landed: the non-ROK teardown is RelayHandler's arm (AC3: no couple; forward FIRST, then tear down
-        // both legs). This suite's egress leg carries the real T8 RelayHandler via the shared initializer.
+        // T8 landed: the non-ROK teardown is RelayEgressHandler's arm (AC3: no couple; forward FIRST, then tear
+        // down both legs). This suite's egress leg carries the real T8 relay handler via the shared initializer.
         assertThat(ingress.<ByteBuf>readOutbound()).as("nothing follows the verbatim answer").isNull();
         assertThat(ingress.isOpen()).as("non-ROK → tear down (AC3)").isFalse();
         assertThat(egress.isOpen()).isFalse();
@@ -431,7 +432,7 @@ class BindInterceptorTest {
         // Swap the interceptor into a fresh pipeline (the @BeforeEach channel already has one).
         EmbeddedChannel throwingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), throwing,
-                new RelayHandler(registry, observer, Direction.INGRESS));
+                new RelayIngressHandler(registry, observer));
         try {
             throwingIngress.writeInbound(inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 12, "legacy1", "pw123456")));
             ByteBuf deny2 = throwingIngress.readOutbound();
@@ -464,7 +465,7 @@ class BindInterceptorTest {
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
         EmbeddedChannel nullingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), nulling,
-                new RelayHandler(registry, observer, Direction.INGRESS));
+                new RelayIngressHandler(registry, observer));
         try {
             ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 13, "legacy1", "pw123456"));
             nullingIngress.writeInbound(frame);
