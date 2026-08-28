@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The preview feature exercised is the project's real control-plane dependency (JEP 505
  * {@code StructuredTaskScope}, confined to {@code security/}+{@code bootstrap/} per AD-5); the relay
- * data-plane splice uses NO preview API.
+ * data-plane relay uses NO preview API.
  */
 @Tag("unit")
 @Tag("deploy")

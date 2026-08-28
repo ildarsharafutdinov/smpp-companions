@@ -14,7 +14,7 @@ import smpp.companion.proxy.security.SystemId;
 /**
  * The single concurrent bean that owns ALL mutable per-bind runtime state (AD-8). Keyed by ingress
  * {@link ChannelId}; each {@link ConnectionEntry} holds the coupled-pair state (peer-egress {@link Channel},
- * the AD-25 flip-flag, session metadata, tearing-down mark). A {@link Channel} attribute caches the entry on
+ * the AD-25 couple flag, session metadata, tearing-down mark). A {@link Channel} attribute caches the entry on
  * BOTH legs for O(1) event-loop access (no map probe on the hot path). Teardown removes via
  * {@link #beginTeardown(Channel)} on either leg (idempotent &mdash; RELAY-005); egress-connect failure after
  * the entry was optimistically created removes it and hands the ingress back to the caller to close

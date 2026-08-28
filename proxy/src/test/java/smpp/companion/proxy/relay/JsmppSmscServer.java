@@ -49,7 +49,7 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
 /**
  * The T10 jSMPP 3.0.2 server-side mock SMSC — the INDEPENDENT A-1 conformance oracle (OBS-038,
  * AD-24). Unlike {@link MockSmsc} (the production-codec mock, which is NEVER an oracle), this
- * fixture is a full second SMPP stack: every PDU the relay splices onto an egress socket is
+ * fixture is a full second SMPP stack: every PDU relayed onto an egress socket is
  * <b>parsed by jSMPP</b>, and every PDU the legacy client receives from a pair was
  * <b>constructed by jSMPP</b> — it shares NEITHER the production codec's bugs NOR its framing
  * assumptions. If the relay (or the production framer/codec behind it) mis-frames, mis-parses,

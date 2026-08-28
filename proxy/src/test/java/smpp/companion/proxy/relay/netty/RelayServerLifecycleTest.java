@@ -72,7 +72,7 @@ class RelayServerLifecycleTest {
             }
 
             // AD-1: the relay's loops are NAMED PLATFORM threads — a virtual thread never carries the
-            // data-plane splice. (Named factory => observable here without reaching into Netty.)
+            // data-plane relay. (Named factory => observable here without reaching into Netty.)
             Set<Thread> relayThreads = Thread.getAllStackTraces().keySet().stream()
                     .filter(t -> t.getName().startsWith("companion-relay"))
                     .collect(Collectors.toSet());

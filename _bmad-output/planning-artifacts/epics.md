@@ -39,7 +39,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 **§6.1 Protocol Transit**
 
-- **FR-TRANSIT-1** — Transit SMPP 3.4 traffic between legacy system and SMSC using a hybrid model: the proxy inspects and handles only the bind family and unbind (to establish/tear down sessions and apply authentication); all other PDUs are spliced transparently as opaque bytes — not inspected, not filtered, forwarded as-is. Payload-transparent: no claim about, and no restriction on, what message types or PDU content either side sends. *(PDU handling matrix — bind_transmitter/receiver/transceiver (+resp) and unbind (+resp) = inspected/handled; submit_sm, deliver_sm/DLR, enquire_link, submit_multi, data_sm, query_sm, replace_sm, cancel_sm, broadcast_sm, outbind, alert_notification, generic_nack = opaque passthrough — is acceptance criteria for this FR.)*
+- **FR-TRANSIT-1** — Transit SMPP 3.4 traffic between legacy system and SMSC using a hybrid model: the proxy inspects and handles only the bind family and unbind (to establish/tear down sessions and apply authentication); all other PDUs are relayed transparently as opaque bytes — not inspected, not filtered, forwarded as-is. Payload-transparent: no claim about, and no restriction on, what message types or PDU content either side sends. *(PDU handling matrix — bind_transmitter/receiver/transceiver (+resp) and unbind (+resp) = inspected/handled; submit_sm, deliver_sm/DLR, enquire_link, submit_multi, data_sm, query_sm, replace_sm, cancel_sm, broadcast_sm, outbind, alert_notification, generic_nack = opaque passthrough — is acceptance criteria for this FR.)* *(wording: "spliced" → "relayed", Story 3.4 T4 couple/relay vocabulary unification, 2026-08-28; the PRD's original "spliced" reads through this mapping)*
 - **FR-TRANSIT-2** — DLRs (`deliver_sm`) flow back to the originating legacy bind via that same transparent passthrough (on the bind's session affinity) — no separate DLR path and no DLR-specific handling. *(Depends on bind session-affinity — §10 A-1.)*
 - **FR-TRANSIT-3** — Interoperate transparently with unmodified SMPP 3.4 stacks on both legs, passing an SMPP 3.4 conformance suite on each leg without altering protocol behavior either side relies on.
 - **FR-TRANSIT-4** — The bind/unbind handling implements SMPP 3.4; SMPP 5.x is not implemented.
@@ -85,7 +85,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 **§7.2 Security**
 
 - **SEC-1** — TLS floor: TLS 1.2 minimum, TLS 1.3 preferred; publish a cipher allowlist policy (operator-tunable default ships in config).
-- **SEC-2** — Parser robustness: handles only bind/unbind PDUs (all else opaque splice); safely rejects malformed/oversized/truncated bind PDUs without crashing. Splice path robust against oversized frames + memory exhaustion via backpressure (REL-2). One shared `PooledByteBufAllocator`; size direct memory via `-XX:MaxDirectMemorySize`; expose `ByteBufAllocatorMetric`.
+- **SEC-2** — Parser robustness: handles only bind/unbind PDUs (all else opaque relay); safely rejects malformed/oversized/truncated bind PDUs without crashing. Relay path robust against oversized frames + memory exhaustion via backpressure (REL-2). One shared `PooledByteBufAllocator`; size direct memory via `-XX:MaxDirectMemorySize`; expose `ByteBufAllocatorMetric`. *(wording: splice → relay, Story 3.4 T4, 2026-08-28)*
 - **SEC-3** — The proxy→authority-provider link is authenticated and encrypted (TLS/mTLS or service-account token).
 - **SEC-4** — No rolled crypto: mature libraries mandatory for crypto/TLS/OIDC (TLS via JDK 25 SSLEngine or netty-tcnative/BoringSSL/OpenSSL; JWT via Nimbus JOSE+JWT; substrate Spring Boot 4.1.x; Netty direct, no WebFlux/Reactor). From-scratch scope = SMPP layer only. Never hand-roll crypto, TLS record handling, or JWT signature verification.
 - **SEC-5** — Dependency hygiene: maintain a vulnerability/CVE policy for security-critical dependencies (Netty, JDK); version pinning in the dependency policy.
@@ -96,7 +96,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 **§7.4 Reliability**
 
-- **REL-1** — Transit integrity: do not silently drop, duplicate, or corrupt spliced traffic or DLRs.
+- **REL-1** — Transit integrity: do not silently drop, duplicate, or corrupt relayed traffic or DLRs. *(wording: "spliced traffic" → "relayed traffic", Story 3.4 T4, 2026-08-28)*
 - **REL-2** — Backpressure: when the egress leg is slow, the ingress leg backpressures rather than OOM.
 - **REL-3** — Graceful shutdown: on SIGTERM, stop accepting new binds, drain in-flight traffic up to a timeout, then exit.
 - **REL-4** — Statelessness: the proxy holds no `message_id`→`system_id` correlation (socket-pairing state only). Premise A-1 (carrier multi-bind + DLR affinity) is confirmed; smoke-test it early.
@@ -136,11 +136,11 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 **YES — greenfield, from-scratch scaffold** (Decision-B; only mature TLS/OIDC/JWT libs reused; the SMPP layer is authored from scratch).
 
-- **Language/Runtime:** Java, JDK 25 LTS (pin build 25.0.x) — Loom virtual threads, generational ZGC, ScopedValue. Build runs with `--enable-preview` process-wide (required by AD-5: StructuredTaskScope JEP 505 is 5th-preview on JDK 25; ScopedValue JEP 506 is final). Preview confined to control plane (`security/` + `bootstrap/`); data-plane splice stays pure-stable API.
+- **Language/Runtime:** Java, JDK 25 LTS (pin build 25.0.x) — Loom virtual threads, generational ZGC, ScopedValue. Build runs with `--enable-preview` process-wide (required by AD-5: StructuredTaskScope JEP 505 is 5th-preview on JDK 25; ScopedValue JEP 506 is final). Preview confined to control plane (`security/` + `bootstrap/`); data-plane relay stays pure-stable API. *(wording: splice → relay, Story 3.4 T4, 2026-08-28)*
 - **Build tool:** Gradle multi-module (`settings.gradle` + `build.gradle`); dependency management via `netty-bom` + Spring Boot 4.1.x.
 - **Module structure (AD-7, two-module seam, inward-only: `proxy → codec`):**
   - `codec/` — SMPP 3.4 codec, PDU model, bind-family framing, command_id set. **PURE: zero dependency on relay/TLS/OIDC/config/metrics/app.** Extractable core (MAINT-2 seed). Package `smpp.companion.codec.*`.
-  - `proxy/` — the runnable application. Package `smpp.companion.proxy.*` with sub-packages: `relay/` (Netty pipelines, BindInterceptor, RelayHandler, ConnectionRegistry), `security/` (TLS modes A/B/C, trust-store loading, OIDC/JWKS via Nimbus, BindCredentialVerifier port + ROPC adapter), `config/` (@ConfigurationProperties, fail-fast, role×mode matrix, routing table), `observability/` (JSON-lines logging, SpliceObserver, `/metrics` handler, MetricsRegistry), `bootstrap/` (Spring Boot main, SmartLifecycle, graceful shutdown, dedicated metrics event loop).
+  - `proxy/` — the runnable application. Package `smpp.companion.proxy.*` with sub-packages: `relay/` (Netty pipelines, BindInterceptor, RelayHandler, ConnectionRegistry), `security/` (TLS modes A/B/C, trust-store loading, OIDC/JWKS via Nimbus, BindCredentialVerifier port + ROPC adapter), `config/` (@ConfigurationProperties, fail-fast, role×mode matrix, routing table), `observability/` (JSON-lines logging, RelayObserver — renamed from SpliceObserver, Story 3.4 T4, 2026-08-28; the rest of this row stays the frozen planning snapshot per the T2 disposition), `/metrics` handler, MetricsRegistry), `bootstrap/` (Spring Boot main, SmartLifecycle, graceful shutdown, dedicated metrics event loop).
   - `docs/` — OPS-1 operator surface.
 - **Config keys:** `companion.*` (relaxed binding).
 - **Key dependencies (web-verified 2026-07):** Netty 4.2.16.Final (`netty-bom`; NIO/Epoll, NOT io_uring; 4.2 IoHandler transport SPI); Spring Boot 4.1.x (Spring Framework 7.0.8+; NO WebFlux, NO Reactor); Micrometer (PrometheusMeterRegistry); Nimbus JOSE+JWT 10.9.1 (≥10.0.2 for CVE-2025-53864); jSMPP `org.jsmpp:jsmpp:3.0.2` (**TEST/INTEROP ONLY**, never the production codec); GraalVM JDK 25 (stretch only, no v1 native build); reference IdP Keycloak 26.x (operator-provided, not part of project).
@@ -241,19 +241,19 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 #### Architectural Decisions Summary (AD-1..AD-34)
 
-*Per-epic "Key ADs" lists are a curated highlight, not an exhaustive ownership registry: cross-cutting / governance ADs (e.g. AD-6 three-threading-model coherence) are intentionally not pinned to a single epic. Every AD is owned via the FR/NFR lists + package ownership + the TEA handoff's scenario→AC mapping.*
+*Per-epic "Key ADs" lists are a curated highlight, not an exhaustive ownership registry: cross-cutting / governance ADs (e.g. AD-6 three-threading-model coherence) are intentionally not pinned to a single epic. Every AD is owned via the FR/NFR lists + package ownership + the TEA handoff's scenario→AC mapping. (Summary-table wording swept to the couple/relay vocabulary — splice→relay, flip→couple, SpliceObserver→RelayObserver — Story 3.4 T4, 2026-08-28; the spine AD-1/2/8/25/27/32 amendment markers govern.)*
 
 | AD | Title | One-liner |
 |----|-------|-----------|
-| AD-1 | Event-loop relay paradigm | Netty event loops own the steady-state byte splice; VTs own the control plane; VTs never carry steady-state bytes. |
-| AD-2 | Relay coupling + framed-ByteBuf splice | HexDumpProxy pattern (shared loop, AUTO_READ=false, write-gates-read); forward framed-PDU ByteBufs; framer stays active, codec dormant post-couple; no live pipeline surgery. |
+| AD-1 | Event-loop relay paradigm | Netty event loops own the steady-state byte relay; VTs own the control plane; VTs never carry steady-state bytes. |
+| AD-2 | Relay coupling + framed-PDU relay | HexDumpProxy pattern (shared loop, AUTO_READ=false, write-gates-read); forward framed-PDU ByteBufs; framer stays active, codec dormant post-couple; no live pipeline surgery. |
 | AD-3 | Hybrid PDU model | Inspect/handle ONLY bind family + unbind pre-couple (SMPP 3.4 only); once coupled every PDU incl. unbind is opaque bytes; MT-only is deploy expectation, not filter. |
 | AD-4 | No blocking work on the event loop | Blocking calls on VTs; SslHandler bounded delegating Executor fails handshake on saturation — never CallerRunsPolicy, never unbounded. |
 | AD-5 | Control plane on STS + ScopedValue | STS (JEP 505 preview) + ScopedValue (JEP 506 final) for adjudication fan-out, shutdown, lifecycle; RequestContext via ScopedValue never ThreadLocal; --enable-preview process-wide. |
 | AD-6 | Three threading models kept coherent | Netty loops (data plane) + hand-managed VTs (control plane) + Spring executors; spring.threads.virtual.enabled only for Spring internals. |
 | AD-7 | Two-module Gradle seam, inward-only | codec pure (zero upward deps); proxy = relay+security+config+observability+bootstrap; direction proxy → codec. |
 | AD-8 | State-ownership (shape + home) | Mutable state: per-bind ConnectionRegistry (ingress ChannelId + Channel attr), monotonic metrics, AtomicReference<JwkSet> JWKS swapped whole; no message_id↔system_id; no SMS body persisted. |
-| AD-9 | Stateless relay on assumption A-1 | Socket-pairing state only; DLRs ride the splice via the coupled pair (= session affinity); smoke-test A-1 early. |
+| AD-9 | Stateless relay on assumption A-1 | Socket-pairing state only; DLRs ride the relay via the coupled pair (= session affinity); smoke-test A-1 early. |
 | AD-10 | Credential-free proxy tier (at rest) | No persisted passwords/vault/CA/issuing keys; runtime holds OIDC cred, JWKS public keys, transient password (zeroized), own TLS end-entity keys; three trust roots. |
 | AD-11 | Fail-closed universal default | Every auth-adjacent decision denies on indeterminate; DENY wins on verdict/defense-in-depth disagreement; kid-miss → DENY (no foreground refresh). |
 | AD-12 | OIDC via ROPC, disposable JWT verdict, BindCredentialVerifier port | Token 200/401 = verdict (endpoint response alone — local JWKS defense-in-depth REMOVED, Story 3.4 T1+T2, 2026-08-27); discard token, relay original bind; re-validate every bind; port returns VerdictRequest (future() + cancelHttp() per AD-32); [B] (2026-08-21): forward dials reverse per session, reverse holds the TLS listener; Mode A needs ACL isolation or Mode C. |
@@ -266,17 +266,17 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 | AD-19 | /metrics on own Netty (Micrometer); observability posture | Loopback HTTP handler on dedicated Netty loop; no Actuator/Tomcat/WebFlux; loopback IPv4 only; system_id labels only for routing-table values; JSON-lines logging; custom VT gauge. |
 | AD-20 | Egress TLS endpoint-identification | Set endpointIdentificationAlgorithm on the forward→reverse internet leg (null for raw-IP reverse targets — [B] 2026-08-21); SMSC leg always plaintext (AD-12 amended 2026-08-18); IdP link = JDK HttpClient, verification always on. |
 | AD-21 | ByteBuf allocator posture | One shared PooledByteBufAllocator; size MaxDirectMemorySize (AD-30); expose ByteBufAllocatorMetric; start pooled, load-test before choosing. |
-| AD-22 | Graceful shutdown coordination | SIGTERM → stop acceptor → DENY in-flight → drain splices → stop JWKS refresh → close JWKS cache → VT drain → exit. |
+| AD-22 | Graceful shutdown coordination | SIGTERM → stop acceptor → DENY in-flight → drain relayed traffic → VT drain → exit (the two JWKS steps died with the cache — spine AD-22 amendment, Story 3.4 T2). |
 | AD-23 | No native-image build target in v1 (OQ-11) | JVM build only; keep native-image-compatible as stretch; revisit only if cold-start-sensitive deployment emerges. |
 | AD-24 | Test & conformance toolchain | From-scratch SMPP 3.4 conformance suite; fuzz bind parser AND framing decoder; in-JVM mock SMSC; jSMPP 3.0.2 interop only; A-1 carrier check = non-CI ops step. |
-| AD-25 | Bind→splice transition state machine | Splice flag flipped by exactly RelayHandler on decoded bind_*_resp ROK; BindInterceptor forwards bind_resp; RelayHandler read-only; post-couple unbind opaque; session ends on TCP half/close. |
+| AD-25 | Bind→couple transition state machine | Couple flag set by exactly RelayHandler on decoded bind_*_resp ROK; BindInterceptor forwards bind_resp; RelayHandler read-only; post-couple unbind opaque; session ends on TCP half/close. |
 | AD-26 | Egress TLS trust anchoring | The forward's TLS client validates the reverse's server cert against operator trust store (never cacerts, fail-fast; [B] 2026-08-21); hostname-off conditional on IP-SAN certs or operator trust store as sole gate; cacerts/public-PKI = explicit opt-in any mode, never default. |
-| AD-27 | Intra-proxy ownership seams | codec owns SmppCommandIds.BIND_FAMILY (consumed, not redefined); outbind/generic_nack opaque; SpliceObserver in observability/ with pinned triggers; codec never emits metrics; one counter source. |
+| AD-27 | Intra-proxy ownership seams | codec owns SmppCommandIds.BIND_FAMILY (consumed, not redefined); outbind/generic_nack opaque; RelayObserver in observability/ with pinned triggers; codec never emits metrics; one counter source. |
 | AD-28 | Bounded delegating executors | SslHandler Executor = one fixed platform-thread pool, abort-on-saturation; JWKS refresh = hand-rolled VT on ScheduledExecutorService; adjudication = single bounded VT pool, fail-closed, no VT-per-bind outside it. |
 | AD-29 | Routing cardinality (v1 = 1:1) + value schema | One carrier egress per forward instance; system_id allow-list → single egress; {host, port, tlsContextId?}; multi-carrier deferred. |
 | AD-30 | Max frame + per-channel inbound budget + direct-memory | Pin max command_length 65536 (exceed → drop+close), reject <16, overflow guard pre-allocation; bounded inbound queue + low-water re-arm; MaxDirectMemorySize = max_frame × depth × pairs × safety. |
 | AD-31 | Documentation is the operator surface (OPS-1) | Docs = v1 deliverable: config reference, per-mode guide, runbooks under docs/; cipher policy, Mode B warning, A-1 test plan dock here. |
-| AD-32 | Pre-couple non-bind PDU policy (resolves Q1) | Pre-splice-flip either leg: ONLY bind-family handled cooperatively; **everything else (incl. `unbind`, `enquire_link`, `submit_sm`, unknown `command_id`) → close, no response** (above-spec fail-closed; tear down in-flight bind); egress `generic_nack`/non-ROK `bind_resp` from the SMSC → **forwarded verbatim** (SMSC is the credential authority). Zero knobs, fail-closed. |
+| AD-32 | Pre-couple non-bind PDU policy (resolves Q1) | Pre-couple either leg: ONLY bind-family handled cooperatively; **everything else (incl. `unbind`, `enquire_link`, `submit_sm`, unknown `command_id`) → close, no response** (above-spec fail-closed; tear down in-flight bind); egress `generic_nack`/non-ROK `bind_resp` from the SMSC → **forwarded verbatim** (SMSC is the credential authority). Zero knobs, fail-closed. |
 | AD-33 | Bind-denial wire collapse (resolves Q7) | ALLOW→`ESME_ROK`; all denials→one generic bind-failure code (exact code per owning story); rich OIDC outcome→JSON-lines logs + bounded Verdict counters only, never on wire. |
 | AD-34 | TLS cipher/protocol allowlist default (resolves Q3) | Protocols `[TLSv1.3, TLSv1.2]`; TLS-1.2=ECDHE-ECDSA/RSA-AES-GCM set (no CBC/static-RSA/legacy) + optional ChaCha20; `companion.tls.*` tunable; empty provider-intersect→fail-fast. |
 
@@ -292,7 +292,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **Mode A two-proxy without ACL isolation** — under [B] (2026-08-21): the reverse cannot authenticate the forward in one-way TLS, so any peer may SUBMIT binds to the reverse's internet listener; the harvest framing retired (the reverse ROPC-adjudicates everything submitted — a fake forward harvests nothing) and the residual is a submission oracle (credential guessing through the ROPC screen/SMSC); mitigate = ACL-isolate the reverse's listener to forward-proxy hosts or use Mode C.
 - **Payload transparency = no content-level protection** — no inspection/filtering/type-enforcement (AD-3).
 - **Long-lived baked Mode C client certs** — rotation = re-deploy; per-instance keys bound the blast radius (OPS-2).
-- **Authority-provider outage blocks new binds** — ongoing splices survive (adjudication is bind-time only; no provider state is cached — re-worded 2026-08-27, Story 3.4 T2, the cached-JWKS clause died with the cache) (A-2).
+- **Authority-provider outage blocks new binds** — ongoing relayed sessions survive (adjudication is bind-time only; no provider state is cached — re-worded 2026-08-27, Story 3.4 T2, the cached-JWKS clause died with the cache; "ongoing splices" → "ongoing relayed sessions", Story 3.4 T4, 2026-08-28) (A-2).
 - **No local brute-force / rate-limit protection** — planned future companion; acknowledged gap. **Sharpened (AD-32):** the bind-in-flight branch abandons an in-flight ROPC the IdP still completes (IdP amplification); AD-28(4)/AD-4 protect the proxy, not the IdP — operator-side IdP rate-limiting is REQUIRED (operator-scope).
 - **Pipelining ESMEs / short-bind-timeout clients are closed (AD-32, no buffer mode)** — *new constraint.* An ESME pipelining `submit_sm` before `bind_resp`, or whose bind-timeout < PERF-3 cold/DENY, is closed. Docks under OPS-1 + the A-1 non-CI carrier check.
 - **No metrics dashboard / telemetry backend / management API** — read-only `/metrics` + baseline logging only.
@@ -306,7 +306,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - Routing-table YAML shape + multi-carrier routing (v1 = 1:1, AD-29).
 - Prometheus histogram buckets / scrape-handler exacts (AD-19 fixes posture + cardinality).
 - `application.yml` exact keys (AD-17 fixes the matrix).
-- DLR-splice byte mechanics (determined by AD-2/AD-9/AD-25).
+- DLR relay mechanics (determined by AD-2/AD-9/AD-25). *(re-termed "DLR-splice byte mechanics", Story 3.4 T4, 2026-08-28)*
 - A-1 real-carrier operational test plan (non-CI ops step, AD-24; docks under docs, AD-31).
 - Full STRIDE/DFD threat model (spine carries load-bearing trust invariants + register; exhaustive enumeration belongs in walkthrough).
 - Perf-harness exacts (JMH codec bench, end-to-end relay percentile table, idle-CPU-at-N demo).
@@ -319,7 +319,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 ### FR Coverage Map
 
-- **FR-TRANSIT-1** → Epic 2 — relay splices framed PDUs bidirectionally (bind family handled, all else opaque).
+- **FR-TRANSIT-1** → Epic 2 — framed PDUs relayed bidirectionally (bind family handled, all else opaque). *(wording: splice → relay, Story 3.4 T4, 2026-08-28)*
 - **FR-TRANSIT-2** → Epic 2 — DLRs ride the coupled pair (= session affinity); proven by the A-1 smoke test (AD-9).
 - **FR-TRANSIT-3** → Epic 2 — interop + relay-level conformance on both legs (jSMPP interop counterpart).
 - **FR-TRANSIT-4** → Epic 1 — SMPP 3.4 only (5.x rejected); owned by the pure codec.
@@ -357,13 +357,13 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 ### Epic 2: Transit SMPP end-to-end — stateless relay with the A-1 session-affinity smoke test
 
-**Goal:** The operator runs a stateless relay that accepts legacy SMPP 3.4 binds, splices framed PDUs bidirectionally to the SMSC, returns DLRs (`deliver_sm`) via the same coupled channel pair (session affinity), and passes the conformance suite on BOTH legs. Assumption A-1 (carrier allows multiple concurrent binds per `system_id` + DLR affinity) is smoke-tested against the in-JVM mock SMSC — the earliest genuine risk checkpoint; if A-1 is false the design escalates to stateful per AD-9 BEFORE any security investment.
+**Goal:** The operator runs a stateless relay that accepts legacy SMPP 3.4 binds, relays framed PDUs bidirectionally to the SMSC, returns DLRs (`deliver_sm`) via the same coupled channel pair (session affinity), and passes the conformance suite on BOTH legs. Assumption A-1 (carrier allows multiple concurrent binds per `system_id` + DLR affinity) is smoke-tested against the in-JVM mock SMSC — the earliest genuine risk checkpoint; if A-1 is false the design escalates to stateful per AD-9 BEFORE any security investment. *(wording: "splices framed PDUs" → "relays framed PDUs", Story 3.4 T4, 2026-08-28)*
 
 - **FRs covered:** FR-TRANSIT-1, FR-TRANSIT-2, FR-TRANSIT-3
-- **NFRs:** REL-1, REL-2, REL-4, SEC-2, MAINT-4, COMP-1 *(PERF-4 sub-ms relay latency is a design invariant of the event-loop splice; formal measurement in Epic 6)*
+- **NFRs:** REL-1, REL-2, REL-4, SEC-2, MAINT-4, COMP-1 *(PERF-4 sub-ms relay latency is a design invariant of the event-loop relay; formal measurement in Epic 6)*
 - **Key ADs:** AD-1, AD-2, AD-3, AD-8, AD-9, AD-14, AD-15, AD-21, AD-24 (relay), AD-25, AD-27 (contracts + triggers), AD-30 (budget), AD-32 (pre-couple non-bind PDU close policy + AD-25 transition carve-out)
 - **Depends on:** Epic 1
-- **Packages owned:** `proxy/relay/` (full); `proxy/security/` (**contract seed only** — `BindCredentialVerifier` port + `Verdict` sealed interface + `BindCredential` record + always-allow stub; shape fixed by AD-12); `proxy/observability/` (**contract seed only** — `SpliceObserver` interface + noop impl; shape fixed by AD-27); `proxy/src/test` (in-JVM mock SMSC, relay conformance suite, jSMPP interop, A-1 fixture)
+- **Packages owned:** `proxy/relay/` (full); `proxy/security/` (**contract seed only** — `BindCredentialVerifier` port + `Verdict` sealed interface + `BindCredential` record + always-allow stub; shape fixed by AD-12); `proxy/observability/` (**contract seed only** — `RelayObserver` interface (renamed from `SpliceObserver`, Story 3.4 T4, 2026-08-28) + noop impl; shape fixed by AD-27); `proxy/src/test` (in-JVM mock SMSC, relay conformance suite, jSMPP interop, A-1 fixture)
 - **Opener (from the elicitation ROPC refinement):** before `relay/` finalizes against the seeded `BindCredentialVerifier` port, a thin **contract-shape validation slice** makes a real ROPC call against a Keycloak 26.x and ratifies the `Verdict` permit set + `BindCredential` + the `VerdictRequest`-returning `verify(ScopedValue<RequestContext>)` shape (incl. `cancelHttp()` per AD-32). The contract is validated *before* it is consumed — which is what earns the "immutable henceforth" claim. (Full ROPC adapter stays in Epic 3.)
 
 ### Epic 3: Secure the transit — TLS modes A/B/C and OIDC ROPC password-grant adjudication
@@ -385,7 +385,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **NFRs:** OBS-1, OBS-2, OBS-3, PRIV-1 (metrics cardinality) *(+ end-to-end AD-22 graceful-shutdown check; PERF-1's "don't stall the relay" is satisfied by AD-19's dedicated-loop design — formal throughput-while-scraped proof is in Epic 6)*
 - **Key ADs:** AD-8 (metrics), AD-19, AD-21 (metric), AD-22 (end-to-end), AD-27 (impl), AD-28 (metrics loop)
 - **Depends on:** Epic 2, Epic 3
-- **Packages owned:** `proxy/observability/` (full impl — swaps Epic 2's noop `SpliceObserver` impl behind the **unchanged** AD-27 interface via Spring DI; `relay/` is NOT modified. Epic 2's noop seed already carries the full 4-method shape incl. `onConnectionClosed`, so the interface is genuinely unchanged here.)
+- **Packages owned:** `proxy/observability/` (full impl — swaps Epic 2's noop `RelayObserver` impl (renamed from `SpliceObserver`, Story 3.4 T4, 2026-08-28) behind the **unchanged** AD-27 interface via Spring DI; `relay/` is NOT modified. Epic 2's noop seed already carries the full 4-method shape incl. `onConnectionClosed`, so the interface is genuinely unchanged here.)
 
 ### Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker
 

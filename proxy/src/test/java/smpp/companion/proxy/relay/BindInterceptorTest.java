@@ -31,7 +31,7 @@ import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.codec.framer.SmppFrame;
 import smpp.companion.codec.framer.SmppFrameDecoder;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
-import smpp.companion.proxy.observability.CapturingSpliceObserver;
+import smpp.companion.proxy.observability.CapturingRelayObserver;
 import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
@@ -90,7 +90,7 @@ class BindInterceptorTest {
     private static final int SMSC_PORT = 2775;
 
     private ConnectionRegistry registry;
-    private CapturingSpliceObserver observer;
+    private CapturingRelayObserver observer;
     private LatchedBindCredentialVerifier verifier;
     private FakeEgressConnector connector;
     private RelayEgressInitializer egressInitializer;
@@ -104,7 +104,7 @@ class BindInterceptorTest {
             ingress.finishAndReleaseAll(); // a manually-recycled channel (denySynthMatchesEachBindType) must not leak
         }
         registry = new ConnectionRegistry();
-        observer = new CapturingSpliceObserver();
+        observer = new CapturingRelayObserver();
         verifier = new LatchedBindCredentialVerifier();
         connector = new FakeEgressConnector();
         egressInitializer = new RelayEgressInitializer(registry, observer); // T8: constructor-carrying (shared beans)
@@ -298,7 +298,7 @@ class BindInterceptorTest {
         assertThat(registry.size()).isEqualTo(1);
         assertThat(registry.entryFor(egress)).as("the egress leg is attached to the pair").isNotNull();
         assertThat(observer.bindAccepts())
-                .as("onBindAccept fires at the AD-25 flip (T8), NOT at the verdict — silent here")
+                .as("onBindAccept fires at the AD-25 couple (T8), NOT at the verdict — silent here")
                 .isEmpty();
         assertThat(zeroized(verifier.capturedCredentials.get(0).password().value()))
                 .as("caller-owned zeroize on the ALLOW path too (the continuation's finally — no teardown "
@@ -330,7 +330,7 @@ class BindInterceptorTest {
         assertThat(bytesOf(toLegacy))
                 .as("VERBATIM — the SMSC's own status, system_id AND unparsed TLV tail, not a 16-byte synth")
                 .isEqualTo(smscResp);
-        // T8 landed: the non-ROK teardown is RelayHandler's arm (AC3: no flip; forward FIRST, then tear down
+        // T8 landed: the non-ROK teardown is RelayHandler's arm (AC3: no couple; forward FIRST, then tear down
         // both legs). This suite's egress leg carries the real T8 RelayHandler via the shared initializer.
         assertThat(ingress.<ByteBuf>readOutbound()).as("nothing follows the verbatim answer").isNull();
         assertThat(ingress.isOpen()).as("non-ROK → tear down (AC3)").isFalse();
@@ -339,12 +339,12 @@ class BindInterceptorTest {
         assertThat(observer.connectionCloses())
                 .as("observed with the non-ROK reason on both legs (T8's stashes)")
                 .containsExactlyInAnyOrder(
-                        new CapturingSpliceObserver.ConnectionClose(Direction.EGRESS, CloseReason.BIND_FAILED_NON_ROK),
-                        new CapturingSpliceObserver.ConnectionClose(Direction.INGRESS, CloseReason.BIND_FAILED_NON_ROK));
+                        new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.BIND_FAILED_NON_ROK),
+                        new CapturingRelayObserver.ConnectionClose(Direction.INGRESS, CloseReason.BIND_FAILED_NON_ROK));
     }
 
     @Test
-    @DisplayName("the ROK bind_resp is forwarded verbatim too (the flip itself is T8's single flipper)")
+    @DisplayName("the ROK bind_resp is forwarded verbatim too (the couple itself is T8's single couple unit)")
     void smscRokBindRespIsForwardedVerbatim() {
         coupledEgress();
         byte[] smscResp = bindResponse(SmppCommandIds.BIND_TRANSCEIVER_RESP, 5, 0x00000000, "SMSC01", new byte[0]);

@@ -89,7 +89,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 // fire-and-forget — the assertions observe the RESULT (peer state, mock captures), never the calls.
 class TlsModesLoopbackE2eTest {
 
-    /** SMPP 3.4 §4.1.2 opaque PDU the splice carries (never parsed — AD-3). */
+    /** SMPP 3.4 §4.1.2 opaque PDU the relay carries (never parsed — AD-3). */
     private static final int DELIVER_SM = 0x00000105;
 
     /** The bind wire contract, pinned as LITERALS (independent of the production constants). */
@@ -605,7 +605,7 @@ class TlsModesLoopbackE2eTest {
         try {
             int first = socket.getInputStream().read();
             if (first < 0) {
-                throw new AssertionError("the relay closed the leg — expected a live spliced pair");
+                throw new AssertionError("the relay closed the leg — expected a live coupled pair");
             }
             throw new AssertionError("an extra byte arrived — a duplicate or cross-bled PDU (first byte " + first + ")");
         } catch (SocketTimeoutException clean) {

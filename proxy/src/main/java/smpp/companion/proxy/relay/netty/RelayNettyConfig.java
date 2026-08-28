@@ -48,7 +48,7 @@ public class RelayNettyConfig {
      * pattern): the acceptor's boss/worker loops, and &mdash; from T7 &mdash; every per-bind egress
      * connection, which registers on its ingress channel's event loop so both legs of a coupled pair
      * run on one thread. Platform threads BY CONSTRUCTION ({@link DefaultThreadFactory} never creates
-     * virtual threads) &mdash; virtual threads never carry the data-plane splice (AD-1); the
+     * virtual threads) &mdash; virtual threads never carry the data-plane relay (AD-1); the
      * {@code companion-relay-...} name makes the relay's loops identifiable in thread dumps (and lets
      * the AD-1 platform-thread pin observe them). Size 0 = Netty's default (2 &times; cores).
      *

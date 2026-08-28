@@ -31,7 +31,7 @@ import io.netty.channel.nio.NioIoHandler;
 import io.netty.util.AsciiString;
 import io.netty.util.concurrent.DefaultThreadFactory;
 
-import smpp.companion.proxy.observability.CapturingSpliceObserver;
+import smpp.companion.proxy.observability.CapturingRelayObserver;
 import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
@@ -58,10 +58,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       each bind couples to its OWN egress pair (two distinct mock sessions, each carrying the
  *       exact original bind bytes); a uniquely-tagged {@code deliver_sm} injected on each egress
  *       socket arrives on EXACTLY its originating legacy socket — zero DLR cross-bleed. The
- *       socket-level read IS the tag&rarr;channel assertion: the {@code SpliceObserver} seam is
+ *       socket-level read IS the tag&rarr;channel assertion: the {@code RelayObserver} seam is
  *       deliberately channel-blind (AC5 — no content, no channel identity), so the legacy TCP
  *       connection is the channel identity, and the capturing observer pins the trigger counts
- *       (two {@code onBindAccept} under one identity, one {@code onFramedPdu} per spliced PDU).</li>
+ *       (two {@code onBindAccept} under one identity, one {@code onFramedPdu} per relayed PDU).</li>
  *   <li><b>REL-1 roundtrip (AC7):</b> a {@code submit_sm} chain (legacy&rarr;SMSC) and a
  *       {@code deliver_sm} chain (SMSC&rarr;legacy) across a coupled pair — no drop, no duplicate,
  *       no corruption; PDU boundaries preserved (each chain written as ONE coalesced socket write,
@@ -91,7 +91,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 // these calls' own returns.
 class RelayA1SmokeTest {
 
-    /** SMPP 3.4 §4.1.2 opaque PDUs the splice carries (never parsed — AD-3). */
+    /** SMPP 3.4 §4.1.2 opaque PDUs the relay carries (never parsed — AD-3). */
     private static final int SUBMIT_SM = 0x00000004;
     private static final int DELIVER_SM = 0x00000105;
 
@@ -182,14 +182,14 @@ class RelayA1SmokeTest {
             assertNoFurtherPdu(clientA);
             assertNoFurtherPdu(clientB);
 
-            // The pinned triggers: two ROK flips under the SAME identity (A-1's premise observed at
-            // the relay), one onFramedPdu per spliced PDU — read on the EGRESS legs.
+            // The pinned triggers: two ROK couples under the SAME identity (A-1's premise observed at
+            // the relay), one onFramedPdu per relayed PDU — read on the EGRESS legs.
             assertThat(harness.observer().bindAccepts())
-                    .as("onBindAccept fired exactly at each flip — twice, same system_id")
+                    .as("onBindAccept fired exactly at each couple — twice, same system_id")
                     .containsExactly(
                             new SystemId(new AsciiString("legacy1")), new SystemId(new AsciiString("legacy1")));
             assertThat(harness.observer().framedPdus())
-                    .as("one fire per spliced PDU, on the leg it was read from")
+                    .as("one fire per relayed PDU, on the leg it was read from")
                     .containsExactly(Direction.EGRESS, Direction.EGRESS);
             assertThat(harness.observer().bindRejects()).isEmpty();
         }
@@ -241,7 +241,7 @@ class RelayA1SmokeTest {
             assertThat(harness.registry().size())
                     .as("the pair stays coupled — the roundtrip never tore it down").isEqualTo(1);
             assertThat(harness.observer().framedPdus())
-                    .as("one fire per spliced PDU on the leg it was read from: 4 submits (INGRESS leg) "
+                    .as("one fire per relayed PDU on the leg it was read from: 4 submits (INGRESS leg) "
                             + "then 3 delivers (EGRESS leg)")
                     .containsExactly(
                             Direction.INGRESS, Direction.INGRESS, Direction.INGRESS, Direction.INGRESS,
@@ -269,11 +269,11 @@ class RelayA1SmokeTest {
             assertThat(harness.observer().connectionCloses())
                     .as("RELAY-008 on real sockets: the FIN tears BOTH legs down and the teardown is "
                             + "OBSERVED (never a silent drop)")
-                    .extracting(CapturingSpliceObserver.ConnectionClose::direction)
+                    .extracting(CapturingRelayObserver.ConnectionClose::direction)
                     .containsExactlyInAnyOrder(Direction.INGRESS, Direction.EGRESS);
             assertThat(harness.observer().connectionCloses())
-                    .as("the spliced pair's unstashed/propagated close reason is PEER_HALF_CLOSE")
-                    .extracting(CapturingSpliceObserver.ConnectionClose::reason)
+                    .as("the coupled pair's unstashed/propagated close reason is PEER_HALF_CLOSE")
+                    .extracting(CapturingRelayObserver.ConnectionClose::reason)
                     .containsOnly(CloseReason.PEER_HALF_CLOSE);
         }
 
@@ -295,10 +295,10 @@ class RelayA1SmokeTest {
         assertThat(harness.observer().connectionCloses())
                 .as("RELAY-010 on real sockets: the RST tears BOTH legs down, observed — 4 total close "
                         + "events across the two scenarios, both directions twice")
-                .extracting(CapturingSpliceObserver.ConnectionClose::direction)
+                .extracting(CapturingRelayObserver.ConnectionClose::direction)
                 .containsExactlyInAnyOrder(Direction.INGRESS, Direction.EGRESS, Direction.INGRESS, Direction.EGRESS);
         assertThat(harness.observer().connectionCloses())
-                .extracting(CapturingSpliceObserver.ConnectionClose::reason)
+                .extracting(CapturingRelayObserver.ConnectionClose::reason)
                 .as("an RST surfaces as PEER_RST (read-armed reset) or PEER_HALF_CLOSE (bare inactive) — "
                         + "both are the observed, fail-closed teardown")
                 .isSubsetOf(CloseReason.PEER_RST, CloseReason.PEER_HALF_CLOSE, CloseReason.OTHER);
@@ -446,7 +446,7 @@ class RelayA1SmokeTest {
         try {
             int first = socket.getInputStream().read();
             if (first < 0) {
-                throw new AssertionError("the relay closed the leg — expected a live spliced pair");
+                throw new AssertionError("the relay closed the leg — expected a live coupled pair");
             }
             throw new AssertionError("an extra byte arrived — a duplicate or cross-bled PDU (first byte "
                     + first + ")");
