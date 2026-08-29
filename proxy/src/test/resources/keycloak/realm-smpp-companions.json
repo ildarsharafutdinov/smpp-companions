@@ -13,7 +13,7 @@
   "clients": [
     {
       "clientId": "smpp-client-confidential",
-      "name": "SMPP Confidential — ROPC (DAG) + RFC 7662 introspection (Story 2.1 paths 1/2/4)",
+      "name": "SMPP Confidential — ROPC (DAG), client_secret (amended contract: paths 1/4; the 2.1 interop-arm clients died with Story 3.4 T8, 2026-08-29)",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -38,43 +38,6 @@
           "config": {
             "included.client.audience": "smpp-client-confidential",
             "included.custom.audience": "smpp-client-confidential",
-            "id.token.claim": "false",
-            "access.token.claim": "true"
-          }
-        }
-      ]
-    },
-    {
-      "clientId": "smpp-client-mtls",
-      "name": "SMPP mTLS client — RFC 8705 tls_client_auth, ROPC WITHOUT client_secret (Story 2.1 path 3)",
-      "enabled": true,
-      "protocol": "openid-connect",
-      "publicClient": false,
-      "clientAuthenticatorType": "client-x509",
-      "directAccessGrantsEnabled": true,
-      "standardFlowEnabled": false,
-      "implicitFlowEnabled": false,
-      "serviceAccountsEnabled": false,
-      "authorizationServicesEnabled": false,
-      "frontchannelLogout": false,
-      "redirectUris": ["https://localhost:8443/*"],
-      "webOrigins": [],
-      "attributes": {
-        "x509.subjectdn": "CN=smpp-mtls-client",
-        "x509.casubjectdn": "CN=smpp-test-ca",
-        "x509.allowregexcomparison": "false",
-        "tls.client.certificate.bound.access.tokens": "false",
-        "post.logout.redirect.uris": "+"
-      },
-      "protocolMappers": [
-        {
-          "name": "audience-client-self",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "smpp-client-mtls",
-            "included.custom.audience": "smpp-client-mtls",
             "id.token.claim": "false",
             "access.token.claim": "true"
           }

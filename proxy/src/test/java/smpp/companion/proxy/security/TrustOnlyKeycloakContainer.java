@@ -23,9 +23,10 @@ import java.util.Map;
 
 /**
  * Story 3.2 T9 (AC9) — the pinned Keycloak &ge;26.7.0 fixture in the <b>production provider-link
- * posture</b>: server-auth-only TLS. The 2.1 {@link KeycloakContainer} (kept as-is, the ratified
- * contract fixture) runs {@code KC_HTTPS_CLIENT_AUTH=required} because its {@code client-x509}
- * path demands the peer cert at the TLS layer — but the production {@link RopcBindCredentialVerifier}
+ * posture</b>: server-auth-only TLS. The 2.1 {@link KeycloakContainer} (kept as-is, the slice's
+ * fixture) runs {@code KC_HTTPS_CLIENT_AUTH=required} — transport mTLS; its client cert is demanded
+ * at the TLS layer (the OAuth-level {@code client-x509} use died with Story 3.4 T8, 2026-08-29) —
+ * but the production {@link RopcBindCredentialVerifier}
  * link is <b>trust-only</b> (the RFC 8705 keystore arm was removed pre-release, 2026-08-19: the
  * ROPC {@code client_secret} is the sole provider client auth, so {@link IdpSslContextFactory}
  * builds the context with no key managers). A trust-only client cannot complete a handshake

@@ -13,9 +13,11 @@ import java.security.KeyStore;
 /**
  * Story 2.1 Task 2 — the real Keycloak &ge;26.7.0 fixture contract the test-tier ROPC slice
  * ({@link RopcSlice}) ratifies the AD-12 {@code proxy/security/} port against. Owns the immutable
- * fixture coordinates (realm endpoints, client ids/secrets, the test user) and the mTLS {@link SSLContext}
- * the slice presents on every IdP call (AD-12/AD-29: the proxy presents its per-instance client cert on
- * <b>every</b> call; OAuth-level client auth then differs per path).
+ * fixture coordinates (the realm token endpoint, the confidential client id/secret, the test user) and the
+ * TLS {@link SSLContext} the slice presents on every IdP call — the transport trust anchor of the amended
+ * contract (Story 3.4 T8, 2026-08-29: the client cert is presented on <b>every</b> call as transport
+ * identity; OAuth-level client auth is {@code client_secret} ONLY — the RFC 8705 cert-auth arm, the
+ * introspection endpoint, and the key-set endpoint died with the slice's 2.1-era interop arms).
  *
  * <p>All material is test-only self-signed PKI under {@code proxy/src/test/resources/keycloak/certs/}
  * (regenerate with {@code generate.sh}); the credentials below are NOT production secrets. The trust anchor
@@ -30,17 +32,11 @@ final class KeycloakFixture {
 
     /** The realm base the pinned {@code keycloak:26.7.0} container serves on {@code localhost:8443} (fixed bind). */
     static final String REALM_BASE = "https://localhost:8443/realms/smpp-companions";
-    static final String ISSUER = REALM_BASE;
     static final URI TOKEN_ENDPOINT = URI.create(REALM_BASE + "/protocol/openid-connect/token");
-    static final URI INTROSPECTION_ENDPOINT = URI.create(REALM_BASE + "/protocol/openid-connect/token/introspect");
-    static final URI JWKS_URI = URI.create(REALM_BASE + "/protocol/openid-connect/certs");
 
-    /** Client A — confidential, DAG enabled, {@code client_secret}. Paths 1 (JWT), 2 (introspection), 4 (DENY). */
+    /** Client A — confidential, DAG enabled, {@code client_secret}. The amended contract's sole client (paths 1 + 4). */
     static final String CLIENT_A_ID = "smpp-client-confidential";
     static final String CLIENT_A_SECRET = "smpp-confidential-secret";
-
-    /** Client B — {@code client-x509} (RFC 8705 {@code tls_client_auth}), DAG enabled, <b>no</b> {@code client_secret}. Path 3. */
-    static final String CLIENT_B_ID = "smpp-client-mtls";
 
     /** The full-profile ROPC user (KC 26 User Profile requires email/firstName/lastName — finding #4). */
     static final String TEST_USER = "testuser";
@@ -53,8 +49,10 @@ final class KeycloakFixture {
     }
 
     /**
-     * The mTLS-capable {@link SSLContext}: trusts the fixture CA (server cert) <b>and</b> presents the client
-     * identity (Client B's cert). Built once; the {@link HttpClient} shares it across every IdP call.
+     * The TLS-capable {@link SSLContext}: trusts the fixture CA (server cert) <b>and</b> presents the client
+     * cert (the fixture container demands it on every handshake). Built once; the {@link HttpClient} shares it
+     * across every IdP call — transport identity only; the OAuth-level cert-auth use died with Story 3.4 T8
+     * (2026-08-29).
      */
     static SSLContext newSslContext() {
         try {

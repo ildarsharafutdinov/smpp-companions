@@ -27,12 +27,14 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
  * Story 3.2 T9 (AC9) — the <b>production</b> adapter driven through the real AD-12 port against
  * the pinned Keycloak &ge;26.7.0 fixture, in the amended <b>2-path</b> shape (the RFC 8705 mTLS
  * path was removed pre-release, 2026-08-19 — {@code client_secret} is the sole provider client
- * auth, {@link RopcSliceLiveTest} path 3 keeps the historical ratification; the RFC 7662
+ * auth; the RFC 7662
  * introspection interop leg was removed by Story 3.4 T1, 2026-08-27 — JWT-only adjudication,
  * the unit suite's D6 pin owns the non-JWT deny; the local JWT verification leg — live JWKS
  * fetch + Nimbus defense-in-depth — was removed by Story 3.4 T2, 2026-08-27: the token
  * endpoint's HTTPS-authenticated response is the sole trust anchor, the unit suite's D7 pins
- * own the structural gate): (1) JWT happy path &rarr; {@code Allow} — fully live: startup
+ * own the structural gate. Story 3.4 T8, 2026-08-29 ended the slice's historical ratification
+ * too — {@link RopcSliceLiveTest} now ratifies the same amended contract in its own container):
+ * (1) JWT happy path &rarr; {@code Allow} — fully live: startup
  * discovery &rarr; trust-only TLS &rarr; ROPC &rarr; the structural three-segment gate;
  * (2) bad credentials &rarr; {@code DenyInvalid} both ways the
  * fixture exhibits them (400 {@code invalid_grant}, 401 {@code invalid_client}).
@@ -46,7 +48,8 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
  *
  * <p>Docker-gated ({@code @Testcontainers(disabledWithoutDocker = true)}): runs and bites
  * whenever Docker is present, skips cleanly without it; {@link RopcSliceLiveTest} and the other
- * {@code RopcSlice*} suites stay green unchanged (the reference slice keeps its own container).
+ * {@code RopcSlice*} suites stay green (the reference slice keeps its own container, aligned to
+ * the same amended contract since Story 3.4 T8).
  */
 @Tag("integration")
 @Tag("security")
