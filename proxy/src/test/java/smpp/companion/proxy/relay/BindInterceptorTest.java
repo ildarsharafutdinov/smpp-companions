@@ -90,6 +90,8 @@ class BindInterceptorTest {
     private static final int SMSC_PORT = 2775;
 
     private ConnectionRegistry registry;
+    /** The Story 3.4 T6 state manager over the registry — the interceptor's transitions route through it. */
+    private RelayStateManager manager;
     private CapturingRelayObserver observer;
     private LatchedBindCredentialVerifier verifier;
     private FakeEgressConnector connector;
@@ -104,23 +106,24 @@ class BindInterceptorTest {
             ingress.finishAndReleaseAll(); // a manually-recycled channel (denySynthMatchesEachBindType) must not leak
         }
         registry = new ConnectionRegistry();
+        manager = new RelayStateManager(registry);
         observer = new CapturingRelayObserver();
         verifier = new LatchedBindCredentialVerifier();
         connector = new FakeEgressConnector();
-        egressInitializer = new RelayEgressInitializer(registry, observer); // T8: constructor-carrying (shared beans)
+        egressInitializer = new RelayEgressInitializer(manager, observer); // T8: constructor-carrying (shared beans)
         ProxyCompanionProperties properties = RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1);
         RelayChannelOptions channelOptions = new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT);
         // Story 3.3: the role-split graph — the routing table + per-cell TLS factory resolve from the
         // SAME properties (mode-b: no routing, no TLS — the reverse arm's plaintext dial).
         BindInterceptor interceptor = new BindInterceptor(
-                verifier, registry, observer, properties, egressInitializer, channelOptions,
+                verifier, manager, observer, properties, egressInitializer, channelOptions,
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
         // The REAL production ingress pipeline (AC4): framer → codec → BindInterceptor →
         // RelayIngressHandler — T8 added the last entry; both legs carry one per-channel relay
         // handler (RelayIngressHandler/RelayEgressHandler, the Story 3.4 T5 split) sharing these beans.
         ingress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor,
-                new RelayIngressHandler(registry, observer));
+                new RelayIngressHandler(manager, observer));
     }
 
     @AfterEach
@@ -302,8 +305,8 @@ class BindInterceptorTest {
                 .as("onBindAccept fires at the AD-25 couple (T8), NOT at the verdict — silent here")
                 .isEmpty();
         assertThat(zeroized(verifier.capturedCredentials.get(0).password().value()))
-                .as("caller-owned zeroize on the ALLOW path too (the continuation's finally — no teardown "
-                        + "wipe covers this arm)")
+                .as("caller-owned zeroize on the ALLOW path too (the continuation's settle wipe — Story 3.4 "
+                        + "T6 moved it into the state manager; no teardown wipe covers this arm)")
                 .isTrue();
         // T7 owner-FIXME round: the CONFIGURED budget (companion.bind.adjudication-deadline, 4s via
         // RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE) flows end-to-end into RequestContext.deadline
@@ -426,13 +429,13 @@ class BindInterceptorTest {
                         throw new IllegalStateException("verifier exploded");
                     }
                 },
-                registry, observer, properties, egressInitializer,
+                manager, observer, properties, egressInitializer,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
         // Swap the interceptor into a fresh pipeline (the @BeforeEach channel already has one).
         EmbeddedChannel throwingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), throwing,
-                new RelayIngressHandler(registry, observer));
+                new RelayIngressHandler(manager, observer));
         try {
             throwingIngress.writeInbound(inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 12, "legacy1", "pw123456")));
             ByteBuf deny2 = throwingIngress.readOutbound();
@@ -460,12 +463,12 @@ class BindInterceptorTest {
                         return null; // violates the port's never-null contract (BindCredentialVerifier)
                     }
                 },
-                registry, observer, properties, egressInitializer,
+                manager, observer, properties, egressInitializer,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
         EmbeddedChannel nullingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), nulling,
-                new RelayIngressHandler(registry, observer));
+                new RelayIngressHandler(manager, observer));
         try {
             ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 13, "legacy1", "pw123456"));
             nullingIngress.writeInbound(frame);

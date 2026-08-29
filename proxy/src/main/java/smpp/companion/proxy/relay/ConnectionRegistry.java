@@ -24,10 +24,12 @@ import smpp.companion.proxy.security.SystemId;
  * state only; DLRs ride the coupled channel (AD-9). The structural RELAY-025 scan forbids that
  * identifier/map from ever appearing in {@code relay/}.
  *
- * <p><b>Bean:</b> a singleton {@link Component @Component}. The handlers ({@code BindInterceptor} / the
- * per-leg {@code RelayIngressHandler}/{@code RelayEgressHandler} over {@code CoupledRelayHandler}, T7 / T8)
- * inject this one bean; both legs' event loops share it. Holds no other state,
- * so {@code new ConnectionRegistry()} is the test seam.
+ * <p><b>Bean:</b> a singleton {@link Component @Component}. Since Story 3.4 T6 the production state machine
+ * runs through the {@code RelayStateManager} bean wrapped over THIS storage (the transition policy sits over
+ * the registry — AD-8's named home; {@code BindInterceptor} / the per-leg relay handlers inject the manager,
+ * which is the shape AD-8's 2026-08-29 amendment records); the registry remains directly testable and its
+ * CAS-once teardown mechanics are the manager's substrate. Holds no other state, so
+ * {@code new ConnectionRegistry()} is the test seam.
  */
 @Component
 public final class ConnectionRegistry {

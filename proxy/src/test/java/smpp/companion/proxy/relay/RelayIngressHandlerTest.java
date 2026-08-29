@@ -26,8 +26,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Story 2.2 Task 8 / AC3+AC5+AC6 (the ingress half of the Story 3.4 T5 split of
  * {@code RelayHandlerTest}) &mdash; the {@code RelayIngressHandler} contract: the AD-32 case-3
- * bare-close via the {@code BindInterceptor} DELEGATION (the pending-adjudication {@code cancelHttp}
- * + zeroize live there — the pinned AC3 teardown ordering), the structural no-bind-arm fact (a stray
+ * bare-close through the {@code RelayStateManager} DIRECTLY (Story 3.4 T6: the pre-T6
+ * {@code BindInterceptor} delegation died with the absorption — the pending-adjudication
+ * {@code cancelHttp} + zeroize hygiene is manager-side now), the structural no-bind-arm fact (a stray
  * decoded {@code bind_resp} on this leg fails CLOSED — never couples, never a
  * {@code ClassCastException}), and the base-owned planes driven from this leg (the post-couple
  * half-close propagation RELAY-008, the write/close micro-race RELAY-009, the RST observation
@@ -102,13 +103,14 @@ class RelayIngressHandlerTest extends CoupledPairHarness {
     void strayDecodedBindRespOnIngressLegFailsClosedNeverCouples() {
         // Drive the arm DIRECTLY: with the real interceptor in the pipeline a client-sent bind_resp is
         // released upstream and never reaches this handler, so this row builds the leg without one —
-        // the handler's defensive bare-close half fires (the delegation's full ordering — cancelHttp +
-        // zeroize — is pinned by the RELAY-002 rows above through the real pipeline).
+        // since Story 3.4 T6 the handler tears down through the state manager DIRECTLY (the pre-T6
+        // interceptor delegation is gone), so this interceptor-less leg runs the FULL manager ordering
+        // (remove + mark → cancelHttp + zeroize → close), not a defensive half.
         ingress.finishAndReleaseAll(); // recycle the @BeforeEach channel; this row builds its own leg
         observer.clear(); // the recycled channel's own exactly-once close (INGRESS/OTHER) is noise here
         ingress = new EmbeddedChannel(DefaultChannelId.newInstance(),
-                new SmppFrameDecoder(), new SmppCodec(), new RelayIngressHandler(registry, observer));
-        registry.register(ingress, new SystemId(new AsciiString("legacy1")));
+                new SmppFrameDecoder(), new SmppCodec(), new RelayIngressHandler(manager, observer));
+        manager.register(ingress, new SystemId(new AsciiString("legacy1")));
 
         ByteBuf frame = inbound(bindResponse(SmppCommandIds.BIND_TRANSCEIVER_RESP, 5, 0, "SMSC01", new byte[0]));
         ingress.writeInbound(frame);

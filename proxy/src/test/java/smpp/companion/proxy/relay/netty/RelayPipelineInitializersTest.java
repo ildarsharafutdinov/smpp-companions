@@ -19,6 +19,7 @@ import smpp.companion.proxy.relay.BindInterceptor;
 import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.RelayEgressHandler;
 import smpp.companion.proxy.relay.RelayIngressHandler;
+import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
@@ -50,9 +51,10 @@ class RelayPipelineInitializersTest {
         return RelayTestFixtures.modeBIngressInitializer(RelayTestFixtures.freePort());
     }
 
-    /** The real production egress wiring — the SAME registry/observer pair the ingress initializer shares. */
+    /** The real production egress wiring — a fresh manager-over-registry pair, as Spring would wire it. */
     private static RelayEgressInitializer egressInitializer() {
-        return new RelayEgressInitializer(new ConnectionRegistry(), new CapturingRelayObserver());
+        return new RelayEgressInitializer(
+                new RelayStateManager(new ConnectionRegistry()), new CapturingRelayObserver());
     }
 
     @Test
@@ -201,7 +203,7 @@ class RelayPipelineInitializersTest {
         smpp.companion.proxy.config.ProxyCompanionProperties.RoutingEntry target =
                 new smpp.companion.proxy.config.ProxyCompanionProperties.RoutingEntry("carrierOne", "127.0.0.1", 2776, null);
         RelayEgressInitializer tlsEgress = new RelayEgressInitializer(
-                harness.registry(), harness.observer(),
+                harness.manager(), harness.observer(),
                 ch -> harness.tlsFactory().newEgressSslHandler(ch.alloc(), target));
         EmbeddedChannel channel = new EmbeddedChannel(tlsEgress);
         try {

@@ -123,6 +123,27 @@ class ConnectionRegistryTest {
     }
 
     @Test
+    @DisplayName("answered DERIVES from the entry (coupled ∨ tearing-down) — the T6 absorption (b) shape: the "
+            + "awaiting-bind_resp → answered transition lives on the entry, zero shadow bits outside it")
+    void answeredDerivesFromCoupledOrTearingDown() {
+        ConnectionRegistry registry = new ConnectionRegistry();
+
+        // Still awaiting-bind_resp: neither transition fired.
+        ConnectionEntry awaiting = registry.register(channel(), systemId("legacy1"));
+        assertThat(awaiting.answered()).as("a pair in awaiting-bind_resp is unanswered").isFalse();
+
+        // The ROK arm: the couple resolves the pair.
+        ConnectionEntry coupled = registry.register(channel(), systemId("legacy2"));
+        assertThat(coupled.couple()).isTrue();
+        assertThat(coupled.answered()).as("the couple IS the answered transition's ROK arm").isTrue();
+
+        // The non-ROK/nack arm: the teardown resolves the pair (the wire effects belong to its winner).
+        ConnectionEntry tornDown = registry.register(channel(), systemId("legacy3"));
+        assertThat(tornDown.beginTearingDown()).isTrue();
+        assertThat(tornDown.answered()).as("the teardown is the answered transition's other arm").isTrue();
+    }
+
+    @Test
     @DisplayName("beginTearingDown is CAS-once: exactly one caller owns teardown (the idempotent-teardown guard)")
     void beginTearingDownIsCasOnce() {
         ConnectionRegistry registry = new ConnectionRegistry();

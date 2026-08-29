@@ -12,8 +12,8 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.RelayObserver;
 import smpp.companion.proxy.relay.BindInterceptor;
-import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.RelayIngressHandler;
+import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.security.BindCredentialVerifier;
 import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
@@ -30,7 +30,8 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * {@code SslHandler? → SmppFrameDecoder → SmppCodec → BindInterceptor → RelayIngressHandler}: the T7
  * entry {@link BindInterceptor} (bind-family verifier gating + AD-33 collapse, AD-7/AD-25) and the T8
  * entry {@link RelayIngressHandler} (the ingress leg of the T5 direction-split over
- * {@code CoupledRelayHandler}: AD-32 bare-close via the interceptor delegation + the post-couple
+ * {@code CoupledRelayHandler}: the AD-32 bare-close through the state manager (Story 3.4 T6) + the
+ * post-couple
  * opaque relay) have both LANDED; Story 3.3 ([B] topology) prepends the {@code SslHandler} <b>iff this cell's listener
  * is TLS</b> (reverse.mode-a/c — {@link SmppLegTlsFactory#listenerTls()}); the forward cells'
  * trusted leg and reverse.mode-b stay plaintext (AD-15/AD-12-amended — no TLS on the trusted legs).
@@ -47,7 +48,7 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
 public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
 
     private final BindCredentialVerifier verifier;
-    private final ConnectionRegistry registry;
+    private final RelayStateManager manager;
     private final RelayObserver observer;
     private final ProxyCompanionProperties properties;
     private final RelayEgressInitializer egressInitializer;
@@ -70,11 +71,12 @@ public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
                 // (AD-7/AD-25/AD-27/AD-33). Per-channel: holds the in-flight adjudication handles.
                 // Story 3.3: role-split — the FORWARD arm routes per system_id (AD-29) and dials TLS.
                 .addLast(new BindInterceptor(
-                        verifier, registry, observer, properties, egressInitializer, channelOptions,
+                        verifier, manager, observer, properties, egressInitializer, channelOptions,
                         routingTable, tlsFactory))
-                // T8 (landed) / Story 3.4 T5 (split): the ingress relay leg (the couple itself fires
-                // on the egress leg's RelayEgressHandler, which rides this channel's event loop,
-                // AD-2) + the AD-32 pre-couple bare-close delegation + the post-couple opaque relay.
-                .addLast(new RelayIngressHandler(registry, observer));
+                // T8 (landed) / Story 3.4 T5 (split) + T6: the ingress relay leg (the couple itself
+                // fires on the egress leg's RelayEgressHandler, which rides this channel's event
+                // loop, AD-2) + the AD-32 pre-couple bare-close through the state manager + the
+                // post-couple opaque relay.
+                .addLast(new RelayIngressHandler(manager, observer));
     }
 }

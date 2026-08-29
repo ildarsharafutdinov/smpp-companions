@@ -18,6 +18,7 @@ import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.CapturingRelayObserver;
 import smpp.companion.proxy.observability.NoopRelayObserver;
 import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
 import smpp.companion.proxy.relay.netty.RelayIngressInitializer;
@@ -328,6 +329,7 @@ public final class RelayTestFixtures {
                 properties,
                 harness.ingressInitializer(),
                 harness.registry(),
+                harness.manager(),
                 harness.observer());
     }
 
@@ -358,14 +360,15 @@ public final class RelayTestFixtures {
             ProxyCompanionProperties properties, BindCredentialVerifier verifier,
             java.util.concurrent.Executor delegatedTaskExecutor) {
         ConnectionRegistry registry = new ConnectionRegistry();
+        RelayStateManager manager = new RelayStateManager(registry);
         CapturingRelayObserver observer = new CapturingRelayObserver();
         SmppLegTlsFactory tlsFactory = new SmppLegTlsFactory(properties, delegatedTaskExecutor);
-        RelayEgressInitializer egress = new RelayEgressInitializer(registry, observer);
+        RelayEgressInitializer egress = new RelayEgressInitializer(manager, observer);
         RelayIngressInitializer ingress = new RelayIngressInitializer(
-                verifier, registry, observer, properties, egress,
+                verifier, manager, observer, properties, egress,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), tlsFactory);
-        return new RelayHarness(properties, ingress, egress, registry, observer, tlsFactory);
+        return new RelayHarness(properties, ingress, egress, registry, manager, observer, tlsFactory);
     }
 
     /** The generic harness (see {@link #relayHarness(ProxyCompanionProperties, BindCredentialVerifier)}). */
@@ -374,18 +377,20 @@ public final class RelayTestFixtures {
             RelayIngressInitializer ingressInitializer,
             RelayEgressInitializer egressInitializer,
             ConnectionRegistry registry,
+            RelayStateManager manager,
             CapturingRelayObserver observer,
             SmppLegTlsFactory tlsFactory) { }
 
     /**
      * The socket-smoke harness: the properties record, the real ingress initializer for
-     * {@code RelayServerLifecycle}, and the SHARED registry/observer handles the initializers were
-     * wired with (the same singleton wiring Spring does — the egress-leg couple unit must resolve the
-     * registry the ingress interceptor wrote).
+     * {@code RelayServerLifecycle}, and the SHARED registry/manager/observer handles the initializers
+     * were wired with (the same singleton wiring Spring does — the egress-leg couple unit must resolve
+     * the registry the ingress interceptor wrote, through the same manager).
      */
     public record ModeBRelayHarness(
             ProxyCompanionProperties properties,
             RelayIngressInitializer ingressInitializer,
             ConnectionRegistry registry,
+            RelayStateManager manager,
             CapturingRelayObserver observer) { }
 }
