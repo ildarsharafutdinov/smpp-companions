@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 
 import org.jspecify.annotations.Nullable;
 
+import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -36,15 +38,15 @@ import java.util.concurrent.StructuredTaskScope.Subtask;
 import java.util.concurrent.atomic.AtomicReference;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
-import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
 
 /**
  * Story 3.2 T3 (AC2/AC5) — the <b>production</b> ROPC bind adjudicator behind the AC8-immutable
  * {@link BindCredentialVerifier} port (the test-tier ratification slice {@code RopcSlice} lives
  * under {@code src/test}; this class productionizes its shape). Constructed per <b>reverse</b>
  * cell by the security-side wiring: the provider link is {@link IdpSslContextFactory}'s TLS
- * context + AD-34-intersected parameters, the endpoints are {@link OidcStartupDiscovery}'s
- * hard-required startup probe, and the OAuth client credential is the
+ * context + AD-34-intersected parameters, the token endpoint is DERIVED from the configured
+ * {@code provider-url} ({@link #deriveTokenEndpoint(URI)} — no provider wire call at startup
+ * since Story 3.4 T9), and the OAuth client credential is the
  * {@code oidc.client-secret-path} file read once here (AD-18).
  *
  * <p><b>AC2 — the refined (normative) verdict table.</b> {@code DenyInvalid} is reserved for the
@@ -107,11 +109,80 @@ import smpp.companion.proxy.security.OidcStartupDiscovery.OidcProviderMetadata;
  * its token endpoint, the proxy is the token's only consumer, and a second wire arm with its own
  * client-auth path is interop surface this deployment does not need (amendment record: AD-12).
  * Fail-closed (AD-11): never an allow, never a silent skip.
+ *
+ * <p><b>No startup provider call (Story 3.4 T9, 2026-08-29 — supersedes the 3.2-T2 hard-required
+ * discovery probe; owner-directed &quot;simplify app&quot;).</b> The probe, its discovery-document
+ * GET, the {@code issuer == provider-url} equality, and the Direct-Access-Grants warning are
+ * REMOVED whole: the token endpoint is DERIVED from the configured {@code provider-url} (the
+ * pinned-Keycloak realm path, {@link #deriveTokenEndpoint(URI)}), and provider misconfiguration
+ * &mdash; a typo'd or dead {@code provider-url}, a DAG-off client &mdash; denies fail-closed at
+ * FIRST BIND via the unchanged AC2 mapping, now with ONE starred operator WARN
+ * ({@link #OPERATOR_WARNING}) naming the derived endpoint, the {@code provider-url}, and the
+ * remediation. The Direct-Access-Grants prerequisite is an operator contract carried by the
+ * application.yml policy block and the {@code Oidc.providerUrl} javadoc, not a runtime probe.
  */
 @Slf4j
 public final class RopcBindCredentialVerifier implements BindCredentialVerifier, AutoCloseable {
 
-    private final OidcProviderMetadata metadata;
+    /**
+     * The pinned-Keycloak realm-relative token path (Story 3.4 T9, 2026-08-29). Keycloak serves
+     * every realm's OIDC endpoints under {@code <realm-base>/protocol/openid-connect/*}, so the
+     * token endpoint is DERIVED from the configured {@code provider-url} (which MUST be the realm
+     * base) — byte-identical to the realm layout the fixture containers serve
+     * ({@code KeycloakFixture.TOKEN_ENDPOINT} in the test tier) and to the endpoint the post-T8
+     * slice injects directly.
+     */
+    static final String TOKEN_ENDPOINT_PATH = "protocol/openid-connect/token";
+
+    /**
+     * The path-join contract (Story 3.4 T9): {@code token endpoint = provider-url + '/' +
+     * TOKEN_ENDPOINT_PATH}, byte-identical to the pinned-Keycloak realm layout. The join
+     * APPENDS after the base's last path segment (the realm name) — plain {@link URI#resolve}
+     * with a relative reference would REPLACE that segment per RFC 3986 &sect;5.3, so the
+     * separator is added explicitly over the {@code Oidc} compact ctor's slash-stripped base
+     * (never doubled: a base that kept a trailing {@code '/'} — only constructible by bypassing
+     * that ctor — derives the same endpoint). The join is PURE DERIVATION, no wire call: a
+     * {@code provider-url} that is not the realm base yields an endpoint the provider answers
+     * with a non-mapped status, which denies fail-closed at first bind with the operator WARN —
+     * the retired startup probe's loud successor.
+     */
+    static URI deriveTokenEndpoint(URI providerUrl) {
+        String base = providerUrl.toString();
+        return URI.create(base.endsWith("/")
+                ? base + TOKEN_ENDPOINT_PATH
+                : base + "/" + TOKEN_ENDPOINT_PATH);
+    }
+
+    /**
+     * The loud operator WARN (Story 3.4 T9, 2026-08-29 — the retired startup-refusal/DAG-warning
+     * posture's successor; the Mode B / over-budget banner pattern: a starred block so it is
+     * unmissable in any log aggregation). Logged on the token-call connection-error and
+     * non-mapped-non-200 arms — exactly the arms a typo'd {@code provider-url}, a dead provider,
+     * or a Direct-Access-Grants-off client lands on. Log-only: the verdict table (AC2) is
+     * unchanged. Three {@code {}} slots: what happened, the derived token endpoint, the
+     * configured provider-url.
+     */
+    static final String OPERATOR_WARNING = """
+            ************************************************************
+            * OIDC TOKEN CALL FAILED — THE BIND IS DENIED FAIL-CLOSED.
+            * A provider misconfiguration surfaces HERE, at first bind,
+            * not at startup (the startup OIDC discovery probe was
+            * removed, Story 3.4 T9, 2026-08-29; the verdict mapping is
+            * unchanged — this is a warning, not a refusal).
+            * {}
+            * token endpoint: {}
+            * provider-url:  {}
+            * Operator remediation: provider-url must be the Keycloak
+            * REALM base (the token endpoint is derived as
+            * <provider-url>/protocol/openid-connect/token), the
+            * provider must be reachable over the trusted TLS link, and
+            * the client must have Direct Access Grants enabled
+            * (per-client and OFF by default since Keycloak 26.2) —
+            * otherwise every bind denies fail-closed.
+            ************************************************************""";
+
+    private final URI providerUrl;           // the configured realm base — named in the WARN (T9)
+    private final URI tokenEndpoint;         // DERIVED from provider-url at wiring (T9)
     private final String clientId;
     private final ClientSecret clientSecret;    // ASCII, file-loaded (AD-18); wiped on close (AD-10)
     private final Duration callTimeout;         // oidc.timeout — the per-round-trip budget
@@ -121,28 +192,29 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
 
     /**
      * Eager, fail-closed construction (the T2 bean pattern): the client-secret file is read here and a
-     * bad one refuses startup; the TLS context/parameters and discovery metadata arrive pre-validated
-     * from the T2 beans (they fail the boot on their own). The one shared provider-facing client is
+     * bad one refuses startup; the TLS context/parameters arrive pre-validated from the T2 bean
+     * (it fails the boot on its own). The one shared provider-facing client is
      * {@link IdpSslContextFactory#newClient()} — this factory's TLS posture, single-sourced.
+     * NO provider wire call happens here (Story 3.4 T9, 2026-08-29): the token endpoint is
+     * derived from the configured {@code provider-url} in this ctor, so a wrong or dead
+     * provider-url constructs fine and denies fail-closed at FIRST bind (AC2 unchanged) with
+     * {@link #OPERATOR_WARNING}.
      *
      * @param tlsFactory the IdP TLS factory (context + AD-34 parameters + the resolved oidc node)
-     * @param discovery  the startup discovery probe (must have run — {@code metadata()} fails fast if not)
      */
-    public RopcBindCredentialVerifier(IdpSslContextFactory tlsFactory, OidcStartupDiscovery discovery) {
-        this(tlsFactory, discovery, tlsFactory.newClient());
+    public RopcBindCredentialVerifier(IdpSslContextFactory tlsFactory) {
+        this(tlsFactory, tlsFactory.newClient());
     }
 
     /**
      * Direct client injection: the shared provider-facing {@link HttpClient} arrives built. The
-     * 2-arg ctor passes {@link IdpSslContextFactory#newClient()} — the single TLS-posture recipe;
+     * public ctor passes {@link IdpSslContextFactory#newClient()} — the single TLS-posture recipe;
      * the T6 cancellation/zeroization suites pass a recording wrapper around the same build (to
      * observe the real {@code sendAsync} futures and the adapter's exact request buffers), so every
      * construction path is injection, with the recipe owned by the factory.
      */
-    RopcBindCredentialVerifier(IdpSslContextFactory tlsFactory, OidcStartupDiscovery discovery,
-            HttpClient http) {
+    RopcBindCredentialVerifier(IdpSslContextFactory tlsFactory, HttpClient http) {
         Objects.requireNonNull(tlsFactory, "tlsFactory");
-        Objects.requireNonNull(discovery, "discovery");
         this.http = Objects.requireNonNull(http, "http");
         IdpSslContextFactory.@Nullable ResolvedOidc resolved = tlsFactory.resolvedOidc();
         if (resolved == null) {
@@ -151,7 +223,8 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
                     + "AD-12 amended 2026-08-18).");
         }
         ProxyCompanionProperties.Oidc oidc = resolved.oidc();
-        this.metadata = discovery.metadata();
+        this.providerUrl = oidc.providerUrl();
+        this.tokenEndpoint = deriveTokenEndpoint(oidc.providerUrl());
         Integer maxInFlight = Objects.requireNonNull(oidc.maxInFlight(), "maxInFlight");
         if (maxInFlight < 1) {
             // Direct construction bypasses the @Min(1) annotation; without this guard Semaphore(0) is
@@ -269,8 +342,29 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             adj.registerSensitive(response.body());   // AC6: the body carries the issued access token
             return mapTokenResponse(response);
         } catch (Throwable t) {
+            IOException transport = transportFailure(t);
+            if (transport != null) {
+                // T9 (2026-08-29): the connection-error arm — an unreachable or typo'd
+                // provider-url, a TLS failure, a timeout — is where the retired startup refusal
+                // would have surfaced; this starred WARN is its loud successor (log-only, the
+                // verdict below is unchanged). A CANCELLATION (cancelHttp/AD-32) is not a
+                // provider problem and stays silent.
+                log.warn(OPERATOR_WARNING,
+                        "the token call failed at the transport layer (" + transport + ").",
+                        tokenEndpoint, providerUrl);
+            }
             return new Verdict.DenyIndeterminate();   // timeout / network error / cancel → AD-11
         }
+    }
+
+    /** The first {@link IOException} in the chain — the transport-failure test for the WARN (T9). */
+    private static @Nullable IOException transportFailure(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof IOException failure) {
+                return failure;
+            }
+        }
+        return null;
     }
 
     /**
@@ -291,11 +385,28 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         }
         if (status == 400) {
             String error = oauthError(response.body());
-            return "invalid_grant".equals(error) || "invalid_client".equals(error)
-                    ? new Verdict.DenyInvalid()
-                    : new Verdict.DenyIndeterminate();
+            if ("invalid_grant".equals(error) || "invalid_client".equals(error)) {
+                return new Verdict.DenyInvalid();
+            }
+            // Not a credential verdict — including the DAG-off flagship: Keycloak answers a
+            // Direct-Access-Grants-disabled client with 400 unauthorized_client (the retired
+            // startup DAG warning's runtime landing spot). T9: fail-closed deny + the operator WARN.
+            return unmappedStatus(response);
         }
         // 3xx (redirects are never followed), 403/404/429, other 4xx, 5xx — not credential verdicts.
+        return unmappedStatus(response);
+    }
+
+    /**
+     * The non-mapped-non-200 arm (T9, 2026-08-29): the verdict is unchanged fail-closed
+     * {@code DenyIndeterminate}, now with the starred operator WARN naming the status, the
+     * derived token endpoint, and the configured provider-url — the misconfiguration posture the
+     * retired startup probe used to catch at boot.
+     */
+    private Verdict unmappedStatus(HttpResponse<byte[]> response) {
+        log.warn(OPERATOR_WARNING,
+                "the token endpoint returned HTTP " + response.statusCode() + " — not a credential verdict.",
+                tokenEndpoint, providerUrl);
         return new Verdict.DenyIndeterminate();
     }
 
@@ -379,7 +490,7 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
                 .literal("&password=")
                 .urlEncoded(pw.array(), pw.arrayOffset(), pw.length());
         adj.registerSensitive(form.backingArray());   // AC6: the form carries the password + client secret
-        return HttpRequest.newBuilder(metadata.tokenEndpoint())
+        return HttpRequest.newBuilder(tokenEndpoint)   // DERIVED from provider-url (T9) — no discovery fetch
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .timeout(budget)
                 .POST(new FormPublisher(form.backingArray(), form.length()))

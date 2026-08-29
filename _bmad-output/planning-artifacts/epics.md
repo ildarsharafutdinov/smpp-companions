@@ -86,7 +86,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 - **SEC-1** — TLS floor: TLS 1.2 minimum, TLS 1.3 preferred; publish a cipher allowlist policy (operator-tunable default ships in config).
 - **SEC-2** — Parser robustness: handles only bind/unbind PDUs (all else opaque relay); safely rejects malformed/oversized/truncated bind PDUs without crashing. Relay path robust against oversized frames + memory exhaustion via backpressure (REL-2). One shared `PooledByteBufAllocator`; size direct memory via `-XX:MaxDirectMemorySize`; expose `ByteBufAllocatorMetric`. *(wording: splice → relay, Story 3.4 T4, 2026-08-28)*
-- **SEC-3** — The proxy→authority-provider link is authenticated and encrypted (TLS/mTLS or service-account token).
+- **SEC-3** — The proxy→authority-provider link is authenticated and encrypted (TLS/mTLS or service-account token). *(note, 2026-08-29, Story 3.4 T9: the startup OIDC discovery probe that also used this link is removed — the link's one runtime use is the ROPC token call to the endpoint DERIVED from `provider-url`; misconfiguration surfaces at first bind with a starred operator WARN. The spine AD-12 amendment governs.)*
 - **SEC-4** — No rolled crypto: mature libraries mandatory for crypto/TLS/OIDC (TLS via JDK 25 SSLEngine or netty-tcnative/BoringSSL/OpenSSL; JWT via Nimbus JOSE+JWT; substrate Spring Boot 4.1.x; Netty direct, no WebFlux/Reactor). From-scratch scope = SMPP layer only. Never hand-roll crypto, TLS record handling, or JWT signature verification.
 - **SEC-5** — Dependency hygiene: maintain a vulnerability/CVE policy for security-critical dependencies (Netty, JDK); version pinning in the dependency policy.
 

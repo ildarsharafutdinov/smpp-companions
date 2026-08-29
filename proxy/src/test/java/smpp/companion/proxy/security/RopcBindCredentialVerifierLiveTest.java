@@ -34,14 +34,14 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
  * endpoint's HTTPS-authenticated response is the sole trust anchor, the unit suite's D7 pins
  * own the structural gate. Story 3.4 T8, 2026-08-29 ended the slice's historical ratification
  * too — {@link RopcSliceLiveTest} now ratifies the same amended contract in its own container):
- * (1) JWT happy path &rarr; {@code Allow} — fully live: startup
- * discovery &rarr; trust-only TLS &rarr; ROPC &rarr; the structural three-segment gate;
+ * (1) JWT happy path &rarr; {@code Allow} — fully live: the DERIVED token endpoint (provider-url
+ * realm base + {@code protocol/openid-connect/token}, no startup probe since Story 3.4 T9,
+ * 2026-08-29) &rarr; trust-only TLS &rarr; ROPC &rarr; the structural three-segment gate;
  * (2) bad credentials &rarr; {@code DenyInvalid} both ways the
  * fixture exhibits them (400 {@code invalid_grant}, 401 {@code invalid_client}).
  *
- * <p>Each test constructs the adapter exactly as the T7 wiring does
- * ({@code new RopcBindCredentialVerifier(new IdpSslContextFactory(props),
- * new OidcStartupDiscovery(props, factory))}) — the container is
+ * <p>Each test constructs the adapter exactly as the wiring does
+ * ({@code new RopcBindCredentialVerifier(new IdpSslContextFactory(props))}) — the container is
  * {@link TrustOnlyKeycloakContainer}, the fixture variant whose server-auth-only TLS matches the
  * production link (the 2.1 {@code KeycloakContainer} demands peer certs, which a trust-only
  * client cannot present).
@@ -103,10 +103,9 @@ class RopcBindCredentialVerifierLiveTest {
 
     // ── helpers ────────────────────────────────────────────────────────────────────────────────
 
-    /** The adapter exactly as the T7 wiring constructs it: real factory + real discovery over TLS. */
+    /** The adapter exactly as the wiring constructs it: real factory, derived token endpoint (T9). */
     private static RopcBindCredentialVerifier adapter(ProxyCompanionProperties properties) {
-        IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
-        return new RopcBindCredentialVerifier(tlsFactory, new OidcStartupDiscovery(properties, tlsFactory));
+        return new RopcBindCredentialVerifier(new IdpSslContextFactory(properties));
     }
 
     /** The live-KC variant: provider-url is the container's fixed realm base. */

@@ -11,9 +11,11 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * AD-12 amendment of 2026-08-18 (which inverts the story's original AC1 direction): every
  * <b>reverse</b> cell adjudicates — it wires the {@link RopcBindCredentialVerifier} (the reverse
  * role is the sole enforcement point before the SMSC), constructed fail-closed over the T2 provider
- * link ({@link IdpSslContextFactory}'s TLS posture + {@link OidcStartupDiscovery}'s hard-required
- * probe + the AD-18 client-secret load); <b>forward</b> cells are trusted-side relays that carry no
- * OIDC material — they wire the {@link AlwaysAllowBindCredentialVerifier} stand-in.
+ * link ({@link IdpSslContextFactory}'s TLS posture + the token endpoint derived from
+ * {@code provider-url} + the AD-18 client-secret load; the 3.2-T2 startup discovery probe was
+ * removed by Story 3.4 T9, 2026-08-29 — no provider wire call at boot); <b>forward</b> cells are
+ * trusted-side relays that carry no OIDC material — they wire the
+ * {@link AlwaysAllowBindCredentialVerifier} stand-in.
  *
  * <p>{@link AlwaysAllowBindCredentialVerifier} lost its unconditional {@code @Component} for this:
  * a self-annotated stand-in would put TWO verifier beans in every reverse context. The
@@ -37,9 +39,9 @@ public class VerifierWiringConfig {
      */
     @Bean
     public BindCredentialVerifier bindCredentialVerifier(ProxyCompanionProperties properties,
-            IdpSslContextFactory tlsFactory, OidcStartupDiscovery discovery) {
+            IdpSslContextFactory tlsFactory) {
         if (properties.reverse() != null) {
-            return new RopcBindCredentialVerifier(tlsFactory, discovery);
+            return new RopcBindCredentialVerifier(tlsFactory);
         }
         return new AlwaysAllowBindCredentialVerifier();
     }

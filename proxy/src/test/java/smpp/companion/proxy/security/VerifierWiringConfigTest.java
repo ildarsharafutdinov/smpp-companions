@@ -31,8 +31,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * inverts the story's original AC1 direction): <b>every reverse.* cell &rarr; the ROPC adapter</b>
  * (the reverse role is the sole enforcement point before the SMSC), <b>forward.mode-a/mode-c &rarr;
  * the always-allow stand-in</b> (the forward role is a trusted-side relay, no OIDC material). The
- * reverse boots run the REAL provider link end-to-end (TLS factory &rarr; discovery probe against
- * the shared stand-in &rarr; adapter construction incl. the client-secret load); the forward boots
+ * reverse boots run the REAL provider link end-to-end (TLS factory &rarr; adapter construction
+ * incl. the client-secret load; since Story 3.4 T9, 2026-08-29 there is NO provider wire call at
+ * startup — the token endpoint is derived from {@code provider-url} at wiring); the forward boots
  * prove the same context yields the stand-in and never constructs an adapter.
  *
  * <p>Also pins the {@link AdjudicationLifecycle} riding along in every context, below the relay
@@ -51,13 +52,14 @@ class VerifierWiringConfigTest {
 
     /**
      * The security-side wiring exactly as the component scan mounts it: the properties record + the
-     * T2 beans + the T7 config. (The full-app boots elsewhere prove the scanned assembly; this
-     * runner isolates the SELECTION under test.)
+     * T2 bean + the T7 config. (The full-app boots elsewhere prove the scanned assembly; this
+     * runner isolates the SELECTION under test. The 3.2-T2 startup probe bean was removed with the
+     * probe itself — Story 3.4 T9, 2026-08-29.)
      */
     private ApplicationContextRunner runner(TestCompanionConfigs config) {
         return new ApplicationContextRunner()
                 .withUserConfiguration(OidcEnablement.class, IdpSslContextFactory.class,
-                        OidcStartupDiscovery.class, VerifierWiringConfig.class)
+                        VerifierWiringConfig.class)
                 .withPropertyValues(config.propertyValues());
     }
 

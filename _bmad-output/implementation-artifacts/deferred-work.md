@@ -492,6 +492,13 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   rule change expected); (f) Keycloak vendor SDKs remain banned regardless. Owner note 2026-08-19
   (recorded verbatim intent: "find a library for oidc discovery or parsing to replace
   OidcStartupDiscovery.{probe,parseDocument}").
+  **✅ RESOLVED 2026-08-29 (Story 3.4 T9, owner-directed "simplify app"): SUPERSEDED BY REMOVAL —
+  `OidcStartupDiscovery` is deleted whole (probe, parseDocument, the metadata record); nothing
+  parses a discovery document anymore (the token endpoint is DERIVED from `provider-url` over the
+  pinned-Keycloak realm path; Nimbus survives only as the token-response JSON parser), so there is
+  nothing left for a discovery/parsing library to replace. The verbatim 2026-08-19 owner note above
+  stands as history; the "decide before T4/T5" timing concern died with the T1/T2 arm removals
+  (2026-08-27) and this removal.**
 
 ## Deferred from: Story 3.3 scoping decision (2026-08-21, owner-directed split)
 

@@ -125,7 +125,9 @@ public final class TestCompanionConfigs {
     /**
      * The Story 3.2 T1 oidc node (AC8; re-targeted to the reverse role by the AD-12 amendment of
      * 2026-08-18 — every reverse cell adjudicates). provider-url defaults to the shared HTTPS
-     * discovery stand-in (its issuer echoes its base URL — what the T2 startup check requires);
+     * stand-in's base (since Story 3.4 T9, 2026-08-29 no provider wire call happens at startup —
+     * the token endpoint is DERIVED from this URL at wiring — so the value only needs to be
+     * https+hostful to boot; the stand-in base keeps the config provider-shaped);
      * provider client auth is the required client_secret arm (the RFC 8705 mTLS arm was removed
      * 2026-08-19); the IdP trust store anchors the fixture CA (which
      * signed the stand-in's server cert, so the config stays valid from T2 on). The two budget keys

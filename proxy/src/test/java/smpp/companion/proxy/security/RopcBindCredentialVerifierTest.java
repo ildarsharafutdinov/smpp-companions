@@ -71,11 +71,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Story 3.2 T3 (AC2/AC5) — the <b>production</b> ROPC adapter core, driven through the real
  * {@link BindCredentialVerifier#verify} port against in-process {@link HttpsServer} stand-in IdPs
- * (fixture-cert TLS — the same trust story as the shared discovery stand-in; no container, no
- * network beyond loopback). The adapter is constructed exactly as the T7 wiring will construct it:
- * {@code new RopcBindCredentialVerifier(new IdpSslContextFactory(properties),
- * new OidcStartupDiscovery(properties, factory))} — real trust-store load, real TLS discovery at
- * bean-init time, real shared client.
+ * (fixture-cert TLS — the same trust story as the shared provider stand-in; no container, no
+ * network beyond loopback). The adapter is constructed exactly as the wiring constructs it:
+ * {@code new RopcBindCredentialVerifier(new IdpSslContextFactory(properties))} — real trust-store
+ * load, the token endpoint derived from the provider-url realm base (Story 3.4 T9, 2026-08-29 —
+ * no discovery wire call at construction), real shared client.
  *
  * <p><b>AC2 — the refined (normative) verdict table.</b> {@code DenyInvalid} is reserved for the
  * provider's POSITIVE invalid-credential signals: a bare 401 (RFC 6749 &sect;5.2 — even with an
@@ -107,8 +107,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * alone (hostile signature and claims change nothing), and the retired rows (typ absent/unexpected,
  * kid miss, wrong signer, claim failures, cold cache, refresh-scheduler isolation — plus the
  * component-level cache suite) were retired with the arm. The never-hit pins keep a REGISTERED,
- * ALLOWING key-set handler reachable through the advertised discovery URI — zero hits proves no
- * fetch path exists.
+ * ALLOWING key-set handler at the realm's key-set path (the retired discovery doc used to
+ * advertise it; the handler itself is what stays load-bearing) — zero hits proves no fetch path
+ * exists.
+ *
+ * <p><b>No startup provider call (Story 3.4 T9, 2026-08-29).</b> The startup discovery probe is
+ * REMOVED: the adapter is constructed exactly as the wiring constructs it,
+ * {@code new RopcBindCredentialVerifier(new IdpSslContextFactory(properties))} — real trust-store
+ * load, the token endpoint DERIVED from the {@code provider-url} realm base (every fixture URL
+ * below carries the realm segment so the derived endpoint lands on the served {@code TOKEN_PATH}),
+ * real shared client, ZERO wire calls at construction. The fresh T9 pins: the derivation unit pin
+ * (incl. trailing-slash), the never-hit startup-probe pin (the stand-in's provider-metadata
+ * context records zero hits through the real TLS link), and the starred operator-WARN pin (the
+ * retired startup-refusal/DAG-warning posture's loud successor on the connection-error and
+ * non-mapped-non-200 arms).
  *
  * <p><b>RED-on-neuter (AI-1):</b> every assertion is load-bearing — neuter the 400-error-semantics
  * branch (make 400 unconditionally DenyInvalid) and the other-400 test goes RED; fire sendAsync
@@ -123,8 +135,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("AD-12/AD-11 RopcBindCredentialVerifier — AC2 verdict table + AC4 JWT-only deny + AC5 admission/capture core")
 class RopcBindCredentialVerifierTest {
 
-    private static final String DISCOVERY_PATH = "/.well-known/openid-configuration";
-    private static final String REALM_PATH = "/realms/smpp-companions/protocol/openid-connect";
+    private static final String REALM_SEGMENT = "/realms/smpp-companions";
+    private static final String REALM_PATH = REALM_SEGMENT + "/protocol/openid-connect";
     private static final String TOKEN_PATH = REALM_PATH + "/token";
     private static final String JWKS_PATH = REALM_PATH + "/certs";
     private static final String INTROSPECTION_PATH = REALM_PATH + "/token/introspect";
@@ -139,7 +151,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 401, "not-json-at-all");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("a bare 401 IS the provider's positive invalid-credential signal (AC2)")
@@ -155,7 +167,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 400, "{\"error\":\"invalid_grant\",\"error_description\":\"Invalid user credentials\"}");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("400 + parsed error=invalid_grant is a positive invalid-credential signal (finding #6)")
@@ -171,7 +183,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 400, "{\"error\":\"invalid_client\"}");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("400 + parsed error=invalid_client is a positive invalid-credential signal")
@@ -190,7 +202,7 @@ class RopcBindCredentialVerifierTest {
             respond(ex, 400, rotation.getAndIncrement() == 0
                     ? "{\"error\":\"unauthorized_client\"}"
                     : "not-json");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             // The load-bearing refinement: under the test slice's crude "4xx → DenyInvalid" shorthand both
             // of these were misclassified — rate-limit/config/authz 400s are NOT credential verdicts.
@@ -212,7 +224,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, new int[] {403, 404, 429}[rotation.getAndIncrement()], "{\"error\":\"misc\"}");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             for (int i = 0; i < 3; i++) {
                 assertThat(awaitVerdict(verify(adapter)))
@@ -230,7 +242,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 500, "{\"error\":\"server_error\"}");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("5xx → fail-closed indeterminate (AD-11)")
@@ -248,7 +260,7 @@ class RopcBindCredentialVerifierTest {
             ex.getResponseHeaders().set("Location", "https://localhost:1/elsewhere");
             ex.sendResponseHeaders(302, -1);
             ex.close();
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("a redirecting token endpoint is not a credential verdict (AC2; redirects never followed)")
@@ -265,7 +277,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 200, rotation.getAndIncrement() == 0 ? "" : "<html>login page</html>");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("200 with an empty body carries no token → unverifiable (AC2)")
@@ -288,7 +300,8 @@ class RopcBindCredentialVerifierTest {
         // EVERY former local check at once — signed by a FORGER key whose kid is advertised nowhere,
         // typ "Bearer" in the header (the former unexpected value), wrong iss, wrong aud, expired
         // exp — and STILL allows, because the verdict is the token endpoint's own HTTPS-authenticated
-        // response. The key-set endpoint (reachable via the advertised discovery URI) is registered
+        // response. The key-set endpoint (the retired discovery doc used to advertise it; the
+        // handler registration is what stays load-bearing) is registered
         // with a counting, ALLOWING handler: zero hits proves no fetch path exists at all.
         RSAKey forger = key("forger");
         AtomicInteger keySetHits = new AtomicInteger();
@@ -300,7 +313,6 @@ class RopcBindCredentialVerifierTest {
                                     .audience("wrong-audience")
                                     .expirationTime(Date.from(Instant.now().minusSeconds(600))))));
                 },
-                null,
                 countingHandler(keySetHits),
                 null);
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
@@ -331,7 +343,6 @@ class RopcBindCredentialVerifierTest {
                     respond(ex, 200, tokenBody("aaa.bbb.ccc"));
                 },
                 null,
-                null,
                 ex -> {
                     introHits.incrementAndGet();
                     drain(ex);
@@ -356,8 +367,9 @@ class RopcBindCredentialVerifierTest {
     @DisplayName("200 + OPAQUE token → DenyIndeterminate + WARN naming the JWT-only policy, NO wire round 2 (D6)")
     void opaqueTokenDeniesFailClosedWithoutAWireRound2(@TempDir Path dir, CapturedOutput out) throws Exception {
         AtomicInteger introHits = new AtomicInteger();
-        // The retired arm's endpoint stays ADVERTISED (the discovery doc below) and REGISTERED with
-        // an ALLOWING handler (200 + active:true — the row that once ALLOWed): any hit would flip
+        // The retired arm's endpoint stays REGISTERED with an ALLOWING handler (200 + active:true —
+        // the row that once ALLOWed; the retired discovery doc used to advertise the path, the
+        // registration itself is what stays load-bearing): any hit would flip
         // this row's meaning, so introHits == 0 proves the deny is the D6 policy arm itself, not a
         // wire failure misread as fail-closed.
         HttpsServer server = opaqueIdP(countingHandler(introHits));
@@ -392,7 +404,7 @@ class RopcBindCredentialVerifierTest {
             } catch (IOException ioe) {
                 // best-effort late write after release — not a verdict signal
             }
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter =
                 adapter(properties(dir, server, Duration.ofMillis(250), 4))) {
             try {
@@ -410,19 +422,116 @@ class RopcBindCredentialVerifierTest {
     @Test
     @DisplayName("unreachable token endpoint (connection refused) → DenyIndeterminate")
     void unreachableTokenEndpointYieldsDenyIndeterminate(@TempDir Path dir) throws Exception {
-        // The discovery document (provider-controlled) points token_endpoint at a dead port — discovery
-        // itself stays well-formed, so the adapter builds; the token exchange then fails at connect.
-        HttpsServer server = standInIdP(
-                ex -> {
-                    drain(ex);
-                    respond(ex, 200, "{}");
-                },
-                "https://localhost:" + RelayTestFixtures.freePort());
-        try (RopcBindCredentialVerifier adapter =
-                adapter(properties(dir, server, Duration.ofSeconds(1), 4))) {
+        // T9 (2026-08-29): the endpoint is DERIVED from the provider-url, so a dead-port REALM BASE
+        // is the whole fixture — no stand-in server at all (the former variant pointed a discovery
+        // document's token_endpoint here; with the probe gone there is no document to serve).
+        try (RopcBindCredentialVerifier adapter = adapter(reverseBProperties(idpStore(dir),
+                secret(dir), deadRealmBase(), Duration.ofSeconds(1), 4))) {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("network error → fail-closed indeterminate (AC2)")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
+        }
+    }
+
+    // ── T9 (2026-08-29): no startup provider call — derivation + never-hit probe + operator WARN ──
+
+    @Test
+    @DisplayName("T9 derivation: token endpoint = provider-url + protocol/openid-connect/token "
+            + "(trailing slash normalizes through the config layer)")
+    void tokenEndpointDerivesFromTheProviderUrlRealmBase() {
+        // The realm base → the pinned-Keycloak realm token path, byte-identical to the live
+        // fixture layout the post-T8 slice injects directly (KeycloakFixture.TOKEN_ENDPOINT).
+        assertThat(RopcBindCredentialVerifier.deriveTokenEndpoint(URI.create(KeycloakFixture.REALM_BASE)))
+                .as("the derivation must land exactly on the fixture container's token endpoint")
+                .isEqualTo(KeycloakFixture.TOKEN_ENDPOINT);
+        assertThat(RopcBindCredentialVerifier.deriveTokenEndpoint(
+                URI.create("https://idp.example.com/realms/smpp-companions")))
+                .isEqualTo(URI.create(
+                        "https://idp.example.com/realms/smpp-companions/protocol/openid-connect/token"));
+        // The trailing-slash behavior re-pointed from the retired discovery row: the Oidc compact
+        // ctor strips exactly ONE trailing '/', so the bound record derives the SAME endpoint — and
+        // the static itself is slash-tolerant (a base that bypassed the ctor resolves identically:
+        // URI.resolve appends after the last '/').
+        ProxyCompanionProperties.Oidc bound = new ProxyCompanionProperties.Oidc(
+                URI.create("https://idp.example.com/realms/smpp-companions/"),
+                "smpp-client-confidential", "/run/secrets/oidc-client-secret",
+                new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", "changeit"),
+                Duration.ofSeconds(4), 8);
+        assertThat(bound.providerUrl().toString())
+                .as("the config layer still strips exactly one trailing slash")
+                .doesNotEndWith("/");
+        assertThat(RopcBindCredentialVerifier.deriveTokenEndpoint(bound.providerUrl()))
+                .isEqualTo(URI.create(
+                        "https://idp.example.com/realms/smpp-companions/protocol/openid-connect/token"));
+        assertThat(RopcBindCredentialVerifier.deriveTokenEndpoint(
+                URI.create("https://idp.example.com/realms/smpp-companions/")))
+                .as("the raw static is slash-tolerant too (the join never doubles a slash)")
+                .isEqualTo(URI.create(
+                        "https://idp.example.com/realms/smpp-companions/protocol/openid-connect/token"));
+    }
+
+    @Test
+    @DisplayName("T9 never-hit pin: NO provider-metadata fetch at construction or first bind — the "
+            + "one wire call lands on the DERIVED endpoint through the real TLS link")
+    void noStartupProviderCallEverFetchesTheMetadataDocument(@TempDir Path dir) throws Exception {
+        // The shared stand-in still serves its provider-metadata context (deliberately re-purposed,
+        // not deleted — Story 3.4 T9) behind a hit counter. The provider-url is the stand-in's BASE
+        // — deliberately WITHOUT the realm segment, so a re-introduced startup GET of the old
+        // probe's exact URL (<issuer>/.well-known/openid-configuration) lands on the counted
+        // context and this row goes RED. The derived token endpoint (<base>/protocol/openid-connect/
+        // token) is UNREGISTERED on the stand-in: its 404 → the fail-closed verdict below proves,
+        // through the real TLS link, that the one call the adapter makes lands on the derived URI —
+        // a call to the metadata path instead would have moved the hit counter and failed the
+        // assertions around it.
+        int hitsBefore = OidcDiscoveryStandIn.discoveryHits();
+        try (RopcBindCredentialVerifier adapter = adapter(reverseBProperties(idpStore(dir),
+                secret(dir), OidcDiscoveryStandIn.url(), Duration.ofSeconds(4), 8))) {
+            assertThat(OidcDiscoveryStandIn.discoveryHits())
+                    .as("constructing the adapter must make NO provider wire call (the probe is gone)")
+                    .isEqualTo(hitsBefore);
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("the 404 off the derived (unregistered) path denies fail-closed (AC2)")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(OidcDiscoveryStandIn.discoveryHits())
+                    .as("a full adjudication must not fetch the provider-metadata document either")
+                    .isEqualTo(hitsBefore);
+        }
+    }
+
+    @Test
+    @DisplayName("T9 operator WARN: connection-error + non-mapped-non-200 arms log the starred banner "
+            + "naming the derived endpoint and provider-url (the retired startup posture's successor)")
+    void providerFailureArmsLogTheStarredOperatorWarning(@TempDir Path dir, CapturedOutput out)
+            throws Exception {
+        // Arm 1 — connection error (the typo'd/dead provider-url case the retired startup refusal
+        // used to catch at boot). The retired DAG row's log-capture idiom re-homes HERE (T9).
+        try (RopcBindCredentialVerifier adapter = adapter(reverseBProperties(idpStore(dir),
+                secret(dir), deadRealmBase(), Duration.ofSeconds(1), 4))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("the connection-error arm denies fail-closed via the UNCHANGED AC2 mapping")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        }
+        assertThat(out.getAll())
+                .as("the starred operator WARN names the failure, the derived endpoint, the "
+                        + "provider-url, and the DAG remediation")
+                .contains("OIDC TOKEN CALL FAILED")
+                .contains("token endpoint: https://localhost:")
+                .contains(REALM_SEGMENT + "/protocol/openid-connect/token")
+                .contains("provider-url:  https://localhost:")
+                .contains("Direct Access Grants");
+        // Arm 2 — non-mapped non-200 (the DAG-off flagship: 400 unauthorized_client is Keycloak's
+        // answer for a Direct-Access-Grants-disabled client; 401/400-invalid_* stay WARN-free).
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 400, "{\"error\":\"unauthorized_client\"}");
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("400 unauthorized_client stays DenyIndeterminate (AC2 unchanged — log-only)")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(out.getAll())
+                    .as("the non-mapped-non-200 arm names the status in the WARN")
+                    .contains("the token endpoint returned HTTP 400");
         } finally {
             server.stop(0);
         }
@@ -448,7 +557,7 @@ class RopcBindCredentialVerifierTest {
             } catch (IOException ioe) {
                 // best-effort late write after release — not a verdict signal
             }
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter =
                 adapter(properties(dir, server, Duration.ofSeconds(4), 1))) {   // max-in-flight = 1
             VerdictRequest first = verify(adapter);   // acquires the lone permit, blocks at hold
@@ -485,7 +594,7 @@ class RopcBindCredentialVerifierTest {
             tokenHits.incrementAndGet();
             drain(ex);
             respond(ex, 401, "{}");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             VerdictRequest request = verify(adapter, cred(), Instant.now().minusSeconds(1));
             assertThat(awaitVerdict(request))
@@ -506,7 +615,7 @@ class RopcBindCredentialVerifierTest {
             tokenHits.incrementAndGet();
             drain(ex);
             respond(ex, 401, "{}");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             // Deliberately NOT wrapped in ScopedValue.where — the relay always binds the handle for the
             // dynamic extent of verify() (BindInterceptor); a caller that does not gets a settled
@@ -530,7 +639,7 @@ class RopcBindCredentialVerifierTest {
             tokenHits.incrementAndGet();
             drain(ex);
             respond(ex, 401, "{}");
-        }, null);
+        });
         RopcBindCredentialVerifier adapter = adapter(properties(dir, server));
         try {
             adapter.close();
@@ -555,7 +664,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 401, "{}");
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             // F12 (a 2-1 review MUST-keep): the HANDLE is a programming artifact, not a verdict input —
             // a null one is a wiring bug and must fail fast with the guard's name, not fall into any
@@ -579,7 +688,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 401, "{}");   // the fast bare-401 deny row — one complete wire adjudication
-        }, null);
+        });
         try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
             Password password = new Password(new AsciiString("testpass"));
             assertThat(awaitVerdict(verify(adapter, new BindCredential(cred().systemId(), password),
@@ -613,12 +722,12 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             captured.append(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             respond(ex, 401, "{}");   // any settling verdict — the form is what this test asserts
-        }, null);
+        });
         // Secret file WITH the conventional trailing newline — the trimmed value, not the raw file
         // content, must reach the wire (the '&' pins the boundary: a %0A would sit before it).
         Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret\n");
-        try (RopcBindCredentialVerifier adapter = adapter(reverseBProperties(store, secret, base(server),
+        try (RopcBindCredentialVerifier adapter = adapter(reverseBProperties(store, secret, realmBase(server),
                 Duration.ofSeconds(4), 8))) {
             // Reserved-octet identity and password prove the encoder percent-encodes from the raw bytes
             // (space → %20, '@' → %40, '+' → %2B) — a toString/URLEncoder route would render differently.
@@ -658,7 +767,7 @@ class RopcBindCredentialVerifierTest {
             } catch (IOException e) {
                 // best-effort late write on the torn connection — not a verdict signal
             }
-        }, null);
+        });
         try {
             ProxyCompanionProperties props = properties(dir, server, Duration.ofSeconds(4), 1);   // max-in-flight = 1
             RecordingHttpClient recording = recordingClient(props);
@@ -737,7 +846,7 @@ class RopcBindCredentialVerifierTest {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 401, "{}");
-        }, null);
+        });
         try {
             ProxyCompanionProperties props = properties(dir, server);
             RecordingHttpClient recording = recordingClient(props);
@@ -756,44 +865,39 @@ class RopcBindCredentialVerifierTest {
     @Test
     @DisplayName("constructor fail-fast: max-in-flight < 1, missing secret file, blank secret file")
     void constructorFailsFastOnBadConfig(@TempDir Path dir) throws Exception {
-        HttpsServer server = standInIdP(ex -> {
-            drain(ex);
-            respond(ex, 401, "{}");
-        }, null);
-        try {
-            Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
-            Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
+        // T9: no stand-in server — construction makes NO provider wire call anymore, so a dead-port
+        // realm base is a perfectly valid provider-url for this row.
+        Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
+        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
+        String realmBase = deadRealmBase();
 
-            // maxInFlight < 1 — direct construction bypasses the @Min(1) annotation; without this guard
-            // Semaphore(0) is valid and EVERY bind silently denies (fail-closed but broken).
-            assertThatThrownBy(() -> adapter(reverseBProperties(store, secret, base(server),
-                    Duration.ofSeconds(4), 0)))
-                    .as("the typed admission-capacity guard (AD-28(4))")
-                    .isInstanceOf(IllegalArgumentException.class);
+        // maxInFlight < 1 — direct construction bypasses the @Min(1) annotation; without this guard
+        // Semaphore(0) is valid and EVERY bind silently denies (fail-closed but broken).
+        assertThatThrownBy(() -> adapter(reverseBProperties(store, secret, realmBase,
+                Duration.ofSeconds(4), 0)))
+                .as("the typed admission-capacity guard (AD-28(4))")
+                .isInstanceOf(IllegalArgumentException.class);
 
-            // Missing client-secret file — AD-18: read at bean init, fail-closed refuse. The assertion
-            // pins the NOT-READABLE arm specifically (not just the shared refusal substrings) so the
-            // two guard arms cannot mask each other under mutation.
-            assertThatThrownBy(() -> adapter(reverseBProperties(store, dir.resolve("missing"), base(server),
-                    Duration.ofSeconds(4), 8)))
-                    .as("a missing client-secret file refuses startup")
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("client-secret-path")
-                    .hasMessageContaining("does not exist or is not readable")
-                    .hasMessageContaining("refusing to start");
+        // Missing client-secret file — AD-18: read at bean init, fail-closed refuse. The assertion
+        // pins the NOT-READABLE arm specifically (not just the shared refusal substrings) so the
+        // two guard arms cannot mask each other under mutation.
+        assertThatThrownBy(() -> adapter(reverseBProperties(store, dir.resolve("missing"), realmBase,
+                Duration.ofSeconds(4), 8)))
+                .as("a missing client-secret file refuses startup")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("client-secret-path")
+                .hasMessageContaining("does not exist or is not readable")
+                .hasMessageContaining("refusing to start");
 
-            // Blank/whitespace secret file — an empty credential is a misconfiguration, not a secret.
-            Path blank = Files.writeString(dir.resolve("blank-secret"), " \n");
-            assertThatThrownBy(() -> adapter(reverseBProperties(store, blank, base(server),
-                    Duration.ofSeconds(4), 8)))
-                    .as("a blank client-secret file refuses startup")
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("client-secret-path")
-                    .hasMessageContaining("empty")
-                    .hasMessageContaining("refusing to start");
-        } finally {
-            server.stop(0);
-        }
+        // Blank/whitespace secret file — an empty credential is a misconfiguration, not a secret.
+        Path blank = Files.writeString(dir.resolve("blank-secret"), " \n");
+        assertThatThrownBy(() -> adapter(reverseBProperties(store, blank, realmBase,
+                Duration.ofSeconds(4), 8)))
+                .as("a blank client-secret file refuses startup")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("client-secret-path")
+                .hasMessageContaining("empty")
+                .hasMessageContaining("refusing to start");
     }
 
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────
@@ -822,10 +926,9 @@ class RopcBindCredentialVerifierTest {
         return request.future().get(15, TimeUnit.SECONDS);
     }
 
-    /** The adapter exactly as the T7 wiring constructs it: real factory + real discovery over TLS. */
+    /** The adapter exactly as the wiring constructs it: real factory, derived token endpoint (T9). */
     private static RopcBindCredentialVerifier adapter(ProxyCompanionProperties properties) {
-        IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
-        return new RopcBindCredentialVerifier(tlsFactory, new OidcStartupDiscovery(properties, tlsFactory));
+        return new RopcBindCredentialVerifier(new IdpSslContextFactory(properties));
     }
 
     private static ProxyCompanionProperties properties(Path dir, HttpsServer server) throws IOException {
@@ -834,9 +937,29 @@ class RopcBindCredentialVerifierTest {
 
     private static ProxyCompanionProperties properties(Path dir, HttpsServer server, Duration timeout,
             int maxInFlight) throws IOException {
-        Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
-        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
-        return reverseBProperties(store, secret, base(server), timeout, maxInFlight);
+        return reverseBProperties(idpStore(dir), secret(dir), realmBase(server), timeout, maxInFlight);
+    }
+
+    private static Path idpStore(Path dir) throws IOException {
+        return RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
+    }
+
+    private static Path secret(Path dir) throws IOException {
+        return Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
+    }
+
+    /** A probed-free-port realm base — the unreachable-provider-url fixture (T9). */
+    private static String deadRealmBase() {
+        return "https://localhost:" + RelayTestFixtures.freePort() + REALM_SEGMENT;
+    }
+
+    /**
+     * The provider-url these fixtures use: the stand-in's base + the realm segment — since T9 the
+     * DERIVED token endpoint ({@code realmBase + protocol/openid-connect/token}) must land exactly
+     * on the served {@code TOKEN_PATH}.
+     */
+    private static String realmBase(HttpsServer server) {
+        return base(server) + REALM_SEGMENT;
     }
 
     /** A reverse&times;B properties record (full AD-34 TLS lists, yml-template oidc budgets). */
@@ -860,25 +983,22 @@ class RopcBindCredentialVerifierTest {
     }
 
     /**
-     * An ad-hoc stand-in IdP: {@code /.well-known/openid-configuration} echoing its own base as issuer
-     * (the AC7 equality check) with the Keycloak realm endpoint layout, and {@code tokenEndpointBase}
-     * (default: own base) controlling where the discovered {@code token_endpoint} points — a dead-port
-     * base yields an unreachable token endpoint with a well-formed discovery document. The optional
-     * {@code keySetHandler} and {@code introHandler} serve the two RETIRED discovery fields —
-     * {@code jwks_uri} (removed with local JWT verification, Story 3.4 T2) and
-     * {@code introspection_endpoint} (removed with the opaque-token arm, Story 3.4 T1) — which the
-     * document below still advertises DELIBERATELY: the never-hit pins need a reachable, allowing
-     * endpoint, and every boot through this stand-in also proves omission-tolerance is not required
-     * (extra fields are ignored, absent fields are accepted). The CALLER owns {@code stop(0)} —
-     * always in a {@code finally}.
+     * An ad-hoc stand-in IdP serving the realm's TOKEN path (the path the DERIVED token endpoint
+     * lands on when {@code provider-url} carries the realm segment — Story 3.4 T9, 2026-08-29). The
+     * former discovery context is gone with the probe: nothing fetches it, and the never-hit
+     * startup-probe pin lives on the SHARED stand-in ({@code OidcDiscoveryStandIn.discoveryHits()}).
+     * The optional {@code keySetHandler} and {@code introHandler} serve the two RETIRED realm
+     * paths — {@code /certs} (removed with local JWT verification, Story 3.4 T2) and
+     * {@code /token/introspect} (removed with the opaque-token arm, Story 3.4 T1) — their
+     * registration stays load-bearing for the never-hit pins (a reachable, ALLOWING endpoint that
+     * must record zero hits). The CALLER owns {@code stop(0)} — always in a {@code finally}.
      */
-    private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase)
-            throws IOException {
-        return standInIdP(tokenHandler, tokenEndpointBase, null, null);
+    private static HttpsServer standInIdP(HttpHandler tokenHandler) throws IOException {
+        return standInIdP(tokenHandler, null, null);
     }
 
-    private static HttpsServer standInIdP(HttpHandler tokenHandler, String tokenEndpointBase,
-            @Nullable HttpHandler keySetHandler, @Nullable HttpHandler introHandler) throws IOException {
+    private static HttpsServer standInIdP(HttpHandler tokenHandler, @Nullable HttpHandler keySetHandler,
+            @Nullable HttpHandler introHandler) throws IOException {
         HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(OidcDiscoveryStandIn.fixtureServerSslContext()));
         // A real pool, not the default single dispatcher thread: several tests park ONE handler on a
@@ -891,19 +1011,6 @@ class RopcBindCredentialVerifierTest {
             t.setDaemon(true);
             return t;
         }));
-        server.createContext(DISCOVERY_PATH, exchange -> {
-            String tokenBase = tokenEndpointBase == null ? base(server) : tokenEndpointBase;
-            byte[] document = ("{\"issuer\": \"" + base(server) + "\", \"token_endpoint\": \""
-                    + tokenBase + TOKEN_PATH + "\", \"introspection_endpoint\": \"" + tokenBase
-                    + REALM_PATH + "/token/introspect\", \"jwks_uri\": \"" + tokenBase + REALM_PATH
-                    + "/certs\", \"grant_types_supported\": [\"password\"]}")
-                    .getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, document.length);
-            try (OutputStream out = exchange.getResponseBody()) {
-                out.write(document);
-            }
-        });
         server.createContext(TOKEN_PATH, tokenHandler);
         if (keySetHandler != null) {
             server.createContext(JWKS_PATH, keySetHandler);
@@ -922,7 +1029,6 @@ class RopcBindCredentialVerifierTest {
                     drain(ex);
                     respond(ex, 200, tokenBody("opaque-secret-token"));
                 },
-                null,
                 null,
                 introHandler);
     }
@@ -960,8 +1066,7 @@ class RopcBindCredentialVerifierTest {
                     drain(ex);
                     respond(ex, 200, tokenBody(jwt(signingKey, signingKey.getKeyID(),
                             new JOSEObjectType("JWT"), b -> validClaims(b, issuerOf(ex)))));
-                },
-                null);
+                });
     }
 
     /**
@@ -1200,8 +1305,7 @@ class RopcBindCredentialVerifierTest {
     private static RopcBindCredentialVerifier adapter(ProxyCompanionProperties properties,
             RecordingHttpClient recording) {
         IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
-        return new RopcBindCredentialVerifier(tlsFactory,
-                new OidcStartupDiscovery(properties, tlsFactory), recording);
+        return new RopcBindCredentialVerifier(tlsFactory, recording);
     }
 
     /** True if every byte is zero (a null buffer is "not wiped yet") — the AD-10(3) wipe state. */

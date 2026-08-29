@@ -16,7 +16,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 
@@ -95,10 +94,9 @@ class AdjudicationLifecycleTest {
         CountDownLatch hold = new CountDownLatch(1);
         HttpsServer server = parkedTokenIdp(tokenReceived, hold);
         try {
-            ProxyCompanionProperties props = reverseBProperties(dir, base(server), Duration.ofSeconds(4));
+            ProxyCompanionProperties props = reverseBProperties(dir, realmBase(server), Duration.ofSeconds(4));
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
-            RopcBindCredentialVerifier adapter =
-                    new RopcBindCredentialVerifier(tlsFactory, new OidcStartupDiscovery(props, tlsFactory));
+            RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
             AdjudicationLifecycle lifecycle = new AdjudicationLifecycle(adapter);
             lifecycle.start();
 
@@ -135,10 +133,12 @@ class AdjudicationLifecycleTest {
     }
 
     /**
-     * A stand-in IdP whose discovery document echoes its own base URL (the AC7 equality check) and
-     * whose token handler PARKS on a latch — the bind is in-flight until the test releases it (or
-     * the lifecycle's drain interrupts it). Daemon executor (the JDK server's default dispatcher is
-     * a single thread — a parked handler must not starve discovery or strand the JVM).
+     * A stand-in IdP whose TOKEN handler PARKS on a latch — the bind is in-flight until the test
+     * releases it (or the lifecycle's drain interrupts it). Since Story 3.4 T9 (2026-08-29) the
+     * token endpoint is DERIVED from the provider-url realm base, so this server serves only the
+     * realm's token path — the former discovery context is gone with the startup probe. Daemon
+     * executor (the JDK server's default dispatcher is a single thread — a parked handler must not
+     * starve other handlers or strand the JVM).
      */
     private static HttpsServer parkedTokenIdp(CountDownLatch tokenReceived, CountDownLatch hold) throws IOException {
         HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
@@ -148,15 +148,6 @@ class AdjudicationLifecycleTest {
             t.setDaemon(true);
             return t;
         }));
-        server.createContext("/.well-known/openid-configuration", (HttpHandler) ex -> {
-            String realm = base(server) + "/realms/smpp-companions/protocol/openid-connect";
-            // The retired introspection/jwks fields are not served (Story 3.4 T1+T2, 2026-08-27) —
-            // the requirement is issuer + token endpoint only, and this boot proves omission-accepted.
-            byte[] document = ("{\"issuer\": \"" + base(server) + "\", \"token_endpoint\": \"" + realm
-                    + "/token\", \"grant_types_supported\": [\"password\"]}")
-                    .getBytes(StandardCharsets.UTF_8);
-            respond(ex, 200, document);
-        });
         server.createContext(TOKEN_PATH, ex -> {
             tokenReceived.countDown();
             drain(ex);
@@ -203,6 +194,11 @@ class AdjudicationLifecycleTest {
 
     private static String base(HttpsServer server) {
         return "https://localhost:" + server.getAddress().getPort();
+    }
+
+    /** The provider-url these fixtures use: base + the realm segment (T9 — the derived endpoint lands on TOKEN_PATH). */
+    private static String realmBase(HttpsServer server) {
+        return base(server) + "/realms/smpp-companions";
     }
 
     private static void respond(HttpExchange exchange, int status, byte[] body) throws IOException {
