@@ -255,6 +255,18 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   buffers per bind), not an inert socket, so the unbounded-accept sink now allocates real per-connection
   resources. The Epic-3 deferral itself STANDS (owner 2026-08-15); this note only sharpens its weight — the
   connection-cap decision should account for coupled-pair memory residency (AD-30), not just socket count.
+  **✅ RESOLVED 2026-08-26 (Story 3.3 T6, commit `35fd64d`; ledger marker added 2026-08-29 by Story 3.4 T7 — the
+  work landed with 3.3, the entry was left unmarked):** the listener hardening landed — `companion.bind.host`
+  (`@NotNull`+`@NotBlank`; default `0.0.0.0` = the pre-3.3 all-interfaces behavior, with the yml comment directing
+  an internet-leg listener to a scoped value) replaces the keyless wildcard bind, and `ConnectionCapHandler` rides
+  the acceptor's server pipeline (over-cap accept → `closeForcibly()` + WARN; the live count decrements
+  exactly-once per child `closeFuture`). The cap reads `companion.memory.concurrent-pairs` DIRECTLY — the AD-30
+  budget input itself, which is exactly the coupled-pair memory-residency accounting the refresh above demanded
+  (the separate `bind.max-connections` knob and the cap≤budget validator guard were retired mid-review as a
+  two-knobs-one-number drift surface; memlog 2026-08-26). Pinned by the `TlsModesLoopbackE2eTest` F13 cap row
+  (mutation M6 RED-on-neuter). NOT claimed: this entry's third clause — an idle timeout for the accepted-but-
+  never-binding socket — did not land (no idle handler exists in `relay/`); post-cap such a leg still holds its
+  slot indefinitely, and that clause re-homes to the Epic-4 RELAY-020/021 timeout round with F10/F14.
 
 ## Deferred from: owner notes during Story 2.2 T7 + owner-FIXME round (2026-08-16)
 
@@ -425,6 +437,21 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   port-amendment (promise settlement on cancel — touches the AC8 ratified-immutable port) vs relay-side
   ownership (release at teardown, CAS/flag against the onVerdict racer arm :289) when the ROPC adapter can
   actually strand a future.
+  **✅ DISPOSITION 2026-08-29 (Story 3.4 T7, closing the story's D4 fork): RE-HOMED to the Epic-4 RELAY-020/021
+  timeout round — NOT absorbed relay-side.** The leak is closed at the SOURCE for the production adapter:
+  `RopcBindCredentialVerifier` carries Story 3.2's AC5 settlement guarantee — "the adapter guarantees
+  `future()` settles (fail-closed) after `cancelHttp()` — the port itself is silent on settlement, so promising
+  it is additive, and it resolves the relay's cancelled-verdict frame leak at the source" —
+  (`RopcVerdictRequest.cancelHttp()` completes the pin `DenyIndeterminate` on every path), and since the
+  Story 3.4 T6 absorption every teardown routes through `RelayStateManager.beginTeardown`, whose single-sited
+  hygiene calls exactly that
+  `cancelHttp()`; the continuation therefore always runs and releases the frame on its losing-race no-op arm.
+  The port-amendment arm was out of bounds for 3.4 anyway (the story freezes the AD-12 port shape), and the
+  relay-side absorb arm (release at teardown + a racer flag, one pin) was consciously not taken mid-refactor —
+  the frame is deliberately not entry state. RESIDUE for Epic 4: a verifier that violates the settlement
+  discipline can still strand one pooled buffer per abandoned adjudication (the port stays silent) — it
+  interlocks with F14 exactly as F14's entry above anticipates ("whether that obligates `VerdictRequest` to
+  promise settlement on `cancelHttp()`").
 - **Egress connect-phase bounding (blackholed SMSC) [F10|medium]** — the per-bind egress `Bootstrap` sets no
   `CONNECT_TIMEOUT_MILLIS` (`BindInterceptor.java:400-406`): a blackholed endpoint (SYN drop) hangs the legacy
   socket ~30s (Netty default, pinned 4.2.16.Final) while the 4s `adjudication-deadline` never bounds TCP
@@ -523,15 +550,31 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: Story contract text not swept to the re-keyed/retired config surface — AC5 names the retired `bind.max-connections` knob + the deleted cap≤budget startup guard; T2/T6 completion notes, I/O-matrix rows, Design Notes and File List name the retired top-level `tls.contexts` (as-built: `companion.forward.tls-contexts`; the F13 cap reads `companion.memory.concurrent-pairs`).
   evidence: Code review 2026-08-27 (acceptance-auditor + blind-hunter layers, source-verified); owner-ratified in the `.memlog.md` 2026-08-26 entry, which enumerates exactly this sweep as "NOT yet swept (deliberately deferred to the story-text pass at review wrap)".
+  **✅ RESOLVED 2026-08-27 (commit `cda2013` — the review-wrap story-text pass; marker added 2026-08-29, Story 3.4
+  T7):** the story contract text re-keyed to as-built — AC5, the T2/T6 completion notes, the I/O-matrix rows,
+  Design Notes and File List now name `companion.forward.tls-contexts` and `companion.memory.concurrent-pairs`;
+  the retired `bind.max-connections` knob + cap≤budget-guard references died with the re-key.
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: T8 RED-on-neuter mutation ledger stale against the reworked tree — M3 ran against the retired `companion.tls.contexts` sourcing; M4/M10 pin guards deleted with the knob; a fresh mutation pass on the re-keyed SEC-098 guard is owed (behavioral biters exist: `sec098_unknownTlsContextIdRefuses` + the factory re-check test).
   evidence: Code review 2026-08-27 (acceptance-auditor + blind-hunter); the memlog 2026-08-26 entry lists the fresh pass as not yet done.
+  **✅ RESOLVED 2026-08-27 (commit `cda2013`; marker added 2026-08-29, Story 3.4 T7):** the fresh RED-on-neuter
+  pass landed — M14 (the re-keyed SEC-098 validator arm) + M15 (the TLS-factory orphan eager-load guard) both RED
+  against their biters, restored byte-identical, zero residue; M4/M10 struck with the retired knob, M3 superseded
+  (it had run against the retired `companion.tls.contexts` sourcing).
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: Dev Agent Record verification counts stale — the story Debug Log claims 352 tests (+21 net new); the post-rework XML and the memlog gate line record 347.
   evidence: Code review 2026-08-27 (acceptance-auditor + blind-hunter); memlog gates: "`:proxy:test` 347 tests / 0 failed / 0 skipped (XML)".
+  **✅ RESOLVED 2026-08-27 (commit `cda2013`; marker added 2026-08-29, Story 3.4 T7):** the Dev Agent Record was
+  re-baselined to 352 tests / 0 failed / 0 skipped (347 + the 5 review tests, XML-verified) — the figure Story
+  3.4 itself takes as its baseline count ("all 352 tests at `cda2013`").
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: Companion contract docs unswept after the [B] rework — `epic-3-context.md` documents the pre-[B] topology (inverted listener/dial roles), still says Story 3.3 is "not yet created", and promises a Mode A "loud startup warning" no code emits; `deferred-work.md:511` names the retired key; `sprint-status.yaml` keeps a "not yet created" comment directly above the in-progress row.
   evidence: Code review 2026-08-27 (blind-hunter, source-verified); enumerated in the memlog 2026-08-26 NOT-yet-swept list (deferred-work.md:511, epic-3-context.md).
+  **✅ RESOLVED 2026-08-27 (commit `cda2013`; marker added 2026-08-29, Story 3.4 T7):** `epic-3-context.md`
+  re-swept to the [B] topology + done status (its Mode A "loud startup warning" promise now matches the
+  `CompanionModeAWarning` banner the review pass landed in `c4adb4e`); `sprint-status.yaml` flipped done; and
+  this ledger's own retired-key reference (the override-cert entry above) was re-keyed to
+  `companion.forward.tls-contexts` in the same commit.
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: (corroboration of the 2026-08-25 close-out entries — no new action) ROPC-through-TLS e2e gap and the override-cert e2e row were independently re-surfaced and confirmed by this review's verification-gap + acceptance-auditor layers.
   evidence: Code review 2026-08-27; see the existing entries under "Deferred from: Story 3.3 implementation close-out (2026-08-25)".
