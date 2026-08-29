@@ -24,23 +24,22 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 
 /**
- * Story 3.2 T1 — the shared in-process HTTPS OIDC discovery stand-in (AC7's test-support leg). A
+ * Story 3.2 T1 — the shared in-process HTTPS provider stand-in (AC7's test-support leg). A
  * lazy-shared {@link HttpsServer} on a free loopback port, TLS-terminated with the Keycloak
  * fixture's own server cert/key ({@code keycloak/certs/server.pem} + {@code server-key.pem},
- * CN=localhost, SAN localhost/127.0.0.1, signed by the fixture CA), serving a minimal discovery
- * document whose {@code issuer} ECHOES ITS OWN BASE URL — the exact property the T2 startup
- * discovery check requires ({@code discovered issuer == provider-url}).
+ * CN=localhost, SAN localhost/127.0.0.1, signed by the fixture CA).
  *
- * <p><b>Why it exists:</b> from T2 the REVERSE cells' adapter bean performs a hard-required
- * discovery probe at boot (a refusal surfaces as the standard Spring startup failure; re-targeted
- * by the AD-12 amendment of 2026-08-18 — every reverse cell adjudicates, forward cells carry no
- * oidc node). The reverse-cell configs default {@code provider-url} here —
- * {@code TestCompanionConfigs.oidcKeys()} (the {@code reverseA()/reverseB()/reverseC()} bases) and
- * the two reverse mode-b full-context boots ({@code RelayServerLifecycleTest},
- * {@code DirectMemoryBudgetStartupCheckTest}) — so a bootable reverse cell needs no Docker/Keycloak
- * and no test is weakened or skipped; live Keycloak tests override with the fixture URL. The PKCS#8
- * PEM key parses via the JDK {@link KeyFactory} (no BouncyCastle, no {@code sun.security..} reach
- * — AD-36).
+ * <p><b>Why it exists (re-purposed 2026-08-29, Story 3.4 T9):</b> the startup discovery probe —
+ * this stand-in's original consumer — is REMOVED whole (the token endpoint is DERIVED from
+ * {@code provider-url}; no provider wire call happens at boot). The stand-in survives deliberately:
+ * (1) {@link #url()} remains the default reverse-cell {@code provider-url}
+ * ({@code TestCompanionConfigs.oidcKeys()} and the full-context boots) — a valid https+hostful
+ * value that keeps every bootable reverse config provider-shaped with no Docker/Keycloak; (2) the
+ * provider-metadata context below stays registered behind a hit counter as the NEVER-HIT
+ * startup-probe pin (re-introducing a startup GET turns {@code RopcBindCredentialVerifierTest}'s
+ * pin RED); (3) {@link #fixtureServerSslContext()} stays load-bearing for every ad-hoc test HTTPS
+ * server that needs the fixture trust story. The PKCS#8 PEM key parses via the JDK
+ * {@link KeyFactory} (no BouncyCastle, no {@code sun.security..} reach — AD-36).
  *
  * <p>Test-tier only (SEC-090: {@code com.sun.net.httpserver} + {@code javax.net.ssl} JDK-context
  * use are test-tier concerns; {@code HttpsParameters} never appears in main). One shared instance
@@ -48,7 +47,11 @@ import java.util.Base64;
  */
 public final class OidcDiscoveryStandIn {
 
-    /** OIDC discovery is always {@code <issuer>/.well-known/openid-configuration}. */
+    /**
+     * The OIDC provider-metadata path. Since Story 3.4 T9 (2026-08-29) nothing in {@code src/main}
+     * fetches it — the context below exists purely as the NEVER-HIT startup-probe pin (its hits
+     * are counted; see {@link #discoveryHits()}).
+     */
     private static final String DISCOVERY_PATH = "/.well-known/openid-configuration";
 
     /**
@@ -56,6 +59,10 @@ public final class OidcDiscoveryStandIn {
      * persisted); it only satisfies the PKCS12 key-entry API.
      */
     private static final char[] KEY_PASSWORD = "stand-in".toCharArray();
+
+    /** Hits on the provider-metadata context — the never-hit startup-probe pin's observable (T9). */
+    private static final java.util.concurrent.atomic.AtomicInteger DISCOVERY_HITS =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private static volatile String baseUrl;
 
@@ -80,6 +87,15 @@ public final class OidcDiscoveryStandIn {
         return url;
     }
 
+    /**
+     * Hits recorded on the provider-metadata context since JVM start — the observable of the
+     * never-hit startup-probe pin (Story 3.4 T9, 2026-08-29): with the probe removed, NOTHING in
+     * {@code src/main} may fetch this path, at construction or at first bind.
+     */
+    public static int discoveryHits() {
+        return DISCOVERY_HITS.get();
+    }
+
     private static String start() {
         try {
             HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
@@ -97,6 +113,7 @@ public final class OidcDiscoveryStandIn {
 
     private static HttpHandler discoveryHandler(String base) {
         return exchange -> {
+            DISCOVERY_HITS.incrementAndGet();   // the never-hit pin's counter (T9)
             byte[] body = discoveryDocument(base).getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);

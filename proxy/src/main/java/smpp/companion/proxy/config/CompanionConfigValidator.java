@@ -311,10 +311,11 @@ public final class CompanionConfigValidator
      * 2026-08-19 T2 FIXME pass the component is {@link URI}-typed: a non-URI string refuses at BIND
      * time (conversion failure), and the HOST + scheme checks live HERE ({@code https://:8443},
      * {@code http://...}) — the config layer is the deferred 2.1-era scheme-only gap's final home
-     * (moved out of the discovery build). Blank and absent both bind to null and are refused by the
+     * (moved out of the former discovery build, which Story 3.4 T9 removed whole, 2026-08-29).
+     * Blank and absent both bind to null and are refused by the
      * component {@code @NotNull} (empty strings convert to null for non-String targets). Deeper
      * material validation is the T2+
-     * adapter's job (its SSLContext/discovery build refuses startup on a bad store, fail-closed).
+     * adapter's job (its SSLContext build refuses startup on a bad store, fail-closed).
      */
     private void requireOidc(ProxyCompanionProperties.Oidc oidc, String prefix, List<String> v) {
         URI providerUrl = oidc.providerUrl();

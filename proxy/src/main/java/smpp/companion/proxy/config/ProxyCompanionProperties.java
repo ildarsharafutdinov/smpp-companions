@@ -255,11 +255,18 @@ public record ProxyCompanionProperties(
      *
      * @param providerUrl the OIDC provider's base URL as a {@link URI} ({@code https} + a host required,
      *        SEC-053/054 &mdash; checked by the validator; a string that is not a URI at all refuses at
-     *        BIND time, conversion failure); discovery ({@code /.well-known/openid-configuration}) and
-     *        the token endpoint are derived from it (AC7) &mdash; no per-endpoint
-     *        override keys. The compact constructor strips exactly one trailing {@code '/'} so the
-     *        well-known-path join never doubles a slash (canonicalization only &mdash; no value is ever
-     *        invented; the amendment-1 no-defaulting rule concerns the budget keys).
+     *        BIND time, conversion failure); the token endpoint is DERIVED from it
+     *        ({@code <provider-url>/protocol/openid-connect/token} &mdash; since Story 3.4 T9,
+     *        2026-08-29, when the startup discovery probe was removed; no per-endpoint override keys)
+     *        &mdash; so it MUST be the Keycloak REALM base (e.g.
+     *        {@code https://idp.example.com/realms/smpp-companions}). Operator contract (the
+     *        application.yml policy block is the mirror): Direct Access Grants (the password grant)
+     *        is PER-CLIENT and OFF by default since Keycloak 26.2 &mdash; enable it on the client,
+     *        or every bind denies fail-closed at first bind (AC2 unchanged, plus a starred operator
+     *        WARN naming the derived endpoint and this URL). The compact constructor strips exactly
+     *        one trailing {@code '/'} so the token-path join never doubles a slash (canonicalization
+     *        only &mdash; no value is ever invented; the amendment-1 no-defaulting rule concerns the
+     *        budget keys).
      * @param clientId the OAuth {@code client_id} the proxy authenticates as toward the provider
      *        (AD-12).
      * @param clientSecretPath file path of the OAuth {@code client_secret} (AD-18 &mdash; a path,
@@ -303,9 +310,10 @@ public record ProxyCompanionProperties(
 
         /**
          * Construction-time canonicalization (the 2026-08-19 T2 FIXME pass): strip exactly ONE
-         * trailing {@code '/'} from the bound base URL, so joining
-         * {@code <issuer>/.well-known/openid-configuration} never doubles a slash and the discovered
-         * {@code issuer} equality compares slash-free forms. The compact ctor is the only config-layer
+         * trailing {@code '/'} from the bound base URL, so the token-endpoint join
+         * ({@code URI.resolve} of the realm-relative token path over this base &mdash; the
+         * Story 3.4 T9 derivation, which replaced the former discovery-path join) never doubles a
+         * slash. The compact ctor is the only config-layer
          * place a record can rewrite its own value &mdash; a Bean-Validation constraint can only accept
          * or reject, never normalize. Null-tolerant by necessity: binding instantiates the record
          * BEFORE validation runs (an absent key, or an empty string &mdash; which converts to null for

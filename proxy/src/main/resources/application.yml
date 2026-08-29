@@ -118,6 +118,16 @@ companion:
   #       # anchor — no local JWT signature verification, no cached provider keys. The former third
   #       # budget key (the key-cache TTL) is REMOVED; a config still carrying it refuses startup
   #       # (ignoreUnknownFields=false, and the binder's unknown-field error names it — loud).
+  #       # Startup discovery REMOVED (Story 3.4 T9, 2026-08-29 — "simplify app"): the proxy makes
+  #       # NO provider wire call at startup. The token endpoint is DERIVED from provider-url as
+  #       # <provider-url>/protocol/openid-connect/token — provider-url MUST therefore be the
+  #       # Keycloak REALM base (e.g. https://idp.example.com/realms/smpp-companions), not the
+  #       # provider host root. The retired startup posture (the OIDC discovery-document fetch,
+  #       # the issuer-equality check, and the Direct-Access-Grants warning) is gone; its
+  #       # prerequisites are now an OPERATOR CONTRACT: Direct Access Grants (the password grant)
+  #       # is per-client and OFF by default since Keycloak 26.2 — enable it on the client, or
+  #       # every bind denies fail-closed at FIRST BIND via the unchanged verdict mapping, with a
+  #       # starred operator WARN naming the derived token endpoint and provider-url.
   #   mode-b:                       # PLAINTEXT internet leg, direct client->reverse (no forward proxy);
   #                                 # opt-in ack REQUIRED to start (SEC-052) — still adjudicates ("plaintext+ROPC")
   #     smsc: { host: smsc.carrier.example, port: 2775 }

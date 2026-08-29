@@ -68,8 +68,11 @@ public final class RelayTestFixtures {
      * minimal single-CA anchor — AD-13, never JDK cacerts) to {@code target} and returns it: the
      * {@code companion.reverse.mode-*.oidc.trust-store.path} fixture for reverse-cell configs
      * (Story 3.2 T1). Anchoring the fixture CA — rather than a random generated cert — is what lets
-     * the same config keep passing from T2 on, when the adapter's discovery/SSLContext build actually
-     * handshakes with the shared {@link OidcDiscoveryStandIn} (its server cert chains to that CA).
+     * the same config keep passing from T2 on, when the adapter's SSLContext build first
+     * handshakes with the shared {@link OidcDiscoveryStandIn} (its server cert chains to that CA;
+     * since Story 3.4 T9, 2026-08-29 the startup discovery probe that handshake served is gone, and
+     * the CA anchor keeps every provider-facing TLS fixture — stand-in and Keycloak alike — on one
+     * trust story).
      */
     public static Path idpTrustStoreFixture(Path target) {
         try (InputStream in = RelayTestFixtures.class.getResourceAsStream("/keycloak/certs/truststore.p12")) {
