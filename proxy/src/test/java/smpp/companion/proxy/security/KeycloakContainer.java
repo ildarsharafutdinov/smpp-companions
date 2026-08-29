@@ -19,7 +19,8 @@ import java.util.Map;
  * Story 2.1 — the Keycloak &ge;26.7.0 fixture as a <b>Testcontainers-managed</b> container (replaces the
  * former external {@code docker-compose.yml}). Replicates the verified compose config verbatim: pinned
  * {@code quay.io/keycloak/keycloak:26.7.0}, the HTTPS server cert, {@code KC_HTTPS_CLIENT_AUTH=required}
- * (so the {@code client-x509} authenticator sees the peer cert — path 3), the mTLS truststore, and the realm
+ * (transport mTLS — the client cert is demanded on every TLS handshake; the OAuth-level {@code client-x509}
+ * use died with Story 3.4 T8, 2026-08-29), the mTLS truststore, and the realm
  * import. The HTTPS port is bound <b>fixed</b> to {@code localhost:8443} (parity with the original compose's
  * {@code "8443:8443"}) — so the slice uses the {@link KeycloakFixture} {@code :8443} coordinates directly;
  * there is no dynamic discovery.
@@ -28,7 +29,7 @@ import java.util.Map;
  * imported and serving. The built-in {@code Wait.forHttps} cannot be used: {@code KC_HTTPS_CLIENT_AUTH=required}
  * rejects any handshake without a client cert, and {@code forHttps} can only customize trust, not present a
  * client identity. The custom strategy reuses {@link KeycloakFixture#newSslContext()} (trusts the fixture CA
- * <b>and</b> presents the client cert). It self-enforces the startup deadline: in Testcontainers 2.x
+ * <b>and</b> presents the client cert — transport identity). It self-enforces the startup deadline: in Testcontainers 2.x
  * {@code AbstractWaitStrategy} does <b>not</b> wrap the no-arg {@code waitUntilReady()} in a timeout, and the
  * container's startup timeout is not propagated to the strategy — so the timeout is set on the strategy and
  * the loop honors it directly (default 60s flakes on KC26 cold-start + realm import).
@@ -49,7 +50,7 @@ final class KeycloakContainer extends GenericContainer<KeycloakContainer> {
         withEnv("KC_HOSTNAME", "localhost");
         withEnv("KC_HTTPS_CERTIFICATE_FILE", "/opt/keycloak/conf/server.pem");
         withEnv("KC_HTTPS_CERTIFICATE_KEY_FILE", "/opt/keycloak/conf/server-key.pem");
-        withEnv("KC_HTTPS_CLIENT_AUTH", "required");  // NEED: surfaces the peer cert to client-x509 (path 3)
+        withEnv("KC_HTTPS_CLIENT_AUTH", "required");  // NEED: transport mTLS — client cert on every handshake
         withEnv("KC_TRUSTSTORE_PATHS", "/opt/keycloak/conf/keycloak-truststore.pem");
 
         // Mounted read-once-at-start files. forClasspathResource takes a LEADING-SLASH-FREE classpath path

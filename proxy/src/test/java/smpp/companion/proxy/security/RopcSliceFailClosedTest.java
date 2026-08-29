@@ -1,8 +1,5 @@
 package smpp.companion.proxy.security;
 
-import com.nimbusds.jose.jwk.JWKSet;
-import com.nimbusds.jose.jwk.RSAKey;
-import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -32,19 +29,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Story 2.1 Task 4 — the <b>always-on</b> fail-closed guards in {@link RopcSlice} that the live (Docker-gated) suite
  * cannot keep biting in CI, driven through the real {@link BindCredentialVerifier#verify} port against an in-process
- * {@link HttpServer} stand-in IdP (no container, no network). Covers AC2 path-4 (the 4xx/5xx {@code mapNon200}
- * collapse), AC2 path-2 (introspection {@code active:false} / non-200 deny), AC5 (password zeroization on completion
- * AND on saturation), and AC6 / AD-28(4) (the bounded-pool saturation fail-closed deny).
+ * {@link HttpServer} stand-in IdP (no container, no network). Covers the non-200 {@code mapNon200} collapse (4xx
+ * vs 5xx), the AMENDED-CONTRACT token arms (Story 3.4 T8, 2026-08-29): the D6 pin — a 200 opaque (non-three-segment)
+ * token denies fail-closed — and the D7 pin — a 200 three-segment garbage token {@code Allow}s because the verdict
+ * derives from the token-endpoint response ALONE (nothing local parses or verifies the token; reintroducing any
+ * local check goes RED here); AC5 (password zeroization on completion AND on saturation); and AC6 / AD-28(4) (the
+ * bounded-pool saturation fail-closed deny). The slice's 2.1-era interop arms (local JWKS verify, RFC 7662
+ * introspection, mTLS client auth) were REMOVED everywhere by Story 3.4 T8 — their rows retired with them, and the
+ * mandatory-{@code client_secret} config guard (their successor as the config's fail-fast) is pinned below.
  *
  * <p><b>Why an in-process IdP:</b> {@code mapNon200} and the saturation admission gate are private to the slice; the
  * only way to drive them deterministically is to control the token endpoint's status and latency. The
- * {@link HttpServer} serves {@code /token} (status/latency per test) + {@code /certs} (a fixed parseable JWKS, so the
- * STS fan-out's JWKS subtask always succeeds and the token status is what decides the verdict) + optionally
- * {@code /introspect}. Plain HTTP, loopback — exactly the shape {@link RopcSliceCancelTest} proved out for AC3.
+ * {@link HttpServer} serves {@code /token} (status/body/latency per test). Plain HTTP, loopback — exactly the shape
+ * {@link RopcSliceCancelTest} proved out for AC3.
  *
  * <p><b>RED-on-neuter (AC9 / AI-1):</b> every assertion below is load-bearing — neuter the matching guard in
- * {@link RopcSlice} (the 4xx/5xx branch, the introspection active/non-200 check, the completion/saturation
- * {@code zeroize()}, the {@code admission.tryAcquire()} gate) and the corresponding test goes RED.
+ * {@link RopcSlice} (the 4xx/5xx branch, the three-segment gate in either direction, the completion/saturation
+ * {@code zeroize()}, the {@code admission.tryAcquire()} gate, the {@code clientSecret} null guard) and the
+ * corresponding test goes RED.
  */
 @Tag("unit")
 @Tag("security")
@@ -54,22 +56,8 @@ class RopcSliceFailClosedTest {
 
     private static final String REALM = "/realms/x";
     private static final String TOKEN_PATH = REALM + "/protocol/openid-connect/token";
-    private static final String CERTS_PATH = REALM + "/protocol/openid-connect/certs";
-    private static final String INTROSPECT_PATH = REALM + "/protocol/openid-connect/token/introspect";
-
-    /** A parseable JWKS body so the slice's concurrent JWKS fetch always succeeds (the token status decides). */
-    private static final String JWKS_BODY = jwksBody();
 
     private static final ScopedValue<RequestContext> CTX = ScopedValue.newInstance();
-
-    private static String jwksBody() {
-        try {
-            RSAKey key = new RSAKeyGenerator(2048).keyID("present").generate();
-            return new JWKSet(key.toPublicJWK()).toString();
-        } catch (Exception e) {
-            throw new IllegalStateException("could not build JWKS body", e);
-        }
-    }
 
     private static BindCredential cred(AsciiString password) {
         return new BindCredential(new SystemId(new AsciiString("testuser")), new Password(password));
@@ -86,34 +74,24 @@ class RopcSliceFailClosedTest {
         return req.future().get(15, TimeUnit.SECONDS);
     }
 
-    private static RopcSlice slice(HttpServer server, boolean introspect, int maxInflight) {
+    private static RopcSlice slice(HttpServer server, int maxInflight) {
         String base = "http://127.0.0.1:" + server.getAddress().getPort() + REALM;
-        HttpClient http = HttpClient.newHttpClient();   // plain HTTP stand-in IdP (no mTLS)
+        HttpClient http = HttpClient.newHttpClient();   // plain HTTP stand-in IdP (transport TLS is the live suite's)
         return new RopcSlice(http, new RopcSlice.SliceConfig(
                 URI.create(base + "/protocol/openid-connect/token"),
-                URI.create(base + "/protocol/openid-connect/token/introspect"),
-                URI.create(base + "/protocol/openid-connect/certs"),
-                base, "smpp-client", "secret", false, introspect), maxInflight);
+                "smpp-client", "secret"), maxInflight);
     }
 
-    private static RopcSlice slice(HttpServer server, boolean introspect) {
-        return slice(server, introspect, 4);
+    private static RopcSlice slice(HttpServer server) {
+        return slice(server, 4);
     }
 
-    /** Stands up the IdP: {@code tokenHandler} on /token, a fixed JWKS on /certs, and optional /introspect. */
-    private static HttpServer newServer(HttpHandler tokenHandler, HttpHandler introspectHandler) throws IOException {
+    /** Stands up the IdP: {@code tokenHandler} on /token (the slice's only wire call — Story 3.4 T8). */
+    private static HttpServer newServer(HttpHandler tokenHandler) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         server.createContext(TOKEN_PATH, tokenHandler);
-        server.createContext(CERTS_PATH, RopcSliceFailClosedTest::handleCerts);
-        if (introspectHandler != null) {
-            server.createContext(INTROSPECT_PATH, introspectHandler);
-        }
         server.start();
         return server;
-    }
-
-    private static void handleCerts(HttpExchange exchange) throws IOException {
-        sendJson(exchange, 200, JWKS_BODY);
     }
 
     private static void sendJson(HttpExchange exchange, int status, String body) throws IOException {
@@ -129,7 +107,7 @@ class RopcSliceFailClosedTest {
         exchange.getRequestBody().readAllBytes();
     }
 
-    // ── AC2 path-4: the 4xx/5xx mapNon200 collapse (always-on; live suite only covers 400/401 via Docker) ──────
+    // ── the 4xx/5xx mapNon200 collapse (always-on; live suite covers the same arms via Docker) ────────────────
 
     @Test
     @DisplayName("token endpoint 401 → DenyInvalid (AD-11 4xx≠200 mapping; always-on)")
@@ -137,8 +115,8 @@ class RopcSliceFailClosedTest {
         HttpServer server = newServer(ex -> {
             drainBody(ex);
             sendJson(ex, 401, "{\"error\":\"invalid_client\"}");
-        }, null);
-        try (RopcSlice slice = slice(server, false)) {
+        });
+        try (RopcSlice slice = slice(server)) {
             Verdict v = awaitVerdict(verify(slice, cred(new AsciiString("pw"))));
             assertThat(v).as("4xx token response → DenyInvalid (AD-11)").isInstanceOf(Verdict.DenyInvalid.class);
         } finally {
@@ -152,8 +130,8 @@ class RopcSliceFailClosedTest {
         HttpServer server = newServer(ex -> {
             drainBody(ex);
             sendJson(ex, 500, "{\"error\":\"server_error\"}");
-        }, null);
-        try (RopcSlice slice = slice(server, false)) {
+        });
+        try (RopcSlice slice = slice(server)) {
             Verdict v = awaitVerdict(verify(slice, cred(new AsciiString("pw"))));
             assertThat(v).as("5xx token response → DenyIndeterminate (AD-11)").isInstanceOf(Verdict.DenyIndeterminate.class);
         } finally {
@@ -161,17 +139,21 @@ class RopcSliceFailClosedTest {
         }
     }
 
-    // ── AC2 path-2: RFC 7662 introspection deny branches (active:false / non-200) ──────────────────────────────
+    // ── the amended-contract token arms (Story 3.4 T8, 2026-08-29; D6/D7-aligned, through the real port) ──────
 
     @Test
-    @DisplayName("introspection active:false → DenyIndeterminate (RFC 7662 fail-closed; always-on)")
-    void introspectionInactive_yieldsDenyIndeterminate() throws Exception {
-        HttpServer server = newServer(
-                ex -> { drainBody(ex); sendJson(ex, 200, "{\"access_token\":\"opaque\",\"token_type\":\"Bearer\"}"); },
-                ex -> { drainBody(ex); sendJson(ex, 200, "{\"active\":false}"); });
-        try (RopcSlice slice = slice(server, true)) {
+    @DisplayName("D6: 200 + opaque (non-three-segment) token → DenyIndeterminate (JWT-only; no second wire arm)")
+    void opaqueToken_yieldsDenyIndeterminate() throws Exception {
+        // 200 with an opaque token: not adjudicable, and there is no introspection arm to ask (removed with the
+        // slice's 7662 arm, Story 3.4 T8) — the deny is provably the policy gate. Neuter the segment-count check
+        // (always-allow) and this row goes RED.
+        HttpServer server = newServer(ex -> {
+            drainBody(ex);
+            sendJson(ex, 200, "{\"access_token\":\"opaque-token-without-separators\",\"token_type\":\"Bearer\"}");
+        });
+        try (RopcSlice slice = slice(server)) {
             Verdict v = awaitVerdict(verify(slice, cred(new AsciiString("pw"))));
-            assertThat(v).as("introspection active:false → DenyIndeterminate (AD-11)")
+            assertThat(v).as("an opaque token is not adjudicable → DenyIndeterminate (D6, AD-11 fail-closed)")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
         } finally {
             server.stop(0);
@@ -179,17 +161,19 @@ class RopcSliceFailClosedTest {
     }
 
     @Test
-    @DisplayName("introspection non-200 → DenyIndeterminate (RFC 7662 fail-closed; always-on)")
-    void introspectionNon200_yieldsDenyIndeterminate() throws Exception {
-        // The 500 body carries active:true on purpose: if the != 200 guard were dropped, the slice would parse it and
-        // return Allow — so this test only stays GREEN while the non-200 deny guard fires (RED-on-neuter).
-        HttpServer server = newServer(
-                ex -> { drainBody(ex); sendJson(ex, 200, "{\"access_token\":\"opaque\",\"token_type\":\"Bearer\"}"); },
-                ex -> { drainBody(ex); sendJson(ex, 500, "{\"active\":true}"); });
-        try (RopcSlice slice = slice(server, true)) {
+    @DisplayName("D7: 200 + three-segment GARBAGE token → Allow — the verdict is the endpoint's alone (nothing local parses it)")
+    void threeSegmentGarbageToken_yieldsAllow() throws Exception {
+        // Three dot-separated segments of base64 garbage: structurally a JWS, cryptically worthless. It must Allow —
+        // the token-endpoint response (over the TLS provider link) is the sole trust anchor. Reintroduce ANY local
+        // check (signature, kid, claims — the retired 2.1 arms) and this row goes RED.
+        HttpServer server = newServer(ex -> {
+            drainBody(ex);
+            sendJson(ex, 200, "{\"access_token\":\"aaa.bbb.ccc\",\"token_type\":\"Bearer\"}");
+        });
+        try (RopcSlice slice = slice(server)) {
             Verdict v = awaitVerdict(verify(slice, cred(new AsciiString("pw"))));
-            assertThat(v).as("introspection non-200 → DenyIndeterminate (AD-11)")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(v).as("a three-segment token Allows on the endpoint verdict alone (D7)")
+                    .isEqualTo(new Verdict.Allow());
         } finally {
             server.stop(0);
         }
@@ -203,10 +187,10 @@ class RopcSliceFailClosedTest {
         HttpServer server = newServer(ex -> {
             drainBody(ex);
             sendJson(ex, 401, "{}");   // any outcome — the finally-block zeroize is what we assert
-        }, null);
+        });
         AsciiString raw = new AsciiString("s3cret");   // shared backing — Password does not copy (AC5 coverage)
         BindCredential credential = cred(raw);
-        try (RopcSlice slice = slice(server, false)) {
+        try (RopcSlice slice = slice(server)) {
             awaitVerdict(verify(slice, credential));   // DenyInvalid; the pool thread's finally zeroizes next
             // The slice zeroizes in the finally AFTER pin.complete, so a brief bounded poll closes the tiny race
             // between the test thread unblocking on future().get() and the pool thread running zeroize().
@@ -236,11 +220,11 @@ class RopcSliceFailClosedTest {
             } catch (IOException ioe) {
                 // best-effort: a late write after holdPermit release may fail — not a verdict signal.
             }
-        }, null);
+        });
 
         AsciiString pw1 = new AsciiString("pw1");
         AsciiString pw2 = new AsciiString("pw2");
-        try (RopcSlice slice = slice(server, false, 1)) {   // maxInflight = 1
+        try (RopcSlice slice = slice(server, 1)) {   // maxInflight = 1
             VerdictRequest first = verify(slice, cred(pw1));   // acquires the single permit, blocks at holdPermit
             assertTrue(requestReceived.await(5, TimeUnit.SECONDS), "verify#1 should reach the slow IdP (permit held)");
 
@@ -278,8 +262,7 @@ class RopcSliceFailClosedTest {
     @DisplayName("maxInflight < 1 is rejected at construction (AC6 admission-capacity fail-fast; RED-on-neuter)")
     void maxInflightBelowOne_isRejectedAtConstruction() {
         URI any = URI.create("http://127.0.0.1:1" + REALM + "/protocol/openid-connect/token");
-        RopcSlice.SliceConfig cfg = new RopcSlice.SliceConfig(
-                any, any, any, "http://127.0.0.1" + REALM, "c", "s", false, false);
+        RopcSlice.SliceConfig cfg = new RopcSlice.SliceConfig(any, "c", "s");
         // maxInflight=0: WITHOUT this guard, Semaphore(0) is valid and EVERY bind silently denies DenyIndeterminate
         // (fail-closed but broken/misconfigured) — the guard is the typed admission-capacity fail-fast.
         assertThatThrownBy(() -> new RopcSlice(HttpClient.newHttpClient(), cfg, 0))
@@ -288,6 +271,20 @@ class RopcSliceFailClosedTest {
         // typed boundary; assert both document the intent.
         assertThatThrownBy(() -> new RopcSlice(HttpClient.newHttpClient(), cfg, -1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ── the amended contract's config guard: client_secret is MANDATORY (Story 3.4 T8; AC13) ─────────────────
+
+    @Test
+    @DisplayName("SliceConfig without a client_secret is rejected at construction (mandatory secret; RED-on-neuter)")
+    void nullClientSecret_isRejectedAtConstruction() {
+        // The 2.1 config allowed a null secret for the RFC 8705 mTLS path; that arm is gone (Story 3.4 T8,
+        // 2026-08-29) and the secret is unconditionally required — drop the compact-ctor guard and a null secret
+        // would NPE deep inside tokenRequest() instead (fail-open, password never zeroized).
+        URI any = URI.create("http://127.0.0.1:1" + REALM + "/protocol/openid-connect/token");
+        assertThatThrownBy(() -> new RopcSlice.SliceConfig(any, "c", null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("clientSecret");
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────────────────

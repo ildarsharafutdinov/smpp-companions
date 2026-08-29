@@ -1,13 +1,6 @@
 package smpp.companion.proxy.security;
 
-import com.nimbusds.jose.JWSVerifier;
-import com.nimbusds.jose.crypto.RSASSAVerifier;
-import com.nimbusds.jose.jwk.JWK;
-import com.nimbusds.jose.jwk.JWKSet;
-import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.util.JSONObjectUtils;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import io.netty.util.AsciiString;
 
 import java.net.URI;
@@ -19,8 +12,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.Base64;
-import java.util.Date;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -34,26 +25,40 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Story 2.1 Task 2 — the <b>test-tier</b> ROPC validation slice that ratifies the AD-12 {@code proxy/security/}
- * port contract's shape against a real Keycloak &ge;26.7.0 across all four AD-12 paths. It is NOT the production
- * adapter (Epic 3): it lives under {@code proxy/src/test}, uses {@link java.net.http.HttpClient} + Nimbus, and
- * proves the {@link BindCredentialVerifier} port can <b>express</b> every path (Allow JWT / Allow introspection /
- * Allow mTLS / DenyInvalid / DenyIndeterminate) before {@code relay/} commits against it (AC2/AC8).
+ * port contract's shape against a real Keycloak &ge;26.7.0. It is NOT the production adapter
+ * ({@code RopcBindCredentialVerifier}): it lives under {@code proxy/src/test}, uses
+ * {@link java.net.http.HttpClient} + Nimbus, and proves the {@link BindCredentialVerifier} port can
+ * <b>express</b> the contract's verdicts before {@code relay/} commits against it (AC2/AC8).
  *
- * <p><b>Concurrency model (AC4 / AD-5):</b> each adjudication fans the ROPC token call and the local JWKS
- * defense-in-depth fetch out on a {@link StructuredTaskScope} (JEP 505 preview — {@code open(Joiner)} +
- * {@code fork} + {@code join}) with the {@link RequestContext} bound via {@link ScopedValue} (JEP 506 final),
- * <b>never {@link ThreadLocal}</b>. The fan-out runs on one bounded hand-managed virtual-thread
- * {@link ExecutorService} owned by this slice (AD-28(4)); admission is fail-closed on saturation (AC6).
+ * <p><b>Amended contract (Story 3.4 T8, 2026-08-29 — supersedes the 2.1 four-path shape and the 2026-08-27
+ * T1/T2 "deliberately UNCHANGED" disposition):</b> the slice's historical-ratification exemption is ENDED —
+ * local JWT signature verification (JWKS fetch/cache/refresh), RFC 7662 opaque-token introspection, and the
+ * RFC 8705 {@code tokenRequest} mTLS client-auth branch are removed from the test tier too, and the slice
+ * becomes the LIVE ratification of the amended contract: a ROPC grant with mandatory {@code client_secret}
+ * whose verdict derives from the token-endpoint response + the STRUCTURAL three-segment gate alone
+ * (JWT &rarr; {@code Allow}; opaque &rarr; {@code DenyIndeterminate}). The slice's transport TLS stays (the
+ * mTLS {@link SSLContext} presents the client cert on every call — the trust anchor); only the OAuth-level
+ * cert-auth arm is gone.
+ *
+ * <p><b>Concurrency model (AC4 / AD-5):</b> each adjudication runs the ROPC token call under a
+ * {@link StructuredTaskScope} (JEP 505 preview — {@code open(Joiner)} + {@code fork} + {@code join}) with the
+ * {@link RequestContext} bound via {@link ScopedValue} (JEP 506 final), <b>never {@link ThreadLocal}</b>.
+ * One forked arm — the token exchange — since the local-verify arm died with the verification (the
+ * production adapter's shape, Story 3.4 T2). The adjudication runs on one bounded hand-managed
+ * virtual-thread {@link ExecutorService} owned by this slice (AD-28(4)); admission is fail-closed on
+ * saturation (AC6).
  *
  * <p><b>Fail-closed + secret hygiene (AC5 / AD-11):</b> the {@link Password} backing array is zeroized on
- * adjudication completion (success or failure); verdicts are never cached (re-validate every bind); JWKS is
- * cached only. Non-401-non-verifiable responses, 5xx, timeouts, network errors, and JWKS {@code kid} misses
- * collapse to {@link Verdict.DenyIndeterminate}; 4xx collapses to {@link Verdict.DenyInvalid}; DENY always wins.
+ * adjudication completion (success or failure); verdicts are never cached (re-validate every bind); the
+ * access-token working copy is zeroized after the gate. Non-verifiable responses, 5xx, timeouts, network
+ * errors, and non-three-segment (opaque) tokens collapse to {@link Verdict.DenyIndeterminate}; 4xx collapses
+ * to {@link Verdict.DenyInvalid} (the slice's shorthand non-200 mapping, recorded in the architecture
+ * {@code .memlog.md}, 2026-08-19); DENY always wins.
  *
  * <p><b>Cancellation (AC3 / AD-32):</b> {@link VerdictRequest#cancelHttp()} aborts the underlying
  * {@code HttpClient} exchange (not only the future), tearing the {@link StructuredTaskScope} down so the IdP is
- * spared the abandoned ROPC call. {@code cancelHttp()} on the open exchange (T3's wire-abort test) is exercised
- * by a later task; this adapter wires the binding now.
+ * spared the abandoned ROPC call. {@code cancelHttp()} binds the token exchange ALONE — the slice has no
+ * second wire arm to abort (Story 3.4 T8).
  *
  * <p>API shape note (AC4 guardrail, AD-5/AD-35): {@link StructuredTaskScope} is JEP 505 <i>preview</i>; the exact
  * {@code Joiner} signatures below were verified against the live JDK 25 ({@code StructuredTaskScope.open(Joiner)},
@@ -61,50 +66,33 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
 
-    /** Per-path configuration: which Keycloak client / OAuth mode / verdict strategy this slice adjudicates. */
+    /**
+     * Per-slice configuration: the token endpoint + the confidential client's id/secret (the amended contract's
+     * whole OAuth surface — {@code client_secret} is MANDATORY; the mTLS no-secret and introspection modes died
+     * with Story 3.4 T8, 2026-08-29).
+     */
     public record SliceConfig(
             URI tokenEndpoint,
-            URI introspectionEndpoint,
-            URI jwksUri,
-            String issuer,
             String clientId,
-            /* Path 1/2/4 client secret; null for path 3 (mTLS authenticates the client, RFC 8705). */
-            String clientSecret,
-            /* Path 3: the transport cert authenticates the client; no client_secret is sent. */
-            boolean useMtlsClientAuth,
-            /* Path 2: introspect the issued token (RFC 7662) instead of local JWKS defense-in-depth verify. */
-            boolean introspect) {
+            String clientSecret) {
         public SliceConfig {
-            // Compact constructor — fail-fast (AD-17): a null endpoint/URI field would otherwise NPE deep inside
+            // Compact constructor — fail-fast (AD-17): a null field would otherwise NPE deep inside
             // tokenRequest()/verify() — escaping verify() as a raw Throwable (fail-open) with the password never zeroized.
             Objects.requireNonNull(tokenEndpoint, "tokenEndpoint");
-            Objects.requireNonNull(introspectionEndpoint, "introspectionEndpoint");
-            Objects.requireNonNull(jwksUri, "jwksUri");
-            Objects.requireNonNull(issuer, "issuer");
             Objects.requireNonNull(clientId, "clientId");
-            // RFC 7662 introspection needs client auth: a client_secret OR mTLS provider auth (RFC 8705). Otherwise
-            // the slice would silently emit Basic auth "clientId:null" and Keycloak would reject it (fail-closed but
-            // misconfigured). clientSecret is legitimately null ONLY for the mTLS path (introspect=false / path 3).
-            if (introspect && clientSecret == null && !useMtlsClientAuth) {
-                throw new IllegalArgumentException(
-                        "introspect=true requires clientSecret or useMtlsClientAuth (RFC 7662 client auth)");
-            }
+            Objects.requireNonNull(clientSecret, "clientSecret");
         }
     }
-
-    /** Clock-skew tolerance for JWT {@code exp}/{@code nbf} claim checks (AD-11). */
-    private static final Duration CLAIM_SKEW = Duration.ofSeconds(60);
 
     private final HttpClient http;
     private final SliceConfig cfg;
     private final ExecutorService adjudicationPool;   // bounded hand-managed VT pool (AD-28(4))
     private final Semaphore admission;                // bounds in-flight adjudications → fail-closed on saturation (AC6)
-    private final java.util.concurrent.atomic.AtomicReference<JWKSet> jwksCache =
-            new java.util.concurrent.atomic.AtomicReference<>();   // JWKS cached only (AD-12); verdicts never
 
     /**
-     * @param http         the mTLS-capable {@link HttpClient} (trusts the fixture CA, presents the client cert).
-     * @param cfg          the per-path slice configuration.
+     * @param http         the TLS-capable {@link HttpClient} (trusts the fixture CA, presents the client cert —
+     *                     transport identity; OAuth-level auth is {@code client_secret} only, Story 3.4 T8).
+     * @param cfg          the slice configuration (token endpoint + confidential client).
      * @param maxInflight  the bounded-VT-pool admission limit; saturation returns {@link Verdict.DenyIndeterminate}
      *                     immediately (fail-closed, AC6 / AD-28(4)).
      */
@@ -128,8 +116,9 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
         Duration callTimeout = clamp(Duration.between(now, deadline), Duration.ofSeconds(1), Duration.ofSeconds(30));
 
         CompletableFuture<Verdict> pin = new CompletableFuture<>();
-        // The in-flight HTTP call cancelHttp() can abort (AD-32): the token exchange, then the introspection call if
-        // path 2 is taken. Null on the saturation/denied path — no wire call is started there.
+        // The in-flight HTTP call cancelHttp() can abort (AD-32): the token exchange — the slice's ONLY wire call
+        // since the introspection arm died (Story 3.4 T8). Null on the saturation/denied path — no wire call is
+        // started there.
         AtomicReference<CompletableFuture<HttpResponse<String>>> activeCall = new AtomicReference<>();
 
         // Fail-closed admission (AC6): a saturated pool denies indeterminate WITHOUT starting work — the wire call is
@@ -155,8 +144,8 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
                     return;   // cancelHttp() landed before the pool task started — exchange already aborted; bail
                 }
                 Verdict v = (rc != null)
-                        ? ScopedValue.where(ctx, rc).call(() -> adjudicate(tokenExchange, activeCall))
-                        : adjudicate(tokenExchange, activeCall);
+                        ? ScopedValue.where(ctx, rc).call(() -> adjudicate(tokenExchange))
+                        : adjudicate(tokenExchange);
                 pin.complete(v);
             } catch (Throwable t) {
                 pin.complete(new Verdict.DenyIndeterminate());   // fail-closed on any unexpected failure (AD-11)
@@ -170,20 +159,17 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
     }
 
     /**
-     * The STS fan-out (AC4 / AD-5): fork the ROPC token call and the JWKS defense-in-depth fetch concurrently,
-     * {@code join} them, then collapse to one {@link Verdict}. A network error / timeout / scope cancellation in
-     * either subtask fails the {@code awaitAllSuccessfulOrThrow} join and collapses to {@link Verdict.DenyIndeterminate}.
+     * The STS fan-out (AC4 / AD-5): fork the token exchange, {@code join} it, then collapse to one
+     * {@link Verdict}. One forked arm — the ONLY arm since the local JWT verify and the introspection round were
+     * removed everywhere (Story 3.4 T8, 2026-08-29; the production adapter took the same shape at T2). A network
+     * error / timeout / scope cancellation fails the {@code awaitAllSuccessfulOrThrow} join and collapses to
+     * {@link Verdict.DenyIndeterminate}.
      */
-    private Verdict adjudicate(CompletableFuture<HttpResponse<String>> tokenExchange,
-                               AtomicReference<CompletableFuture<HttpResponse<String>>> activeCall) {
+    private Verdict adjudicate(CompletableFuture<HttpResponse<String>> tokenExchange) {
         char[] tokenChars = null;
         try (var scope = StructuredTaskScope.open(Joiner.awaitAllSuccessfulOrThrow())) {
-            Subtask<HttpResponse<String>> tokenTask = scope.fork(() -> tokenExchange.join());
-            // JWKS is only needed for the local-verify path. Introspection (RFC 7662) is the JWKS-free fallback, so it
-            // must NOT fork (or require) a JWKS fetch — a down JWKS endpoint would otherwise deny every introspection
-            // bind (F6). jwksTask is null on the introspect path and only dereferenced on the !introspect branch below.
-            Subtask<JWKSet> jwksTask = cfg.introspect() ? null : scope.fork(this::fetchJwks);
-            scope.join();   // all forked subtasks succeeded, else throws → catch → DenyIndeterminate
+            Subtask<HttpResponse<String>> tokenTask = scope.fork(tokenExchange::join);
+            scope.join();   // the forked subtask succeeded, else throws → catch → DenyIndeterminate
 
             HttpResponse<String> tokenResp = tokenTask.get();
             TokenOutcome outcome = mapTokenResponse(tokenResp);
@@ -194,9 +180,7 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
             }
             String accessToken = new String(tokenChars);
             try {
-                return cfg.introspect()
-                        ? adjudicateByIntrospection(accessToken, activeCall)
-                        : verifyWithJwks(jwksTask.get(), accessToken);
+                return adjudicateIssuedToken(accessToken);
             } finally {
                 Arrays.fill(tokenChars, '\0');   // AC5: zeroize the access-token working copy
                 tokenChars = null;
@@ -210,66 +194,29 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
         }
     }
 
-    /** Local JWKS defense-in-depth verify (AC2 path 1; AD-11). Package-private for the kid-miss unit test. */
-    Verdict verifyWithJwks(JWKSet jwks, String accessToken) {
-        try {
-            SignedJWT jwt = SignedJWT.parse(accessToken);
-            String kid = jwt.getHeader().getKeyID();
-            if (kid == null) {
-                return new Verdict.DenyIndeterminate();
+    /**
+     * The issued-token dispatch, aligned to the amended contract (Story 3.4 T8, 2026-08-29; mirroring the production
+     * adapter's D6/D7 arms). The token is checked ONLY structurally: exactly three {@code '.'}-separated segments
+     * (a JWS) is the provider's "issues JWT access tokens" requirement satisfied — {@code Allow}, derived from the
+     * endpoint verdict alone (D7: no signature verification, no claim checks, no provider-key fetch; content past
+     * the segment count is never parsed). Anything else is a non-JWT (opaque) token &rarr; the D6 fail-closed deny
+     * — there is no second wire arm to ask. The segment count is deliberately library-free.
+     */
+    private static Verdict adjudicateIssuedToken(String accessToken) {
+        int segments = 1;
+        for (int i = 0; i < accessToken.length(); i++) {
+            if (accessToken.charAt(i) == '.' && ++segments > 3) {
+                break;
             }
-            JWK key = jwks.getKeyByKeyId(kid);
-            if (key == null) {
-                asyncRefreshJwks();   // kid absent → background refresh, no foreground retry (AD-12) → DENY now
-                return new Verdict.DenyIndeterminate();
-            }
-            JWSVerifier verifier = new RSASSAVerifier(key.toRSAKey());
-            if (!jwt.verify(verifier)) {
-                return new Verdict.DenyIndeterminate();   // unverifiable signature → fail-closed
-            }
-            JWTClaimsSet claims = jwt.getJWTClaimsSet();
-            if (!Objects.equals(claims.getIssuer(), cfg.issuer())) {
-                return new Verdict.DenyIndeterminate();
-            }
-            if (claims.getAudience() == null || !claims.getAudience().contains(cfg.clientId())) {
-                return new Verdict.DenyIndeterminate();
-            }
-            Instant now = Instant.now();
-            if (claims.getExpirationTime() == null
-                    || claims.getExpirationTime().before(Date.from(now.minus(CLAIM_SKEW)))) {
-                return new Verdict.DenyIndeterminate();
-            }
-            if (claims.getNotBeforeTime() != null
-                    && claims.getNotBeforeTime().after(Date.from(now.plus(CLAIM_SKEW)))) {
-                return new Verdict.DenyIndeterminate();
-            }
-            return new Verdict.Allow();
-        } catch (Exception e) {
-            return new Verdict.DenyIndeterminate();   // malformed JWT / parse failure → fail-closed (AD-11)
         }
-    }
-
-    /** RFC 7662 introspection (AC2 path 2): {@code active:true} → Allow; any other outcome → fail-closed DENY. */
-    private Verdict adjudicateByIntrospection(String accessToken,
-                                              AtomicReference<CompletableFuture<HttpResponse<String>>> activeCall) {
-        try {
-            // sendAsync (not the blocking send) so cancelHttp() can abort the in-flight introspection call (F3/AD-32)
-            // — the token exchange is already complete by the time introspection runs, so cancelHttp's old single-
-            // future cancel was a no-op here. The request timeout (10s) bounds the exchange; join collapes cancel/IO
-            // failure to DenyIndeterminate via the catch below.
-            CompletableFuture<HttpResponse<String>> intro = http.sendAsync(
-                    introspectRequest(accessToken), HttpResponse.BodyHandlers.ofString());
-            activeCall.set(intro);
-            HttpResponse<String> r = intro.join();
-            if (r.statusCode() != 200) {
-                return new Verdict.DenyIndeterminate();
-            }
-            Map<String, Object> body = JSONObjectUtils.parse(r.body());
-            boolean active = JSONObjectUtils.getBoolean(body, "active");
-            return active ? new Verdict.Allow() : new Verdict.DenyIndeterminate();
-        } catch (Exception e) {
-            return new Verdict.DenyIndeterminate();   // malformed introspection response / cancel → fail-closed (AD-11)
+        if (segments != 3) {
+            // D6: JWT-only adjudication — an opaque token is not adjudicable, and there is no introspection arm to
+            // ask (it never existed in the amended contract's slice). Fail-closed deny, never an allow.
+            return new Verdict.DenyIndeterminate();
         }
+        // D7: the TLS client-authenticated provider link is the sole trust anchor — nothing re-proves the
+        // provider's signature locally (the proxy is this token's only consumer).
+        return new Verdict.Allow();
     }
 
     /** Parses the token-endpoint response: a 200 with an {@code access_token} yields the token; else no token. */
@@ -297,15 +244,14 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
     private HttpRequest tokenRequest(BindCredential cred, Duration timeout) {
         AsciiString uid = cred.systemId().value();
         AsciiString pw = cred.password().value();
+        // The amended contract's whole client-auth surface: the confidential client's secret, ALWAYS sent (the
+        // RFC 8705 no-secret branch died with Story 3.4 T8, 2026-08-29 — transport TLS stays, OAuth-level cert
+        // auth does not).
         StringBuilder body = new StringBuilder()
                 .append("grant_type=password")
                 .append("&client_id=").append(URLEncoder.encode(cfg.clientId(), StandardCharsets.UTF_8))
-                .append("&username=").append(URLEncoder.encode(uid.toString(), StandardCharsets.UTF_8));
-        if (cfg.useMtlsClientAuth()) {
-            // Path 3: the transport cert authenticates the client (RFC 8705 tls_client_auth) — NO client_secret.
-        } else if (cfg.clientSecret() != null) {
-            body.append("&client_secret=").append(URLEncoder.encode(cfg.clientSecret(), StandardCharsets.UTF_8));
-        }
+                .append("&username=").append(URLEncoder.encode(uid.toString(), StandardCharsets.UTF_8))
+                .append("&client_secret=").append(URLEncoder.encode(cfg.clientSecret(), StandardCharsets.UTF_8));
         // Form-encode the password like the non-secret fields (StringBuilder + URLEncoder + ofString below)
         // instead of from the raw AsciiString byte[]. ACCEPTED HAZARD: pw.toString() makes Netty cache an
         // immortal String of the secret (CODEC-024 P2 / AI-5) — fine for this throwaway test slice; the Epic 3
@@ -316,49 +262,6 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
                 .timeout(timeout)
                 .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
                 .build();
-    }
-
-    private HttpRequest introspectRequest(String accessToken) {
-        String basic = Base64.getEncoder()
-                .encodeToString((cfg.clientId() + ":" + cfg.clientSecret()).getBytes(StandardCharsets.US_ASCII));
-        String body = "token=" + URLEncoder.encode(accessToken, StandardCharsets.UTF_8);
-        return HttpRequest.newBuilder(cfg.introspectionEndpoint())
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .header("Authorization", "Basic " + basic)
-                .timeout(Duration.ofSeconds(10))
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-    }
-
-    private JWKSet fetchJwks() {
-        JWKSet cached = jwksCache.get();
-        if (cached != null) {
-            return cached;
-        }
-        try {
-            HttpResponse<String> r = http.send(
-                    HttpRequest.newBuilder(cfg.jwksUri()).timeout(Duration.ofSeconds(5)).GET().build(),
-                    HttpResponse.BodyHandlers.ofString());
-            if (r.statusCode() != 200) {
-                throw new IllegalStateException("JWKS non-200: " + r.statusCode());
-            }
-            JWKSet parsed = JWKSet.parse(r.body());
-            jwksCache.compareAndSet(null, parsed);
-            return parsed;
-        } catch (Exception e) {
-            throw new IllegalStateException("JWKS fetch failed", e);
-        }
-    }
-
-    private void asyncRefreshJwks() {
-        jwksCache.set(null);   // invalidate; the next bind re-fetches. Background refresh, no foreground retry.
-        adjudicationPool.execute(() -> {
-            try {
-                fetchJwks();
-            } catch (Exception ignored) {
-                // Background best-effort; a failed refresh surfaces as DenyIndeterminate on the next bind.
-            }
-        });
     }
 
     private static Duration clamp(Duration d, Duration min, Duration max) {
@@ -386,9 +289,9 @@ public final class RopcSlice implements BindCredentialVerifier, AutoCloseable {
 
         @Override
         public void cancelHttp() {
-            // AD-32: abort the in-flight HTTP call — the token exchange OR the introspection call, whichever activeCall
-            // currently holds (F3). Idempotent: no-op once settled, and a no-op on the saturation/denied path where no
-            // wire call was ever started (activeCall is null — F2/AC6).
+            // AD-32: abort the in-flight HTTP call — the token exchange, the slice's only wire call (the
+            // introspection second arm died with Story 3.4 T8, 2026-08-29). Idempotent: no-op once settled, and a
+            // no-op on the saturation/denied path where no wire call was ever started (activeCall is null — F2/AC6).
             CompletableFuture<HttpResponse<String>> c = activeCall.get();
             if (c != null) {
                 c.cancel(true);

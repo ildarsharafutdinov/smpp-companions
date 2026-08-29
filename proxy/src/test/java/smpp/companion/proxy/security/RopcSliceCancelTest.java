@@ -65,7 +65,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p><b>STS teardown (AD-32 case 3):</b> the slice's {@code StructuredTaskScope} is local to {@code adjudicate}, so
  * it cannot be observed directly; its teardown is evidenced by the verdict completing — cancelling the exchange
  * makes the scope's {@code join} throw, collapsing to {@link Verdict.DenyIndeterminate} and closing the scope.
- * Always-on; needs no container.
+ * Always-on; needs no container. (The token exchange is the scope's ONE forked arm — the slice's second wire arm
+ * died with Story 3.4 T8, 2026-08-29 — so {@code cancelHttp()} binds the exchange alone.)
  */
 @Tag("unit")
 @Tag("security")
@@ -117,8 +118,7 @@ class RopcSliceCancelTest {
         RecordingHttpClient http = new RecordingHttpClient(HttpClient.newHttpClient());   // plain HTTP stand-in IdP
 
         try (RopcSlice slice = new RopcSlice(http, new RopcSlice.SliceConfig(
-                token, token, token, "http://127.0.0.1/realms/x",
-                "smpp-client-confidential", "secret", false, false), 4)) {
+                token, "smpp-client-confidential", "secret"), 4)) {
 
             BindCredential credential = new BindCredential(
                     new SystemId(new AsciiString("testuser")), new Password(new AsciiString("pw")));

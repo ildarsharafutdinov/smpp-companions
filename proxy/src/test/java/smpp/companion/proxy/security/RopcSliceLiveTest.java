@@ -16,30 +16,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Story 2.1 Task 2 / AC2 (load-bearing) — ratifies the AD-12 {@code proxy/security/} port contract against the
- * real Keycloak &ge;26.7.0 fixture across all four paths: <b>Allow</b> (JWT happy path), <b>Allow</b> (RFC 7662
- * introspection {@code active:true}), <b>Allow</b> (RFC 8705 mTLS provider auth, NO {@code client_secret}), and
- * <b>DenyInvalid</b> (fixture finding #6: 400 {@code invalid_grant} for bad user creds + 401 {@code invalid_client}
- * for a bad client secret — both map to {@link Verdict.DenyInvalid} per AD-11 "4xx &ne; 200 &rarr; DENY").
+ * real Keycloak &ge;26.7.0 fixture in the <b>amended</b> 3-row shape (Story 3.4 T8, 2026-08-29 — the slice's
+ * 2.1-era four-path historical ratification is ENDED: local JWT signature verification, RFC 7662 introspection,
+ * and RFC 8705 mTLS client auth are removed from the test tier too, per the owner's 2026-08-29 direction; the
+ * 2026-08-27 T1/T2 "deliberately UNCHANGED" dispositions and the 2026-08-19 mTLS precedent no longer shield
+ * slice arms — the slice is now the LIVE ratification of the amended contract, mirroring the production
+ * adapter): (1) ROPC with {@code client_secret} &rarr; 200 + JWT &rarr; the structural three-segment gate
+ * &rarr; {@code Allow} on the endpoint verdict alone (no local verify — the D7 shape, pinned always-on in
+ * {@link RopcSliceFailClosedTest}); (2a/2b) bad credentials &rarr; {@code DenyInvalid} both ways the fixture
+ * exhibits them (400 {@code invalid_grant}, 401 {@code invalid_client}).
  *
  * <p>Each test drives the <b>actual {@link BindCredentialVerifier#verify} port</b> (AC1 shape) with the
  * {@link RequestContext} bound via {@link ScopedValue} (AC4 / AD-5) and awaits the {@link Verdict} on the slice's
  * bounded virtual-thread pool (AC6 / AD-28(4)). Gated by {@code @Testcontainers(disabledWithoutDocker = true)}:
  * these run and bite whenever Docker is present (the {@link KeycloakContainer} fixture is started by the test
- * JVM on a dynamic port) and skip cleanly with an explicit reason when Docker is absent (CI); the always-on
- * {@link RopcSliceUnitTest} enforces the fail-closed mapping without the container.
+ * JVM on a fixed port) and skip cleanly with an explicit reason when Docker is absent (CI); the always-on
+ * {@link RopcSliceFailClosedTest} enforces the fail-closed mapping and the D6/D7 token arms without the container.
  */
 @Tag("integration")
 @Tag("security")
 @Tag("p1")
 @Testcontainers(disabledWithoutDocker = true)
-@DisplayName("AD-12 RopcSlice — real-ROPC validation slice across all four AD-12 paths (live Keycloak ≥26.7.0)")
+@DisplayName("AD-12 RopcSlice — real-ROPC validation slice, amended contract (live Keycloak ≥26.7.0)")
 class RopcSliceLiveTest {
 
     /** The Testcontainers-managed Keycloak &ge;26.7.0 fixture (replaces the external docker-compose). */
     @Container
     static final KeycloakContainer KEYCLOAK = new KeycloakContainer();
 
-    /** Shared mTLS client: trusts the fixture CA + presents the client cert on every call (AD-12/AD-29). */
+    /** Shared TLS client: trusts the fixture CA + presents the client cert on every call (transport identity). */
     private static final HttpClient HTTP = KeycloakFixture.newHttpClient();
 
     /** The {@link RequestContext} handle the slice re-binds on its pool thread (AD-5). */
@@ -49,13 +54,9 @@ class RopcSliceLiveTest {
         return new BindCredential(new SystemId(new AsciiString(user)), new Password(new AsciiString(pass)));
     }
 
-    private static RopcSlice slice(String clientId, String clientSecret, boolean mtls, boolean introspect) {
+    private static RopcSlice slice(String clientId, String clientSecret) {
         return new RopcSlice(HTTP, new RopcSlice.SliceConfig(
-                KeycloakFixture.TOKEN_ENDPOINT,
-                KeycloakFixture.INTROSPECTION_ENDPOINT,
-                KeycloakFixture.JWKS_URI,
-                KeycloakFixture.ISSUER,
-                clientId, clientSecret, mtls, introspect), 8);
+                KeycloakFixture.TOKEN_ENDPOINT, clientId, clientSecret), 8);
     }
 
     /** Verifies via the port, binding the context in a scope (models real relay usage), awaiting the Verdict. */
@@ -67,27 +68,9 @@ class RopcSliceLiveTest {
     }
 
     @Test
-    @DisplayName("path 1 — valid ROPC → 200 + JWT → local JWKS defense-in-depth verify → Allow")
+    @DisplayName("path 1 — valid ROPC (client_secret) → 200 + JWT → three-segment gate → Allow on the endpoint verdict alone")
     void path1_jwt_happyPath_yieldsAllow() throws Exception {
-        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_A_ID, KeycloakFixture.CLIENT_A_SECRET, false, false)) {
-            Verdict v = verify(slice, cred(KeycloakFixture.TEST_USER, KeycloakFixture.TEST_PASS));
-            assertThat(v).isEqualTo(new Verdict.Allow());
-        }
-    }
-
-    @Test
-    @DisplayName("path 2 — RFC 7662 introspection active:true → Allow")
-    void path2_introspection_activeTrue_yieldsAllow() throws Exception {
-        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_A_ID, KeycloakFixture.CLIENT_A_SECRET, false, true)) {
-            Verdict v = verify(slice, cred(KeycloakFixture.TEST_USER, KeycloakFixture.TEST_PASS));
-            assertThat(v).isEqualTo(new Verdict.Allow());
-        }
-    }
-
-    @Test
-    @DisplayName("path 3 — RFC 8705 mTLS provider auth (client cert, NO client_secret) → 200 + JWT → Allow")
-    void path3_mtls_providerAuth_noSecret_yieldsAllow() throws Exception {
-        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_B_ID, null, true, false)) {
+        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_A_ID, KeycloakFixture.CLIENT_A_SECRET)) {
             Verdict v = verify(slice, cred(KeycloakFixture.TEST_USER, KeycloakFixture.TEST_PASS));
             assertThat(v).isEqualTo(new Verdict.Allow());
         }
@@ -96,7 +79,7 @@ class RopcSliceLiveTest {
     @Test
     @DisplayName("path 4a — invalid user creds → 400 invalid_grant → DenyInvalid (fixture finding #6)")
     void path4a_invalidUserPassword_yieldsDenyInvalid() throws Exception {
-        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_A_ID, KeycloakFixture.CLIENT_A_SECRET, false, false)) {
+        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_A_ID, KeycloakFixture.CLIENT_A_SECRET)) {
             Verdict v = verify(slice, cred(KeycloakFixture.TEST_USER, "WRONGPW"));
             assertThat(v).isInstanceOf(Verdict.DenyInvalid.class);
         }
@@ -105,7 +88,7 @@ class RopcSliceLiveTest {
     @Test
     @DisplayName("path 4b — invalid client secret → 401 invalid_client → DenyInvalid (fixture finding #6)")
     void path4b_invalidClientSecret_yieldsDenyInvalid() throws Exception {
-        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_A_ID, "WRONG-SECRET", false, false)) {
+        try (RopcSlice slice = slice(KeycloakFixture.CLIENT_A_ID, "WRONG-SECRET")) {
             Verdict v = verify(slice, cred(KeycloakFixture.TEST_USER, KeycloakFixture.TEST_PASS));
             assertThat(v).isInstanceOf(Verdict.DenyInvalid.class);
         }

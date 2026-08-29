@@ -1,10 +1,19 @@
 # Keycloak ≥26.7.0 fixture — Story 2.1 security-port contract-shape validation slice
 
-The Epic 2 opener ratifies the AD-12 `proxy/security/` port contract against this fixture. It is a
+The Epic 2 opener ratified the AD-12 `proxy/security/` port contract against this fixture — a
 **real Keycloak 26.7.0** instance exercising all four AD-12 paths (Story 2.1 Task 0), **managed by
 Testcontainers** (`KeycloakContainer`) — the test JVM owns its lifecycle, so `./gradlew :proxy:test` brings
 it up automatically on a **fixed** `localhost:8443` (parity with the original compose's `8443:8443`; the
 former external `docker-compose.yml` is gone).
+
+> **Amended (Story 3.4 T8, 2026-08-29):** the slice's 2.1-era interop arms are removed EVERYWHERE — local JWT
+> signature verification (JWKS), RFC 7662 opaque-token introspection, and RFC 8705 `tokenRequest` mTLS client
+> auth (the historical-ratification exemption ended; the 2026-08-27 T1/T2 "deliberately UNCHANGED"
+> dispositions are superseded). The fixture now serves the **amended contract**: ROPC with a mandatory
+> `client_secret` whose verdict derives from the token-endpoint response + the structural three-segment gate
+> alone. The client **cert stays as transport identity** (the container demands it on every handshake) — only
+> the OAuth-level cert-auth use is gone.
+
 Provisioned here (not pre-provisioned by Winston) and **verified against the running instance** (retro
 discovery #4 — verify endpoints/behavior against the real fixture, never assumptions).
 
@@ -15,7 +24,7 @@ discovery #4 — verify endpoints/behavior against the real fixture, never assum
 The live tests start the container themselves (no manual `docker compose`):
 
 ```bash
-./gradlew :proxy:test --tests "smpp.companion.proxy.security.RopcSliceLiveTest"   # Docker present → 5 paths green
+./gradlew :proxy:test --tests "smpp.companion.proxy.security.RopcSliceLiveTest"   # Docker present → 3 paths green
 ./gradlew :proxy:test --tests "smpp.companion.proxy.security.RopcSliceUnitTest"   # always-on, no Docker needed
 ```
 
@@ -29,27 +38,25 @@ floor; re-validate each minor — no LTS).
 | Principal | Value | Notes |
 | --- | --- | --- |
 | User | `testuser` / `testpass` | First/last/email set — Keycloak 26 User Profile requires them (see finding #4). |
-| Client A | `smpp-client-confidential` / secret `smpp-confidential-secret` | confidential, `directAccessGrantsEnabled=true`. Paths 1 (JWT), 2 (introspection), 4 (DENY). |
-| Client B | `smpp-client-mtls` | `clientAuthenticatorType=client-x509` (RFC 8705 `tls_client_auth`), `directAccessGrantsEnabled=true`, **no client_secret**. Path 3 (mTLS). |
+| Client A | `smpp-client-confidential` / secret `smpp-confidential-secret` | confidential, `directAccessGrantsEnabled=true`. Paths 1 (JWT) + 4 (DENY) — the amended contract's sole client (the client-x509 Client B died with the mTLS arm, Story 3.4 T8). |
 
 > The OIDC endpoints are served at the fixed `https://localhost:8443/realms/smpp-companions/...` — the container
 > binds `8443:8443` (parity with the original compose), so the slice uses the `KeycloakFixture` `:8443`
-> coordinates directly. (Path shape: `/realms/smpp-companions/protocol/openid-connect/{token|token/introspect|certs}`.)
+> coordinates directly. (Path shape: `/realms/smpp-companions/protocol/openid-connect/token` — the slice's only
+> provider wire call.)
 
 ## Verified outcomes (the live tests, against keycloak:26.7.0)
 
-| AD-12 path | Request | Verified result |
+| Path | Request | Verified result |
 | --- | --- | --- |
-| **1** JWT happy path | Client A + testuser ROPC | **200** + RS256 JWT (kid present in JWKS) |
-| **2** introspection | Client A introspects the token | **active:true** |
-| **3** mTLS provider auth | Client B + testuser ROPC, **client cert, no secret** | **200** + JWT — `tls_client_auth` works end-to-end |
+| **1** JWT happy path | Client A + testuser ROPC | **200** + RS256 JWT → the structural three-segment gate → `Allow` on the endpoint verdict alone |
 | **4a** DENY invalid user creds | Client A + wrong password | **400 `invalid_grant`** (see finding #6) |
 | **4b** DENY invalid client | Client A + wrong secret | **401 `invalid_client`** |
-| JWKS | GET certs | 2 keys; ROPC token `kid` present (kid-miss path needs a crafted/foreign kid) |
 
-Path 3 succeeding is the load-bearing de-risk: the **AD-12 port shape can express all four paths** against a real
-Keycloak — a strong (not yet final — Task 2's slice through the actual port types is the ratification) signal for
-AC8's "immutable henceforth" decision.
+Paths 2 (RFC 7662 introspection) and 3 (RFC 8705 mTLS provider auth) were retired from the slice by Story 3.4
+T8 (2026-08-29); the D6 opaque-token deny and the D7 endpoint-verdict-alone allow are pinned always-on by
+`RopcSliceFailClosedTest`'s in-process IdP. The original four-path ratification (2026-08-10) stands as the
+AC8 historical record — see the spine's AD-12 amendment markers.
 
 ## TLS material (`certs/`, regenerate with `generate.sh`)
 
@@ -57,35 +64,34 @@ AC8's "immutable henceforth" decision.
 | --- | --- |
 | `ca.pem` / `ca-key.pem` | Local test CA. **CN-only subject** (`CN=smpp-test-ca`) — see finding #5. |
 | `server.pem` / `server-key.pem` | Keycloak HTTPS server cert (SAN: `localhost`, `keycloak`, `127.0.0.1`). |
-| `client.pem` / `client-key.pem` | mTLS client cert (`CN=smpp-mtls-client`) mapped to Client B; PEM form for curl. |
+| `client.pem` / `client-key.pem` | The test JVM's **transport client cert** (`CN=smpp-mtls-client`) — presented on every IdP call; no OAuth-level use remains (removed Story 3.4 T8). PEM form for curl. |
 | `truststore.p12` (pw `smpp-test`) | **Test-JVM trust anchor for the Keycloak server** — AD-13: minimal, single CA, never JDK `cacerts`. |
-| `client-keystore.p12` (pw `smpp-test`) | **Test-JVM mTLS client identity** (client cert + key) for the `SSLContext` (Task 2/AC2 path 3). |
-| `keycloak-truststore.pem` | CA PEM Keycloak trusts to verify mTLS client certs (`KC_TRUSTSTORE_PATHS`). |
+| `client-keystore.p12` (pw `smpp-test`) | **Test-JVM transport client identity** (client cert + key) for the `SSLContext` the slice presents on every call. |
+| `keycloak-truststore.pem` | CA PEM Keycloak trusts to verify transport client certs (`KC_TRUSTSTORE_PATHS`). |
 
 ## How the validation slice consumes this
 
 The test-tier ROPC adapter (`java.net.http.HttpClient` + Nimbus) connects to the fixed
 `https://localhost:8443/...` (`KeycloakFixture` coordinates), with an `SSLContext` that trusts `ca.pem` (via
-`truststore.p12`) **and presents the client cert** (via `client-keystore.p12`) on every call — per AD-12/AD-29
-the proxy presents its per-instance mTLS client cert on every IdP call. OAuth-level client auth then differs
-per path:
-Client A = `client_secret`, Client B = the matched cert subject (transport cert ignored by Client A's
-`client-secret` authenticator). For the `DenyIndeterminate` branch, the unit tests point a path at an
-unreachable URL or a token with a `kid` absent from JWKS.
+`truststore.p12`) **and presents the client cert** (via `client-keystore.p12`) on every call — transport
+identity (the container's `KC_HTTPS_CLIENT_AUTH=required` demands it). OAuth-level client auth is
+`client_secret` only (Client A's secret, always sent — the amended contract's whole client-auth surface).
+For the `DenyIndeterminate` branch, the unit tests point the token endpoint at an unreachable URL, and the
+always-on in-process-IdP suite drives the D6 opaque-token deny directly.
 
 ## Container config (`KeycloakContainer` ↔ the former docker-compose, byte-identical)
 
 `KeycloakContainer` (`proxy/src/test/…/security/KeycloakContainer.java`) replicates the verified compose
 config verbatim: pinned `quay.io/keycloak/keycloak:26.7.0`, `start --import-realm --hostname-strict=false`,
-`KC_HTTPS_CLIENT_AUTH=required` (NEED — surfaces the peer cert to the `client-x509` authenticator, path 3),
-the mounted server cert (`server.pem`) + key (`server-key.pem`, copied mode `0400`) + mTLS truststore
+`KC_HTTPS_CLIENT_AUTH=required` (NEED — the transport demands the client cert on every handshake), the mounted
+server cert (`server.pem`) + key (`server-key.pem`, copied mode `0400`) + mTLS truststore
 (`keycloak-truststore.pem`), the realm import (`realm-smpp-companions.json` → `/opt/keycloak/data/import/`),
 and a **fixed** port bind `8443:8443` (`setPortBindings`, parity with the original compose). Readiness = OIDC
 discovery served over mTLS HTTPS — the built-in `Wait.forHttps` cannot be used (`KC_HTTPS_CLIENT_AUTH=required`
-rejects a cert-less handshake), so a custom `AbstractWaitStrategy` reuses the slice's mTLS `SSLContext` to poll
+rejects a cert-less handshake), so a custom `AbstractWaitStrategy` reuses the slice's `SSLContext` to poll
 the discovery doc (and self-enforces its startup deadline; see the class Javadoc).
 
-## Findings (bake into Task 2 / AC8 — discovered against the real fixture)
+## Findings (the dated Story-2.1 discovery record — bake-in target of its time; paths 2/3/JWKS read historically, those arms were removed everywhere 2026-08-29 by Story 3.4 T8)
 
 1. **`--hostname-strict-https` was removed** in KC 26.7 (unknown-option exit). Use `--hostname-strict=false`.
 2. **`https-client-auth` valid value is `required`** (`require` is rejected). And **`request` (WANT) does NOT expose
@@ -106,8 +112,9 @@ the discovery doc (and self-enforces its startup deadline; see the class Javadoc
 7. **Fixed port + bare `KC_HOSTNAME=localhost` → a deterministic `:8443` issuer.** The container binds `8443:8443`
    (so the host address is always `localhost:8443`), and with `KC_HOSTNAME=localhost` (a bare hostname) +
    `hostname-strict=false` + `KC_HTTPS_PORT=8443`, Keycloak's issuer and the token `iss` claim are both
-   `https://localhost:8443/realms/smpp-companions` — exactly the `KeycloakFixture` coordinates the slice asserts.
-   The fixed bind also sidesteps the dynamic-port `iss`-reflection concern
+   `https://localhost:8443/realms/smpp-companions` — the deterministic issuer the live tests rely on (the slice no
+   longer asserts it locally; the issuer check died with local claim verification, Story 3.4 T2 + T8). The fixed bind
+   also sidesteps the dynamic-port `iss`-reflection concern
    ([#49967](https://github.com/keycloak/keycloak/issues/49967)): keep the bind fixed and `KC_HOSTNAME` bare. If a
    future run binds a different port, restore the runtime discovery approach (or update the constants); the
    `26.7.0` pin + per-minor live-slice re-run is the standing mitigation.

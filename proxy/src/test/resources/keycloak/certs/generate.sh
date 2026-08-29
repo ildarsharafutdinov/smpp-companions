@@ -4,13 +4,14 @@
 # Produces (in this directory):
 #   ca.pem / ca-key.pem             — local test CA (RSA 2048)
 #   server.pem / server-key.pem     — Keycloak HTTPS server cert (CN=localhost, SAN localhost+127.0.0.1), signed by CA
-#   client.pem / client-key.pem     — mTLS client cert for Client B (CN=smpp-mtls-client), signed by CA.
-#                                     Its subject DN "CN=smpp-mtls-client" is mapped to the smpp-client-mtls client
-#                                     (Keycloak client-x509 authenticator, RFC 8705 tls_client_auth).
+#   client.pem / client-key.pem     — the test JVM's TRANSPORT client cert (CN=smpp-mtls-client), signed by CA.
+#                                     Presented on every IdP TLS handshake (the fixture runs client-auth REQUIRED);
+#                                     its OAuth-level cert-auth mapping (the former client-x509 client) was removed
+#                                     with the slice's RFC 8705 arm — Story 3.4 T8, 2026-08-29.
 #   truststore.p12                  — PKCS12 holding ONLY the CA cert; the test JVM's minimal trust anchor for the
 #                                     Keycloak server cert (AD-13: trust store never falls back to JDK cacerts).
-#   client-keystore.p12             — PKCS12 holding the client cert + key; the test JVM's mTLS client identity
-#                                     (loaded into the SSLContext by the validation slice, Task 2/AC2 path 3).
+#   client-keystore.p12             — PKCS12 holding the client cert + key; the test JVM's transport client identity
+#                                     (loaded into the SSLContext the validation slice presents on every call).
 #   keycloak-truststore.pem         — CA PEM that Keycloak trusts for verifying the mTLS client cert (KC_TRUSTSTORE_PATHS).
 #   smpp-reverse-server*.pem        — Story 3.3 [B]: the reverse's internet-leg TLS listener server cert (SAN localhost+127.0.0.1).
 #   smpp-forward-client*.pem        — Story 3.3 [B]: the forward's per-instance Mode C client cert (CN=smpp-forward-instance).
@@ -47,10 +48,10 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out server.pem -days 825 -sha256 \
   -extfile <(printf "subjectAltName=DNS:localhost,DNS:keycloak,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE") 2>/dev/null
 
-# --- 3. mTLS client cert (Client B / tls_client_auth) --------------------------
-# CN=smpp-mtls-client is the subject DN mapped to the smpp-client-mtls Keycloak client.
-# Kept CN-only deliberately so X500Principal.getName() == "CN=smpp-mtls-client" with zero RDN-format
-# ambiguity for the client-x509 authenticator's subject-DN match (retro discovery #4).
+# --- 3. Test-JVM transport client cert -----------------------------------------
+# CN=smpp-mtls-client: the transport identity the test JVM presents on every IdP handshake (the fixture's
+# KC_HTTPS_CLIENT_AUTH=required demands it). Its OAuth-level client-auth mapping died with the slice's RFC
+# 8705 arm (Story 3.4 T8, 2026-08-29); the CN-only subject shape is kept as-generated.
 openssl req -newkey rsa:2048 -nodes \
   -keyout client-key.pem -out client.csr \
   -subj "/CN=smpp-mtls-client" 2>/dev/null
@@ -118,5 +119,5 @@ ls -1 ca.pem ca-key.pem server.pem server-key.pem client.pem client-key.pem \
       smpp-reverse-server.pem smpp-reverse-server-key.pem \
       smpp-forward-client.pem smpp-forward-client-key.pem smpp-truststore.p12 \
       foreign-ca.pem foreign-ca-key.pem smpp-foreign-client.pem smpp-foreign-client-key.pem
-echo "Client cert subject DN (mapped to smpp-client-mtls):"
+echo "Client cert subject DN (the test JVM's transport identity):"
 openssl x509 -in client.pem -noout -subject
