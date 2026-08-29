@@ -78,26 +78,33 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * propagate decoded bind PDUs downstream: it is the bind-family's last consumer and owns the frame release,
  * a contract that stays stable when T8 inserts its handler earlier in the pipeline.
  * <li><b>Caller-owned zeroize (the open 2.1 review finding):</b> the relay — not {@code AlwaysAllow} — owns
- * {@link Password#zeroize()}. The wipe runs when the adjudication SETTLES (the continuation's
- * {@code finally}: Allow/Deny/exceptional) and at every TEARDOWN (retry-bind, ingress/egress death,
- * violation) — NOT at {@code verify()}-return, because the Epic-3 ROPC adapter reads the secret
- * asynchronously while its future is pending. The wipe can never corrupt the AD-14 forward:
- * {@code SmppBytes} copies each C-octet field out of the frame, so the password's backing array is not the
- * frame's memory. Idempotent (RELAY-005 double-zeroize safe).
+ * {@link Password#zeroize()}. Since the Story 3.4 T6 absorption the in-flight handles live ON the
+ * {@link ConnectionEntry} and the wipe's owner is the {@code RelayStateManager} (T3: "the caller being the
+ * manager"): the wipe runs when the adjudication SETTLES ({@code manager.settleAdjudication} — the
+ * continuation's first act: Allow/Deny/exceptional) and at every TEARDOWN (retry-bind, ingress/egress
+ * death, violation — {@code manager.beginTeardown}'s hygiene) — NOT at {@code verify()}-return, because the
+ * Epic-3 ROPC adapter reads the secret asynchronously while its future is pending. The wipe can never
+ * corrupt the AD-14 forward: {@code SmppBytes} copies each C-octet field out of the frame, so the
+ * password's backing array is not the frame's memory. Idempotent (RELAY-005 double-zeroize safe). This
+ * class's two explicit wipes cover only the never-adjudicated secrets of the synchronous-blow-up and
+ * null-return arms (nothing was stored on the entry for them to wipe).
  * <li><b>RELAY-004 (retry-bind):</b> a second bind while the handshake is in flight is deterministically
  * rejected — the AD-33 generic deny answering the RETRY's sequence, {@code cancelHttp()} on the in-flight
  * adjudication, teardown of both legs; no second pair, no registry corruption. The "in flight" predicate is
- * the registry entry itself (AD-32: "the entry's state, not a separate boolean").
+ * the registry entry itself (AD-32: "the entry's state, not a separate boolean") — fully so since T6 put
+ * the adjudication handles on the entry.
  * </ul>
  *
- * <p><b>Teardown ordering (AD-32/AC3 discipline):</b> {@code registry.beginTeardown} (remove + mark
- * tearing-down) BEFORE close, then {@code cancelHttp()} + zeroize, then the deny write +
- * {@link ChannelFutureListener#CLOSE} ("bind_resp error, then close" — walkthrough §5). A losing racer
- * ({@code beginTeardown} returned {@code null}) no-ops — never a {@code bind_resp} on a connection being
- * torn down. The verdict continuation re-checks the entry (absent or tearing-down → no-op — the AD-25
- * race-free re-check). Post-couple behavior is T8's plane: once {@code entry.coupled()}, decoded bind PDUs
- * are passed through untouched, and the general teardown site / exactly-once {@code onConnectionClosed}
- * live there.
+ * <p><b>Teardown ordering (AD-32/AC3 discipline):</b> since Story 3.4 T6 the ordering is SINGLE-SITED in
+ * {@code RelayStateManager.beginTeardown} — remove + mark tearing-down BEFORE close, then
+ * {@code cancelHttp()} + zeroize — which then hands back the sealed {@code Won(entry) | Lost} decision;
+ * this class's teardown arms consume the decision and run only their tails (the deny write +
+ * {@link ChannelFutureListener#CLOSE} ("bind_resp error, then close" — walkthrough §5), the egress close).
+ * A losing racer (the {@code Lost} arm) no-ops — never a {@code bind_resp} on a connection being torn
+ * down. The verdict continuation re-checks the entry (absent or tearing-down → no-op — the AD-25 race-free
+ * re-check). Post-couple behavior is T8's plane: once {@code entry.coupled()}, decoded bind PDUs are
+ * passed through untouched, and the general teardown site / exactly-once {@code onConnectionClosed} live
+ * there.
  *
  * <p><b>RELAY logging rule (T3):</b> logs/observes {@link SystemId} only — never
  * {@code SmppBindRequest}/{@code Password}/{@code BindCredential} objects nor the raw password
@@ -126,7 +133,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     private static final EgressConnector DEFAULT_CONNECTOR = (bootstrap, host, port) -> bootstrap.connect(host, port);
 
     private final BindCredentialVerifier verifier;
-    private final ConnectionRegistry registry;
+    private final RelayStateManager manager;
     private final RelayObserver observer;
     private final RelayEgressInitializer egressInitializer;
     private final RelayChannelOptions channelOptions;
@@ -145,10 +152,9 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      */
     private final Duration adjudicationDeadline;
 
-    /** The in-flight adjudication handle ({@code cancelHttp} target) while the verdict is pending. */
-    private volatile @Nullable VerdictRequest pendingVerdict;
-    /** The in-flight bind's password (the wipe target when teardown precedes the verdict). */
-    private volatile @Nullable Password pendingPassword;
+    // The in-flight adjudication handles (cancelHttp target + wipe target) moved ONTO the ConnectionEntry
+    // by the Story 3.4 T6 absorption — this class's own pendingVerdict/pendingPassword fields died with it;
+    // see RelayStateManager.beginAdjudication / settleAdjudication / beginTeardown.
 
     /**
      * Production constructor (used by {@code RelayIngressInitializer} per accepted channel): the
@@ -156,11 +162,11 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * reverse arm targets the cell's single {@code smsc}; the forward arm routes per
      * {@code system_id} and dials TLS per routing entry).
      */
-    public BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, RelayObserver observer,
+    public BindInterceptor(BindCredentialVerifier verifier, RelayStateManager manager, RelayObserver observer,
                            ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
                            RelayChannelOptions channelOptions, RoutingTable routingTable,
                            SmppLegTlsFactory tlsFactory) {
-        this(verifier, registry, observer, properties, egressInitializer, channelOptions, routingTable,
+        this(verifier, manager, observer, properties, egressInitializer, channelOptions, routingTable,
                 tlsFactory, DEFAULT_CONNECTOR);
     }
 
@@ -169,12 +175,12 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * "injected failing ChannelFuture" — so tests can drive the connect-fail arm deterministically and pin
      * the egress-bootstrap wiring without a live socket.
      */
-    BindInterceptor(BindCredentialVerifier verifier, ConnectionRegistry registry, RelayObserver observer,
+    BindInterceptor(BindCredentialVerifier verifier, RelayStateManager manager, RelayObserver observer,
                     ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
                     RelayChannelOptions channelOptions, RoutingTable routingTable,
                     SmppLegTlsFactory tlsFactory, EgressConnector connector) {
         this.verifier = verifier;
-        this.registry = registry;
+        this.manager = manager;
         this.observer = observer;
         this.egressInitializer = egressInitializer;
         this.channelOptions = channelOptions;
@@ -237,7 +243,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
 
     private void onRequest(ChannelHandlerContext ctx, SmppBindRequest req) {
         Channel channel = ctx.channel();
-        ConnectionEntry entry = registry.entryFor(channel);
+        ConnectionEntry entry = manager.entryFor(channel);
         if (entry == null) {
             if (forwardRole && routingTable.route(req.systemId().toString()) == null) {
                 // AD-29/AD-11 routing miss on the forward arm: NO pair is ever created (no registry
@@ -253,7 +259,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             }
             // First bind on this connection: optimistically register the pair (RELAY-006 — the entry exists
             // before the egress connects), then adjudicate.
-            entry = registry.register(channel, new SystemId(req.systemId()));
+            entry = manager.register(channel, new SystemId(req.systemId()));
             adjudicate(channel, entry, req);
         } else if (entry.coupled()) {
             // Post-couple (T8 coupled on the decoded ROK bind_resp): every PDU is T8's opaque relay. A
@@ -281,14 +287,12 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
 
     /** Runs the verifier inside the {@link ScopedValue}-bound {@link RequestContext} and chains the continuation. */
     private void adjudicate(Channel channel, ConnectionEntry entry, SmppBindRequest req) {
-        // Invariant (owner FIXME 2026-08-15): adjudicate runs ONLY on the first-bind arm (no entry), and
-        // every path that clears the entry also clears the pending handles on THIS event loop — the
-        // retry/deny teardown arms call cancelAndWipePending(), the continuation nulls them first. Both
-        // fields are written only from the ingress event loop, so reaching here with one set means a
-        // path bug, not a race. assert (not throw): Gradle test workers run with -ea so CI bites; a
-        // production JVM without -ea pays nothing on the bind hot path.
-        assert pendingVerdict == null && pendingPassword == null
-                : "adjudicate reached with an in-flight adjudication — a teardown arm skipped cancelAndWipePending";
+        // Invariant (owner FIXME 2026-08-15; the assert moved to the registration path by the Story 3.4 T6
+        // absorption): adjudicate runs ONLY on the first-bind arm (a fresh entry), and the in-flight
+        // handles are ENTRY state now — a fresh entry is clean by construction and the teardown wipe is
+        // single-sited in RelayStateManager.beginTeardown, so the pre-T6 "reached with an in-flight
+        // adjudication" path bug is structurally unreachable. manager.register's assert carries the
+        // surviving first-bind-arm guard (no live pair on the channel).
 
         BindCredential cred = new BindCredential(new SystemId(req.systemId()), new Password(req.password()));
         RequestContext context = new RequestContext(
@@ -309,9 +313,9 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         } catch (Exception e) {
             // The verifier blew up synchronously — fail-closed (AD-11): same generic deny, no onBindReject
             // (an exception is not a returned Verdict — AD-27). No pendingVerdict/pendingPassword is
-            // stored on this arm (nothing was returned to track), so denyAndTeardown's
-            // cancelAndWipePending finds nothing — correct — and the explicit zeroize below is this
-            // arm's single wipe of the never-adjudicated secret.
+            // stored on the entry on this arm (nothing was returned to track), so the manager's
+            // beginTeardown hygiene inside denyAndTeardown finds nothing — correct — and the explicit
+            // zeroize below is this arm's single wipe of the never-adjudicated secret.
             req.originalFrame().release();
             denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
             cred.password().zeroize();
@@ -329,62 +333,59 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             cred.password().zeroize();
             return;
         }
-        pendingVerdict = verdictRequest;
-        pendingPassword = cred.password();
+        // The in-flight handles are ENTRY state now (T6 absorption (a)): the store goes through the manager,
+        // where the teardown hygiene and the settle wipe below find them.
+        manager.beginAdjudication(entry, verdictRequest, cred.password());
         verdictRequest.future().whenComplete((verdict, error) ->
                 // Hop the continuation onto the ingress event loop — it touches registry/pipeline state the
                 // loop owns. (EmbeddedChannel runs this inline; a real loop schedules it.)
-                channel.eventLoop().execute(() -> onVerdict(channel, entry, req, cred, verdict, error)));
+                channel.eventLoop().execute(() -> onVerdict(channel, entry, req, verdict, error)));
     }
 
     /**
-     * The verdict continuation (on the ingress event loop). Unconditionally settles the pending handles;
-     * every path releases or transfers the original frame, and the {@code finally} performs the
-     * caller-owned zeroize (Allow/Deny/exceptional alike).
+     * The verdict continuation (on the ingress event loop). Settles the entry's adjudication first —
+     * {@code manager.settleAdjudication} drops the cancellation handle and performs the caller-owned
+     * zeroize on EVERY completion path (Allow/Deny/exceptional, and the losing-race no-op alike;
+     * idempotent per RELAY-005); every path releases or transfers the original frame.
      */
-    private void onVerdict(Channel channel, ConnectionEntry entry, SmppBindRequest req, BindCredential cred,
+    private void onVerdict(Channel channel, ConnectionEntry entry, SmppBindRequest req,
                            @Nullable Verdict verdict, @Nullable Throwable error) {
-        try {
-            pendingVerdict = null; // settled — a later teardown cannot cancel a settled adjudication
-            // AD-25 race-free re-check: a concurrent teardown (retry-bind, leg death, AD-32 case 3) owns the
-            // close — this callback must no-op (no egress, no deny, no observer trigger).
-            if (registry.entryFor(channel) != entry || entry.tearingDown()) {
-                req.originalFrame().release();
-                return;
+        manager.settleAdjudication(entry);
+        // AD-25 race-free re-check: a concurrent teardown (retry-bind, leg death, AD-32 case 3) owns the
+        // close — this callback must no-op (no egress, no deny, no observer trigger).
+        if (manager.entryFor(channel) != entry || entry.tearingDown()) {
+            req.originalFrame().release();
+            return;
+        }
+        if (error == null && verdict instanceof Verdict.Allow) {
+            // Takes ownership of the original frame on EVERY internal path (forward, or release on
+            // connect-fail / torn-down-during-connect).
+            openEgressAndForward(channel, entry, req);
+        } else {
+            // Deny* verdict, an exceptional future (error != null — fail-closed, AD-11), or a
+            // defensively-null verdict: all collapse to the same generic deny. onBindReject fires
+            // ONLY for an actual returned Verdict (AD-27) — never for error/absence (which carry no
+            // Verdict to report).
+            if (error == null && verdict != null) {
+                observer.onBindReject(entry.systemId(), verdict); // the decision, before the wire effect
             }
-            if (error == null && verdict instanceof Verdict.Allow) {
-                // Takes ownership of the original frame on EVERY internal path (forward, or release on
-                // connect-fail / torn-down-during-connect).
-                openEgressAndForward(channel, entry, req);
-            } else {
-                // Deny* verdict, an exceptional future (error != null — fail-closed, AD-11), or a
-                // defensively-null verdict: all collapse to the same generic deny. onBindReject fires
-                // ONLY for an actual returned Verdict (AD-27) — never for error/absence (which carry no
-                // Verdict to report).
-                if (error == null && verdict != null) {
-                    observer.onBindReject(entry.systemId(), verdict); // the decision, before the wire effect
-                }
-                req.originalFrame().release();
-                denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
-            }
-        } finally {
-            cred.password().zeroize(); // caller-owned wipe on every completion path (idempotent — RELAY-005)
-            pendingPassword = null;
+            req.originalFrame().release();
+            denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
         }
     }
 
     // ---------------------------------------------------------------- the AD-33 collapse + teardown
 
     /**
-     * The shared denial path: teardown (remove + mark BEFORE close), cancel the in-flight adjudication,
-     * wipe the password, then — iff this caller won the teardown race — the header-only AD-33 deny
-     * answering the given request identifiers, followed by close ("bind_resp error, then close").
-     * A losing racer no-ops: never a {@code bind_resp} on a connection being torn down (AD-32 Q1 invariant).
+     * The shared denial path: the manager's single-sited teardown ordering (remove + mark BEFORE close,
+     * then {@code cancelHttp} + zeroize — all inside {@code manager.beginTeardown}), then — iff this caller
+     * won the race — the header-only AD-33 deny answering the given request identifiers, followed by close
+     * ("bind_resp error, then close"). A losing racer no-ops: never a {@code bind_resp} on a connection
+     * being torn down (AD-32 Q1 invariant).
      */
     private void denyAndTeardown(Channel ingress, int requestCommandId, int sequenceNumber) {
-        ConnectionEntry won = registry.beginTeardown(ingress); // remove + mark tearing-down BEFORE close
-        cancelAndWipePending();
-        if (won == null) {
+        RelayStateManager.Teardown outcome = manager.beginTeardown(ingress);
+        if (!(outcome instanceof RelayStateManager.Teardown.Won(ConnectionEntry won))) {
             return; // a concurrent teardown owns the close
         }
         writeBindFailureAndClose(ingress, requestCommandId, sequenceNumber);
@@ -402,44 +403,6 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     private static void writeBindFailureAndClose(Channel ingress, int requestCommandId, int sequenceNumber) {
         ingress.writeAndFlush(synthesizeBindFailure(ingress.alloc(), requestCommandId, sequenceNumber))
                 .addListener(ChannelFutureListener.CLOSE);
-    }
-
-    /** Teardown-side hygiene: abort the in-flight ROPC (AD-12/AD-32) and wipe the pending password. */
-    private void cancelAndWipePending() {
-        VerdictRequest inFlight = pendingVerdict;
-        if (inFlight != null) {
-            inFlight.cancelHttp();
-            pendingVerdict = null;
-        }
-        Password password = pendingPassword;
-        if (password != null) {
-            password.zeroize();
-            pendingPassword = null;
-        }
-    }
-
-    /**
-     * The T8 ingress relay leg's ({@code RelayIngressHandler}'s) AD-32 case-3 arm: a pre-couple non-bind
-     * violation on the ingress leg
-     * bare-closes the pair. The interceptor owns this teardown because the pending-adjudication handles
-     * ({@code cancelHttp} + zeroize) live HERE — the ordering is the pinned AC3/AD-32 sequence:
-     * {@code beginTeardown} (remove + mark tearing-down BEFORE close) → {@code cancelHttp()} +
-     * {@code zeroize()} → close. Uniformly emits NOTHING on the wire — no {@code bind_resp}, no synthetic
-     * {@code _resp} (AD-32 case 3 / RELAY-002; a losing racer no-ops per RELAY-005).
-     *
-     * @param ingress the violating legacy-client leg; non-null.
-     */
-    void teardownForPreCoupleViolation(Channel ingress) {
-        ConnectionEntry won = registry.beginTeardown(ingress); // remove + mark tearing-down BEFORE close
-        cancelAndWipePending();
-        if (won == null) {
-            return; // a concurrent teardown owns the closes
-        }
-        Channel egress = won.egress();
-        if (egress != null) {
-            egress.close();
-        }
-        ingress.close(); // the bare close — the whole wire effect of AD-32 case 3
     }
 
     /**
@@ -490,7 +453,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             }
             targetHost = route.host();
             targetPort = route.port();
-            childInitializer = new RelayEgressInitializer(registry, observer,
+            childInitializer = new RelayEgressInitializer(manager, observer,
                     ch -> tlsFactory.newEgressSslHandler(ch.alloc(), route));
         } else {
             ProxyCompanionProperties.Smsc target = smsc;
@@ -518,17 +481,18 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
                 return;
             }
             Channel egress = future.channel();
-            if (registry.entryFor(ingress) != entry || entry.tearingDown()) {
+            if (manager.entryFor(ingress) != entry || entry.tearingDown()) {
                 // The pair tore down while connecting — nothing to attach to; kill the egress, release.
                 req.originalFrame().release();
                 egress.close();
                 return;
             }
-            registry.attachEgress(entry.ingressId(), egress);
+            manager.attachEgress(entry.ingressId(), egress);
             // The bind-family forwarder rides after the codec prefix. Appended here — before ANY read is
             // armed (AUTO_READ=false) — so no PDU can precede it; not the AD-2 "live pipeline surgery"
-            // (which forbids remove() on a live channel).
-            egress.pipeline().addLast(new EgressLeg(ingress, req.commandId(), req.sequenceNumber()));
+            // (which forbids remove() on a live channel). T6 absorption (b): the leg carries the ENTRY ref
+            // (its answered state derives from the entry — no shadow bit on the handler).
+            egress.pipeline().addLast(new EgressLeg(ingress, entry, req.commandId(), req.sequenceNumber()));
             egress.writeAndFlush(req.originalFrame()); // AD-14: verbatim; the write takes the release
             egress.read(); // arm the bind_resp read (AUTO_READ=false)
         });
@@ -539,16 +503,15 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         Channel channel = ctx.channel();
-        ConnectionEntry entry = registry.entryFor(channel);
+        ConnectionEntry entry = manager.entryFor(channel);
         if (entry == null || entry.coupled()) {
             ctx.fireChannelInactive(); // nothing in flight, or T8's plane owns the post-couple teardown
             return;
         }
         // The legacy client vanished mid-handshake: teardown with NO deny (nobody left to answer — AD-32's
-        // no-bind_resp-on-a-torn-down-connection invariant), cancel + wipe, close the egress leg.
-        ConnectionEntry won = registry.beginTeardown(channel);
-        cancelAndWipePending();
-        if (won != null) {
+        // no-bind_resp-on-a-torn-down-connection invariant), the manager's cancel + wipe hygiene, close the
+        // egress leg.
+        if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
             Channel egress = won.egress();
             if (egress != null) {
                 egress.close();
@@ -563,7 +526,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // mid-handshake violation is AD-32's no-_resp posture); the decoder layer's own rejects close the
         // channel and land in channelInactive.
         Channel channel = ctx.channel();
-        ConnectionEntry entry = registry.entryFor(channel);
+        ConnectionEntry entry = manager.entryFor(channel);
         if (entry != null && entry.coupled()) {
             // Post-couple: T8's plane — propagate so the relay handler stashes the CloseReason
             // (DECODE_ERROR / PEER_RST) and performs the pair teardown; it owns the close.
@@ -571,9 +534,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             return;
         }
         if (entry != null) {
-            ConnectionEntry won = registry.beginTeardown(channel);
-            cancelAndWipePending();
-            if (won != null) {
+            if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
                 Channel egress = won.egress();
                 if (egress != null) {
                     egress.close();
@@ -595,24 +556,32 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * Consumes the decoded PDU (no downstream propagate): it is the bind family's last consumer, and the
      * T8 couple unit observes the same PDU from its earlier pipeline position.
      *
+     * <p><b>The answered state is ENTRY state (T6 absorption (b)):</b> this leg's pre-T6 shadow bit
+     * ({@code answered}) died — every bind answer ALREADY transitioned the {@link ConnectionEntry}
+     * upstream (the ROK couple in {@code RelayEgressHandler} on one arm, the non-ROK/nack teardown on the
+     * other, both before this forwarder observes the PDU), so {@link ConnectionEntry#answered()} derives
+     * the awaiting-bind_resp &rarr; answered transition with zero shadow bits outside the entry. The leg
+     * holds the entry ref from its construction site.
+     *
      * <p>If the SMSC leg dies BEFORE answering (close/RST/unbind — no response PDU), the bind can never
      * complete: collapse to the AD-33 generic deny so the legacy socket never hangs. After the answer, the
      * leg's lifecycle is T8's (post-bind_resp teardown propagates downstream).
      */
-    @RequiredArgsConstructor // owner FIXME 2026-08-15: Lombok for the three-final-field ctor (house style)
+    @RequiredArgsConstructor // owner FIXME 2026-08-15: Lombok for the final-field ctor (house style)
     private final class EgressLeg extends SimpleChannelInboundHandler<SmppBindPdu> {
 
         private final Channel ingress;
+        private final ConnectionEntry entry;
         private final int requestCommandId;
         private final int sequenceNumber;
-        private volatile boolean answered;
 
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, SmppBindPdu msg) {
             if (msg instanceof SmppBindResponse response) {
-                answered = true;
                 // Verbatim both directions of the status bit — RELAY-002c (NOT collapsed); ownership of the
-                // frame transfers to the ingress write (that transfer is the release).
+                // frame transfers to the ingress write (that transfer is the release). No answered bit to
+                // set: the upstream RelayEgressHandler already transitioned the entry (couple on ROK,
+                // teardown on anything else) before this forwarder ran.
                 ingress.writeAndFlush(response.originalFrame());
             } else {
                 // A bind REQUEST from the SMSC is a direction violation mid-handshake: no response PDU will
@@ -624,7 +593,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) {
-            if (!answered) {
+            if (!entry.answered()) {
                 // SMSC death pre-bind_resp (RST/half-close/unbind): egress-establishment failure — same
                 // AD-33 generic deny as a refused connect (the arms are indistinguishable by design).
                 denyAndTeardown(ingress, requestCommandId, sequenceNumber);
@@ -634,7 +603,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            if (!answered) {
+            if (!entry.answered()) {
                 collapse(ctx);
             } else {
                 ctx.close();

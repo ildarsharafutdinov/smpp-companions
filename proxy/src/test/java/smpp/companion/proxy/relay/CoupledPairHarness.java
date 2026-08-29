@@ -67,6 +67,8 @@ abstract class CoupledPairHarness {
     protected static final int GENERIC_NACK = 0x80000000;
 
     protected ConnectionRegistry registry;
+    /** The Story 3.4 T6 state manager over the registry — what every handler/interceptor transition routes through. */
+    protected RelayStateManager manager;
     protected CapturingRelayObserver observer;
     protected LatchedBindCredentialVerifier verifier;
     protected FakeEgressConnector connector;
@@ -81,20 +83,21 @@ abstract class CoupledPairHarness {
             ingress.finishAndReleaseAll();
         }
         registry = new ConnectionRegistry();
+        manager = new RelayStateManager(registry);
         observer = new CapturingRelayObserver();
         verifier = new LatchedBindCredentialVerifier();
         connector = new FakeEgressConnector();
-        egressInitializer = new RelayEgressInitializer(registry, observer);
+        egressInitializer = new RelayEgressInitializer(manager, observer);
         ProxyCompanionProperties properties = RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1);
         RelayChannelOptions channelOptions = new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT);
         // Story 3.3: the role-split graph — the routing table + per-cell TLS factory resolve from the
         // SAME properties (mode-b: no routing, no TLS — the reverse arm's plaintext dial).
         BindInterceptor interceptor = new BindInterceptor(
-                verifier, registry, observer, properties, egressInitializer, channelOptions,
+                verifier, manager, observer, properties, egressInitializer, channelOptions,
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
         ingress = new EmbeddedChannel(DefaultChannelId.newInstance(),
                 new SmppFrameDecoder(), new SmppCodec(), interceptor,
-                new RelayIngressHandler(registry, observer));
+                new RelayIngressHandler(manager, observer));
     }
 
     @AfterEach

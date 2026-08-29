@@ -42,8 +42,10 @@ import smpp.companion.proxy.observability.RelayObserver;
  * peer's outbound buffer drained below one max frame) — the emergent per-channel inbound bound of
  * AD-30.
  * <li><b>The shared teardown + exactly-once close telemetry (AD-27/AD-32):</b> the race-free
- * {@link #teardownPair} ordering (stash on BOTH legs, {@code beginTeardown} — remove + mark
- * tearing-down BEFORE close — then close peer + self; a losing racer no-ops, RELAY-005), the
+ * {@link #teardownPair} ordering (stash on BOTH legs, then the manager's single-sited
+ * {@code beginTeardown} — remove + mark tearing-down + the cancel/wipe hygiene BEFORE close — then
+ * close peer + self; a losing racer no-ops, RELAY-005; the decision is the sealed
+ * {@code RelayStateManager.Teardown} since Story 3.4 T6), the
  * post-couple halves of {@link #channelInactive} (RELAY-008/010) and {@link #exceptionCaught}
  * (DecoderException &rarr; {@link CloseReason#DECODE_ERROR}; IOException &rarr; {@link CloseReason#PEER_RST}),
  * and {@link #fireClosedExactlyOnce} — {@link RelayObserver#onConnectionClosed} fires ONLY at the
@@ -78,14 +80,20 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
     protected static final AttributeKey<AtomicBoolean> CLOSE_FIRED =
             AttributeKey.valueOf(CoupledRelayHandler.class, "closeFired");
 
-    private final ConnectionRegistry registry;
+    /**
+     * The pair-lifecycle state manager (Story 3.4 T6) — every transition routes through it;
+     * {@code protected} for the one subclass transition need: the ingress leg's pre-couple violation
+     * teardown ({@code RelayIngressHandler.readPreCouple}). The per-PDU hot path uses it ONLY as the
+     * cached-attribute flag-read ({@link RelayStateManager#entryFor} — a pure storage read, AC8).
+     */
+    protected final RelayStateManager manager;
     /** The observability seam — {@code protected} for the one subclass trigger: {@code onBindAccept} at the couple. */
     protected final RelayObserver observer;
     private final Direction direction;
 
     /** @param direction the leg this instance serves — the only per-instance state beyond the shared beans. */
-    protected CoupledRelayHandler(ConnectionRegistry registry, RelayObserver observer, Direction direction) {
-        this.registry = registry;
+    protected CoupledRelayHandler(RelayStateManager manager, RelayObserver observer, Direction direction) {
+        this.manager = manager;
         this.observer = observer;
         this.direction = direction;
     }
@@ -104,7 +112,7 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
     @Override
     public final void channelRead(ChannelHandlerContext ctx, Object msg) {
         Channel channel = ctx.channel();
-        ConnectionEntry entry = registry.entryFor(channel);
+        ConnectionEntry entry = manager.entryFor(channel);
         if (entry == null || entry.tearingDown()) {
             // AD-25 race-free re-check: this delivery is stale (the pair's teardown won before it
             // arrived) — consume the frame and fail-closed close the stray leg. No couple, no forward.
@@ -157,7 +165,7 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
                 return;
             }
             // The peer died mid-write: Netty already released the frame; tear the pair down.
-            ConnectionEntry current = registry.entryFor(self);
+            ConnectionEntry current = manager.entryFor(self);
             if (current != null && !current.tearingDown()) {
                 teardownPair(self, current, CloseReason.OTHER);
             }
@@ -173,7 +181,7 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
     public void channelWritabilityChanged(ChannelHandlerContext ctx) {
         Channel channel = ctx.channel();
         if (channel.isWritable()) {
-            ConnectionEntry entry = registry.entryFor(channel);
+            ConnectionEntry entry = manager.entryFor(channel);
             if (entry != null && entry.coupled()) {
                 Channel peer = peerOf(entry, channel);
                 if (peer != null) {
@@ -197,8 +205,7 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
         if (peer != null) {
             stash(peer, reason);
         }
-        ConnectionEntry won = registry.beginTeardown(self);
-        if (won == null) {
+        if (!(manager.beginTeardown(self) instanceof RelayStateManager.Teardown.Won)) {
             return; // a concurrent teardown owns the closes
         }
         if (peer != null) {
@@ -216,11 +223,10 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         Channel channel = ctx.channel();
-        ConnectionEntry entry = registry.entryFor(channel);
+        ConnectionEntry entry = manager.entryFor(channel);
         boolean coupled = entry != null && entry.coupled();
         if (entry != null && coupled) {
-            ConnectionEntry won = registry.beginTeardown(channel);
-            if (won != null) {
+            if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won) {
                 Channel peer = peerOf(entry, channel);
                 if (peer != null) {
                     stash(peer, CloseReason.PEER_HALF_CLOSE); // the propagation's cause
@@ -243,10 +249,9 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
         Channel channel = ctx.channel();
         CloseReason reason = classify(cause);
         stash(channel, reason);
-        ConnectionEntry entry = registry.entryFor(channel);
+        ConnectionEntry entry = manager.entryFor(channel);
         if (entry != null && entry.coupled()) {
-            ConnectionEntry won = registry.beginTeardown(channel);
-            if (won != null) {
+            if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won) {
                 Channel peer = peerOf(entry, channel);
                 if (peer != null) {
                     stash(peer, reason);

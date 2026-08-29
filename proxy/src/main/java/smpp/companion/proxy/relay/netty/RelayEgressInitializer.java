@@ -11,8 +11,8 @@ import io.netty.handler.ssl.SslHandler;
 import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.framer.SmppFrameDecoder;
 import smpp.companion.proxy.observability.RelayObserver;
-import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.RelayEgressHandler;
+import smpp.companion.proxy.relay.RelayStateManager;
 
 /**
  * The egress (SMSC- or reverse-facing) pipeline (AC4; AD-2/AD-3): one {@link SmppFrameDecoder}
@@ -43,7 +43,7 @@ import smpp.companion.proxy.relay.RelayEgressHandler;
 @Component
 public final class RelayEgressInitializer extends ChannelInitializer<Channel> {
 
-    private final ConnectionRegistry registry;
+    private final RelayStateManager manager;
     private final RelayObserver observer;
     private final @Nullable TargetTls targetTls;
 
@@ -53,8 +53,8 @@ public final class RelayEgressInitializer extends ChannelInitializer<Channel> {
      * constructor, never a bean).
      */
     @Autowired
-    public RelayEgressInitializer(ConnectionRegistry registry, RelayObserver observer) {
-        this(registry, observer, null);
+    public RelayEgressInitializer(RelayStateManager manager, RelayObserver observer) {
+        this(manager, observer, null);
     }
 
     /**
@@ -66,8 +66,8 @@ public final class RelayEgressInitializer extends ChannelInitializer<Channel> {
      * @param targetTls creates the per-connection client {@link SslHandler} (once per dial; the
      *        engine is per-connection state); {@code null} = no TLS on this egress leg.
      */
-    public RelayEgressInitializer(ConnectionRegistry registry, RelayObserver observer, @Nullable TargetTls targetTls) {
-        this.registry = registry;
+    public RelayEgressInitializer(RelayStateManager manager, RelayObserver observer, @Nullable TargetTls targetTls) {
+        this.manager = manager;
         this.observer = observer;
         this.targetTls = targetTls;
     }
@@ -93,9 +93,10 @@ public final class RelayEgressInitializer extends ChannelInitializer<Channel> {
         channel.pipeline()
                 .addLast(new SmppFrameDecoder()) // per-channel instance (CODEC-014)
                 .addLast(new SmppCodec())
-                // T8 (landed) / Story 3.4 T5 (split): the AD-25 single couple unit + AD-32 bare-close
-                // + opaque relay. The couple itself runs HERE — the bind_resp arrives from the peer on
-                // this leg, which rides the ingress channel's event loop (AD-2 same-loop coupling).
-                .addLast(new RelayEgressHandler(registry, observer));
+                // T8 (landed) / Story 3.4 T5 (split) + T6: the AD-25 single couple unit + AD-32
+                // bare-close + opaque relay. The couple itself runs HERE — the bind_resp arrives from
+                // the peer on this leg, which rides the ingress channel's event loop (AD-2 same-loop
+                // coupling).
+                .addLast(new RelayEgressHandler(manager, observer));
     }
 }

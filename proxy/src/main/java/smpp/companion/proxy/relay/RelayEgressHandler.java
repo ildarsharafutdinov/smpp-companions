@@ -52,8 +52,8 @@ public final class RelayEgressHandler extends CoupledRelayHandler {
      */
     private static final int GENERIC_NACK = 0x80000000;
 
-    public RelayEgressHandler(ConnectionRegistry registry, RelayObserver observer) {
-        super(registry, observer, Direction.EGRESS);
+    public RelayEgressHandler(RelayStateManager manager, RelayObserver observer) {
+        super(manager, observer, Direction.EGRESS);
     }
 
     @Override

@@ -77,18 +77,19 @@ class BindInterceptorForwardRoleTest {
     void routingMissDeniesOnTheWireWithoutAdjudication(@TempDir java.nio.file.Path dir) {
         CountingAllowVerifier verifier = new CountingAllowVerifier();
         ConnectionRegistry registry = new ConnectionRegistry();
+        RelayStateManager manager = new RelayStateManager(registry);
         CapturingRelayObserver observer = new CapturingRelayObserver();
         ProxyCompanionProperties properties = RelayTestFixtures.forwardAProperties(
                 RelayTestFixtures.freePort(), 8, RelayTestFixtures.smppTlsLegs(dir), REVERSE_HOST, REVERSE_PORT);
         BindInterceptor interceptor = new BindInterceptor(
-                verifier, registry, observer, properties,
-                new RelayEgressInitializer(registry, observer),
+                verifier, manager, observer, properties,
+                new RelayEgressInitializer(manager, observer),
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run),
                 (bootstrap, host, port) -> {
                     throw new AssertionError("a routing miss must never dial (AD-11: no default route)");
                 });
-        EmbeddedChannel ingress = pipeline(interceptor, registry, observer);
+        EmbeddedChannel ingress = pipeline(interceptor, manager, observer);
         try {
             // system_id "intruder" is NOT in the table (only carrierOne is).
             ingress.writeInbound(inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 7, "intruder", "pw123456")));
@@ -120,16 +121,17 @@ class BindInterceptorForwardRoleTest {
     void routingHitAdjudicatesAndDialsTheRoutingTargetWithTls(@TempDir java.nio.file.Path dir) {
         CountingAllowVerifier verifier = new CountingAllowVerifier();
         ConnectionRegistry registry = new ConnectionRegistry();
+        RelayStateManager manager = new RelayStateManager(registry);
         CapturingRelayObserver observer = new CapturingRelayObserver();
         ProxyCompanionProperties properties = RelayTestFixtures.forwardAProperties(
                 RelayTestFixtures.freePort(), 8, RelayTestFixtures.smppTlsLegs(dir), REVERSE_HOST, REVERSE_PORT);
         DialCapturingConnector connector = new DialCapturingConnector();
         BindInterceptor interceptor = new BindInterceptor(
-                verifier, registry, observer, properties,
-                new RelayEgressInitializer(registry, observer),
+                verifier, manager, observer, properties,
+                new RelayEgressInitializer(manager, observer),
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
-        EmbeddedChannel ingress = pipeline(interceptor, registry, observer);
+        EmbeddedChannel ingress = pipeline(interceptor, manager, observer);
         try {
             byte[] bind = bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 9, "carrierOne", "pw123456");
             ingress.writeInbound(inbound(bind));
@@ -205,10 +207,10 @@ class BindInterceptorForwardRoleTest {
     }
 
     private static EmbeddedChannel pipeline(
-            BindInterceptor interceptor, ConnectionRegistry registry, CapturingRelayObserver observer) {
+            BindInterceptor interceptor, RelayStateManager manager, CapturingRelayObserver observer) {
         return new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor,
-                new RelayIngressHandler(registry, observer));
+                new RelayIngressHandler(manager, observer));
     }
 
     // ---------- hand-authored PDU builders (raw bytes — independent of the codec) ----------
