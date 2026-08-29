@@ -682,6 +682,7 @@ Level: integration · Priority: P0 · Risks: R2 · NFR: SEC-3, FR-AUTH-1
 Level: integration · Priority: P0 · Risks: R2 · NFR: SEC-3, FR-AUTH-1, FR-AUTH-4
 - Technique: AD-12 path 3: client authenticates to Keycloak token endpoint with an mTLS client cert (RFC 8705); assert 200 + JWT.
 - Tooling: Testcontainers Keycloak 26.x with mTLS client-auth realm + AssertJ.
+- **Status (Story 3.4 T7, 2026-08-29): RETIRED — the mTLS/8705 token-endpoint client-auth path is dead in BOTH tiers. The production arm was removed 2026-08-19 (user-directed, Story 3.2 amendment 5: provider client auth is `client_secret` only — this row's missing marker from that removal was the gap Story 3.4 T2 observed and routed to T7), and the test-tier arm followed 2026-08-29 (Story 3.4 T8: the `useMtlsClientAuth` branch + the `RopcSliceLiveTest` path-3 row retired with it). No code in either tier sends cert-based client auth to the token endpoint; `client_secret` is MANDATORY (pinned by `RopcSliceFailClosedTest.nullClientSecret_isRejectedAtConstruction`). The client cert's surviving role is TRANSPORT mTLS on the provider link — the T2 trust anchor (`KC_HTTPS_CLIENT_AUTH=required`, `TrustOnlyKeycloakContainer`) — not OAuth client auth. SEC-095's "(SEC-030 covers the mTLS path)" parenthetical now reads as history: the non-mTLS confidential-client path is the only path.**
 
 **SEC-031** — At least one DENY branch end-to-end against a real Keycloak (wrong password -> 401 -> DENY; stopped IdP -> timeout -> DENY)
 Level: integration · Priority: P0 · Risks: R2, R1 · NFR: FR-SEC-5, SEC-3, PERF-3
