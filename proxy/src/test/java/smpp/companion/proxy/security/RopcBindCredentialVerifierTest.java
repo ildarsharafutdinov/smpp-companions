@@ -147,7 +147,7 @@ class RopcBindCredentialVerifierTest {
 
     @Test
     @DisplayName("bare 401 (unparseable body) → DenyInvalid — RFC 6749 §5.2 positive auth-layer rejection")
-    void bare401YieldsDenyInvalid(@TempDir Path dir) throws Exception {
+    void bare401YieldsDenyInvalid(@TempDir Path dir, CapturedOutput out) throws Exception {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 401, "not-json-at-all");
@@ -156,6 +156,11 @@ class RopcBindCredentialVerifierTest {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("a bare 401 IS the provider's positive invalid-credential signal (AC2)")
                     .isInstanceOf(Verdict.DenyInvalid.class);
+            assertThat(out.getAll())
+                    .as("a MAPPED arm stays WARN-free — the operator banner belongs to the failure arms "
+                            + "alone (arm selectivity, chunk-B review 2026-09-01)")
+                    .doesNotContain("OIDC TOKEN CALL FAILED")
+                    .doesNotContain("the token endpoint returned HTTP");
         } finally {
             server.stop(0);
         }
@@ -163,7 +168,7 @@ class RopcBindCredentialVerifierTest {
 
     @Test
     @DisplayName("400 invalid_grant (bad USER credentials) → DenyInvalid")
-    void badUser400InvalidGrantYieldsDenyInvalid(@TempDir Path dir) throws Exception {
+    void badUser400InvalidGrantYieldsDenyInvalid(@TempDir Path dir, CapturedOutput out) throws Exception {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 400, "{\"error\":\"invalid_grant\",\"error_description\":\"Invalid user credentials\"}");
@@ -172,6 +177,11 @@ class RopcBindCredentialVerifierTest {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("400 + parsed error=invalid_grant is a positive invalid-credential signal (finding #6)")
                     .isInstanceOf(Verdict.DenyInvalid.class);
+            assertThat(out.getAll())
+                    .as("a MAPPED arm stays WARN-free — the operator banner belongs to the failure arms "
+                            + "alone (arm selectivity, chunk-B review 2026-09-01)")
+                    .doesNotContain("OIDC TOKEN CALL FAILED")
+                    .doesNotContain("the token endpoint returned HTTP");
         } finally {
             server.stop(0);
         }
@@ -179,7 +189,7 @@ class RopcBindCredentialVerifierTest {
 
     @Test
     @DisplayName("400 invalid_client → DenyInvalid (some providers send 400, not 401, for a bad client)")
-    void badClient400InvalidClientYieldsDenyInvalid(@TempDir Path dir) throws Exception {
+    void badClient400InvalidClientYieldsDenyInvalid(@TempDir Path dir, CapturedOutput out) throws Exception {
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 400, "{\"error\":\"invalid_client\"}");
@@ -188,6 +198,11 @@ class RopcBindCredentialVerifierTest {
             assertThat(awaitVerdict(verify(adapter)))
                     .as("400 + parsed error=invalid_client is a positive invalid-credential signal")
                     .isInstanceOf(Verdict.DenyInvalid.class);
+            assertThat(out.getAll())
+                    .as("a MAPPED arm stays WARN-free — the operator banner belongs to the failure arms "
+                            + "alone (arm selectivity, chunk-B review 2026-09-01)")
+                    .doesNotContain("OIDC TOKEN CALL FAILED")
+                    .doesNotContain("the token endpoint returned HTTP");
         } finally {
             server.stop(0);
         }
@@ -361,6 +376,38 @@ class RopcBindCredentialVerifierTest {
         }
     }
 
+    @Test
+    @DisplayName("the structural gate's segment-count BOUNDARIES: 2- and 4-segment tokens deny fail-closed "
+            + "(D6) — only EXACTLY three segments Allows (D7)")
+    void segmentCountBoundariesDenyFailClosed(@TempDir Path dir) throws Exception {
+        // Chunk-B review 2026-09-01: the D6/D7 rows drove only 0-segment and 3-segment shapes, so a
+        // neutered gate (segments < 3 / >= 3 / "more than one dot") stayed green — a 4-segment
+        // (JWE-shaped) token would have ALLOWED. Both boundaries bite now, in both tiers (the slice's
+        // twin row: RopcSliceFailClosedTest.segmentCountBoundariesDenyFailClosed).
+        HttpsServer fourSegment = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 200, tokenBody("a.b.c.d"));
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, fourSegment))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("a 4-segment (JWE-shaped) token is not a three-segment JWS — D6 fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        } finally {
+            fourSegment.stop(0);
+        }
+        HttpsServer twoSegment = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 200, tokenBody("a.b"));
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, twoSegment))) {
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("a 2-segment token is not a three-segment JWS — D6 fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        } finally {
+            twoSegment.stop(0);
+        }
+    }
+
     // ── AC4 (amended by Story 3.4 T1/D6, 2026-08-27): JWT-only adjudication — no second wire arm ──
 
     @Test
@@ -394,7 +441,12 @@ class RopcBindCredentialVerifierTest {
     @DisplayName("per-request timeout → DenyIndeterminate (a timed-out exchange is not a credential verdict)")
     void requestTimeoutYieldsDenyIndeterminate(@TempDir Path dir) throws Exception {
         CountDownLatch hold = new CountDownLatch(1);
+        // Chunk-B review 2026-09-01: the retired 7662 variant asserted introHits == 1 ("the timed-out
+        // exchange WAS the introspection round"); without an observable here, a PRE-SEND failure (e.g.
+        // a broken deadline clamp aborting before sendAsync) would pass for a mid-exchange timeout.
+        AtomicInteger wireHits = new AtomicInteger();
         HttpsServer server = standInIdP(ex -> {
+            wireHits.incrementAndGet();   // the exchange reached the wire — entry IS the proof
             try {
                 drain(ex);
                 hold.await();
@@ -411,6 +463,10 @@ class RopcBindCredentialVerifierTest {
                 assertThat(awaitVerdict(verify(adapter)))
                         .as("HttpTimeoutException → fail-closed indeterminate (AC2 timeout row)")
                         .isInstanceOf(Verdict.DenyIndeterminate.class);
+                assertThat(wireHits.get())
+                        .as("the timed-out exchange REACHED the wire (chunk-B review 2026-09-01): the "
+                                + "deny is a mid-exchange timeout, not a pre-send failure misread as one")
+                        .isEqualTo(1);
             } finally {
                 hold.countDown();   // ALWAYS release the stand-in handler (exception-safe cleanup)
             }
@@ -499,6 +555,30 @@ class RopcBindCredentialVerifierTest {
     }
 
     @Test
+    @DisplayName("test-infra smoke (positive control): the never-hit pin's hit counter actually counts — "
+            + "two real GETs of the metadata context move discoveryHits() by exactly two")
+    void discoveryHitCounterSmoke() throws Exception {
+        // Chunk-B review 2026-09-01, the CapturingRelayObserverTest idiom: the fake's observable is
+        // proof-tested itself. The never-hit pin asserts before/after EQUALITY, so a stand-in refactor
+        // that breaks the counting would disarm it silently — this row is the counter's positive
+        // control. (The pin is order-independent: only its DELTAS are load-bearing, so a non-zero
+        // JVM-wide counter from this row does not disturb it.)
+        int before = OidcDiscoveryStandIn.discoveryHits();
+        HttpClient client = KeycloakFixture.newHttpClient();
+        for (int i = 0; i < 2; i++) {
+            HttpResponse<String> response = client.send(
+                    HttpRequest.newBuilder(
+                                    URI.create(OidcDiscoveryStandIn.url() + "/.well-known/openid-configuration"))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).as("the stand-in serves the metadata context over TLS").isEqualTo(200);
+        }
+        assertThat(OidcDiscoveryStandIn.discoveryHits())
+                .as("the counter counts — two GETs, two hits (the never-hit pin's observable)")
+                .isEqualTo(before + 2);
+    }
+
+    @Test
     @DisplayName("T9 operator WARN: connection-error + non-mapped-non-200 arms log the starred banner "
             + "naming the derived endpoint and provider-url (the retired startup posture's successor)")
     void providerFailureArmsLogTheStarredOperatorWarning(@TempDir Path dir, CapturedOutput out)
@@ -520,7 +600,8 @@ class RopcBindCredentialVerifierTest {
                 .contains("provider-url:  https://localhost:")
                 .contains("Direct Access Grants");
         // Arm 2 — non-mapped non-200 (the DAG-off flagship: 400 unauthorized_client is Keycloak's
-        // answer for a Direct-Access-Grants-disabled client; 401/400-invalid_* stay WARN-free).
+        // answer for a Direct-Access-Grants-disabled client; 401/400-invalid_* stay WARN-free, pinned
+        // by the mapped rows' banner-absence asserts — chunk-B review 2026-09-01).
         HttpsServer server = standInIdP(ex -> {
             drain(ex);
             respond(ex, 400, "{\"error\":\"unauthorized_client\"}");
@@ -530,8 +611,11 @@ class RopcBindCredentialVerifierTest {
                     .as("400 unauthorized_client stays DenyIndeterminate (AC2 unchanged — log-only)")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
             assertThat(out.getAll())
-                    .as("the non-mapped-non-200 arm names the status in the WARN")
-                    .contains("the token endpoint returned HTTP 400");
+                    .as("the non-mapped-non-200 arm names the status AND the parsed OAuth error code in "
+                            + "the WARN — unauthorized_client IS the DAG-off datum (chunk-A patch, "
+                            + "pinned by chunk-B review 2026-09-01)")
+                    .contains("the token endpoint returned HTTP 400")
+                    .contains("unauthorized_client");
         } finally {
             server.stop(0);
         }

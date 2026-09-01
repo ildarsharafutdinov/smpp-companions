@@ -423,15 +423,11 @@ class CompanionConfigMatrixTest {
         // 2026-08-27, Story 3.4 T2: the key-cache TTL knob died with local JWT verification and its
         // cached provider key set. ignoreUnknownFields=false means a config still carrying the
         // (formerly valid) key refuses startup — the retirement is loud, never a silent ignore, and
-        // the refusal names the key (the amendment_strayForwardOidcKeyRefuses pattern).
-        runner(TestCompanionConfigs.reverseA(dir)
-                        .put("companion.reverse.mode-a.oidc.jwks-cache-ttl", "5m"))
-                .run(ctx -> {
-                    assertThat(ctx).as("the retired key-cache TTL key must refuse startup").hasFailed();
-                    assertThat(chainMessages(ctx.getStartupFailure()))
-                            .as("the refusal must name the stale key")
-                            .anyMatch(msg -> msg.contains("jwks-cache-ttl"));
-                });
+        // the refusal names the key (the amendment_strayForwardOidcKeyRefuses pattern; the shared
+        // assertRefused helper carries the refusal shape — chunk-B review 2026-09-01).
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.jwks-cache-ttl", "5m"),
+                "stale jwks-cache-ttl", "jwks-cache-ttl");
     }
 
     @Test

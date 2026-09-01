@@ -89,8 +89,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 // fire-and-forget — the assertions observe the RESULT (peer state, mock captures), never the calls.
 class TlsModesLoopbackE2eTest {
 
-    /** SMPP 3.4 §4.1.2 opaque PDU the relay carries (never parsed — AD-3). */
-    private static final int DELIVER_SM = 0x00000105;
+    /**
+     * SMPP 3.4 §4.1.2 opaque PDU the relay carries (never parsed — AD-3; the codec decodes the bind
+     * family only). Deliberately NOT the real deliver_sm id (0x00000005, per {@code JsmppA1OracleTest}'s
+     * id note): a non-existent id guarantees no endpoint ever parses the frame (chunk-B review 2026-09-01).
+     */
+    private static final int OPAQUE_DLR_TAG = 0x00000105;
 
     /** The bind wire contract, pinned as LITERALS (independent of the production constants). */
     private static final int BIND_TRANSCEIVER = 0x00000009;
@@ -150,7 +154,7 @@ class TlsModesLoopbackE2eTest {
                     .as("AD-14: the ORIGINAL bind bytes cross TWO proxies + one TLS leg verbatim")
                     .isEqualTo(bind);
 
-            byte[] deliver = opaquePdu(DELIVER_SM, 501, "DLR-MODE-A");
+            byte[] deliver = opaquePdu(OPAQUE_DLR_TAG, 501, "DLR-MODE-A");
             smppSide.deliver(deliver);
             assertThat(readPdu(legacy))
                     .as("the deliver_sm rides the SAME coupled pair back to the legacy client")
@@ -179,7 +183,7 @@ class TlsModesLoopbackE2eTest {
             MockSmsc.Session smppSide = smsc.awaitSession(0);
             assertThat(smppSide.bindFrame()).isEqualTo(bind);
 
-            byte[] deliver = opaquePdu(DELIVER_SM, 502, "DLR-MODE-C");
+            byte[] deliver = opaquePdu(OPAQUE_DLR_TAG, 502, "DLR-MODE-C");
             smppSide.deliver(deliver);
             assertThat(readPdu(legacy)).isEqualTo(deliver);
         }
@@ -291,8 +295,8 @@ class TlsModesLoopbackE2eTest {
             assertThat(smppSideA).as("one SMSC session per ingress connection — pairing per channel, "
                     + "never per system_id").isNotSameAs(smppSideB);
 
-            byte[] deliverToA = opaquePdu(DELIVER_SM, 601, "DLR-FOR-CLIENT-A");
-            byte[] deliverToB = opaquePdu(DELIVER_SM, 602, "DLR-FOR-CLIENT-B");
+            byte[] deliverToA = opaquePdu(OPAQUE_DLR_TAG, 601, "DLR-FOR-CLIENT-A");
+            byte[] deliverToB = opaquePdu(OPAQUE_DLR_TAG, 602, "DLR-FOR-CLIENT-B");
             smppSideA.deliver(deliverToA);
             smppSideB.deliver(deliverToB);
             assertThat(readPdu(clientA)).isEqualTo(deliverToA);
@@ -332,7 +336,7 @@ class TlsModesLoopbackE2eTest {
                     .as("the refused connection never reached the reverse (still exactly one SMSC session)")
                     .hasSize(1);
             // The first connection is unaffected by the refusal.
-            byte[] deliver = opaquePdu(DELIVER_SM, 611, "DLR-AFTER-REFUSAL");
+            byte[] deliver = opaquePdu(OPAQUE_DLR_TAG, 611, "DLR-AFTER-REFUSAL");
             smsc.awaitSession(0).deliver(deliver);
             assertThat(readPdu(first)).isEqualTo(deliver);
 

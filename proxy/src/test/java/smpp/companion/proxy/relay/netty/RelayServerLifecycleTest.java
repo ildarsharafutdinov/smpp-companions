@@ -60,6 +60,10 @@ class RelayServerLifecycleTest {
         int port = RelayTestFixtures.freePort();
         EventLoopGroup group;
         RelayServerLifecycle relay;
+        // T9 boot boundary (chunk-B review 2026-09-01): this row's provider-url IS the shared stand-in
+        // (modeBBuilder), so the full-context boot doubles as the never-hit pin's wiring-level twin —
+        // a re-introduced startup fetch (any bean, any wiring step) moves the counter and fails here.
+        int discoveryHitsBefore = OidcDiscoveryStandIn.discoveryHits();
         try (ConfigurableApplicationContext ctx = modeBBuilder(dir).run(minimalMemory(port))) {
             relay = ctx.getBean(RelayServerLifecycle.class);
             assertThat(relay.isRunning()).as("the relay acceptor lifecycle must be running").isTrue();
@@ -79,7 +83,14 @@ class RelayServerLifecycleTest {
             assertThat(relayThreads).as("the shared event loop must be running named threads").isNotEmpty();
             assertThat(relayThreads).as("AD-1: no virtual thread on the relay data plane")
                     .noneMatch(Thread::isVirtual);
+            assertThat(OidcDiscoveryStandIn.discoveryHits())
+                    .as("T9 at the BOOT boundary: a full reverse-cell context makes NO provider-metadata "
+                            + "wire call — the never-hit pin extended from the adapter to the wiring")
+                    .isEqualTo(discoveryHitsBefore);
         }
+        assertThat(OidcDiscoveryStandIn.discoveryHits())
+                .as("context close makes no provider call either (the full lifecycle, T9 boot boundary)")
+                .isEqualTo(discoveryHitsBefore);
         // Context close ran stop(Runnable): acceptor closed + group quiesced BEFORE close returned.
         // Neuter-guard: running flips ONLY inside stop() — the group bean's destroyMethod releases the
         // port and flips isShutdown() on its own, so the group/port checks alone would stay GREEN under

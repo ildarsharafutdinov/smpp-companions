@@ -209,7 +209,7 @@ class BindInterceptorTest {
                     assertThat(reject.verdict()).isEqualTo(new Verdict.DenyInvalid());
                 });
         assertThat(frame.refCnt()).as("the denied bind's original frame is released (never forwarded)").isZero();
-        assertThat(zeroized(verifier.capturedCredentials.get(0).password().value()))
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
                 .as("caller-owned zeroize on the Deny path").isTrue();
     }
 
@@ -304,7 +304,7 @@ class BindInterceptorTest {
         assertThat(observer.bindAccepts())
                 .as("onBindAccept fires at the AD-25 couple (T8), NOT at the verdict — silent here")
                 .isEmpty();
-        assertThat(zeroized(verifier.capturedCredentials.get(0).password().value()))
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
                 .as("caller-owned zeroize on the ALLOW path too (the continuation's settle wipe — Story 3.4 "
                         + "T6 moved it into the state manager; no teardown wipe covers this arm)")
                 .isTrue();
@@ -390,7 +390,7 @@ class BindInterceptorTest {
         ingress.close();
 
         assertThat(verifier.cancelHttpCalls).as("the in-flight adjudication is cancelled (AD-32 teardown)").hasValue(1);
-        assertThat(zeroized(verifier.capturedCredentials.get(0).password().value()))
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
                 .as("the wipe does not wait for a cancelled adjudication").isTrue();
         assertThat(registry.size()).isZero();
 
@@ -416,7 +416,7 @@ class BindInterceptorTest {
         assertThat(deny.getInt(12)).isEqualTo(11);
         assertThat(observer.bindRejects()).as("an exception is not a returned Verdict — no onBindReject (AD-27)").isEmpty();
         assertThat(ingress.isOpen()).isFalse();
-        assertThat(zeroized(verifier.capturedCredentials.get(0).password().value())).isTrue();
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value())).isTrue();
         assertThat(frame.refCnt()).isZero();
 
         // (b) A synchronous throw out of verify(): the adjudicate catch arm — same collapse.
@@ -479,7 +479,7 @@ class BindInterceptorTest {
             assertThat(observer.bindRejects()).as("null is not a returned Verdict — no onBindReject (AD-27)").isEmpty();
             assertThat(nullingIngress.isOpen()).isFalse();
             assertThat(registry.size()).isZero();
-            assertThat(zeroized(seen[0].password().value()))
+            assertThat(CoupledPairHarness.zeroized(seen[0].password().value()))
                     .as("the never-adjudicated secret is zeroized exactly once (this arm's explicit wipe)").isTrue();
             assertThat(frame.refCnt()).as("the original frame is released — no pooled-buffer leak").isZero();
         } finally {
@@ -567,16 +567,5 @@ class BindInterceptorTest {
         byte[] out = new byte[buf.readableBytes()];
         buf.getBytes(buf.readerIndex(), out);
         return out;
-    }
-
-    /** {@code true} iff every value octet of the (shared-backing) password {@link AsciiString} is zero. */
-    private static boolean zeroized(AsciiString value) {
-        byte[] array = value.array();
-        for (int i = value.arrayOffset(); i < value.arrayOffset() + value.length(); i++) {
-            if (array[i] != 0) {
-                return false;
-            }
-        }
-        return true;
     }
 }

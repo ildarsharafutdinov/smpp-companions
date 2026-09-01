@@ -38,7 +38,8 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
  * realm base + {@code protocol/openid-connect/token}, no startup probe since Story 3.4 T9,
  * 2026-08-29) &rarr; trust-only TLS &rarr; ROPC &rarr; the structural three-segment gate;
  * (2) bad credentials &rarr; {@code DenyInvalid} both ways the
- * fixture exhibits them (400 {@code invalid_grant}, 401 {@code invalid_client}).
+ * fixture exhibits them (400 {@code invalid_grant} &mdash; {@code path3a}; 401 {@code invalid_client}
+ * &mdash; {@code path3b}; the historical 4-path row names are kept — chunk-B review 2026-09-01).
  *
  * <p>Each test constructs the adapter exactly as the wiring does
  * ({@code new RopcBindCredentialVerifier(new IdpSslContextFactory(props))}) — the container is

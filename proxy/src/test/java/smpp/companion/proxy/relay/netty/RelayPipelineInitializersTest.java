@@ -51,7 +51,12 @@ class RelayPipelineInitializersTest {
         return RelayTestFixtures.modeBIngressInitializer(RelayTestFixtures.freePort());
     }
 
-    /** The real production egress wiring — a fresh manager-over-registry pair, as Spring would wire it. */
+    /**
+     * The real production egress wiring SHAPE — a fresh, deliberately ISOLATED manager-over-registry
+     * pair per fixture: this suite pins pipeline shape, not the production singleton sharing (Spring
+     * injects ONE shared manager/registry into BOTH initializers — the sharing {@code RelayTestFixtures}
+     * wires into its harness records; chunk-B review 2026-09-01).
+     */
     private static RelayEgressInitializer egressInitializer() {
         return new RelayEgressInitializer(
                 new RelayStateManager(new ConnectionRegistry()), new CapturingRelayObserver());
