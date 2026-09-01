@@ -85,10 +85,10 @@ development_status:
   # --- Epic 3: Secure the transit — TLS modes A/B/C and OIDC ROPC password-grant adjudication ---
   # NOTE: Story 3.1 (ROPC viability probe) was executed out-of-band as an Epic-1 action item
   # (2026-08-08, verdict MET, recorded in the AD-12 accepted-risk register) — deliberately no story key here.
-  epic-3: in-progress
+  epic-3: done
   3-2-oidc-ropc-bind-adjudicator: done
   3-3-tls-modes-and-forward-acceptor: done
-  3-4-relay-refactoring-round: in-progress
+  3-4-relay-refactoring-round: done
   epic-3-retrospective: optional
 
   # --- Epic 4: Operate the proxy in production — structured logs and read-only loopback /metrics ---
