@@ -68,7 +68,8 @@ public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
                 .addLast(new SmppFrameDecoder()) // per-channel instance (CODEC-014)
                 .addLast(new SmppCodec())
                 // T7 (landed): bind-family verifier gating + AD-33 collapse + the AD-14 forward
-                // (AD-7/AD-25/AD-27/AD-33). Per-channel: holds the in-flight adjudication handles.
+                // (AD-7/AD-25/AD-27/AD-33). Per-channel instance; the in-flight adjudication
+                // handles live on the ConnectionEntry via RelayStateManager (Story 3.4 T6).
                 // Story 3.3: role-split — the FORWARD arm routes per system_id (AD-29) and dials TLS.
                 .addLast(new BindInterceptor(
                         verifier, manager, observer, properties, egressInitializer, channelOptions,

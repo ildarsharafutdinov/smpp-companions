@@ -557,10 +557,12 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * T8 couple unit observes the same PDU from its earlier pipeline position.
      *
      * <p><b>The answered state is ENTRY state (T6 absorption (b)):</b> this leg's pre-T6 shadow bit
-     * ({@code answered}) died — every bind answer ALREADY transitioned the {@link ConnectionEntry}
-     * upstream (the ROK couple in {@code RelayEgressHandler} on one arm, the non-ROK/nack teardown on the
-     * other, both before this forwarder observes the PDU), so {@link ConnectionEntry#answered()} derives
-     * the awaiting-bind_resp &rarr; answered transition with zero shadow bits outside the entry. The leg
+     * ({@code answered}) died — every bind answer transitioned the {@link ConnectionEntry} upstream
+     * (the ROK couple in {@code RelayEgressHandler} on one arm, BEFORE this forwarder runs; the
+     * non-ROK/nack teardown on the other, AFTER the verbatim forward — AD-32 case 4), so
+     * {@link ConnectionEntry#answered()} derives the awaiting-bind_resp &rarr; answered transition with
+     * zero shadow bits outside the entry; the derivation holds because this forwarder consults it only
+     * at channelInactive/exceptionCaught, after the egress close the teardown already performed. The leg
      * holds the entry ref from its construction site.
      *
      * <p>If the SMSC leg dies BEFORE answering (close/RST/unbind — no response PDU), the bind can never

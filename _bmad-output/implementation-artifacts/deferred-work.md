@@ -578,3 +578,15 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: (corroboration of the 2026-08-25 close-out entries — no new action) ROPC-through-TLS e2e gap and the override-cert e2e row were independently re-surfaced and confirmed by this review's verification-gap + acceptance-auditor layers.
   evidence: Code review 2026-08-27; see the existing entries under "Deferred from: Story 3.3 implementation close-out (2026-08-25)".
+
+## Deferred from: code review of 3-4-relay-refactoring-round (2026-09-01)
+
+- source_spec: `3-4-relay-refactoring-round.md`
+  summary: Unguarded RelayObserver callbacks — none of the four production fire sites (onBindReject in the verdict continuation, onBindAccept at the couple, onFramedPdu per relayed PDU, onConnectionClosed at channelInactive) isolates a throwing implementation, and the RelayObserver interface documents no "must not throw" contract. Worst arm: onBindReject runs in an event-loop task (no exceptionCaught net) — a throwing observer leaks the original frame, skips the AD-33 deny, and hangs the client until TCP timeout; onFramedPdu leaks one frame per PDU pre-write. NoopRelayObserver (the current bean) cannot throw; the exposure materializes when Epic 4 swaps in the production Micrometer observer — harden the seam (try/catch or a documented throw contract) at that story.
+  evidence: Code review 2026-09-01 (edge-case-hunter layer, source-verified at `BindInterceptor.java:370`, `RelayEgressHandler.java:70`, `CoupledRelayHandler.java:159,274`); pre-existing 2.2-era seam posture — Story 3.4 moved/renamed the sites (T4/T5) without changing guard behavior.
+- source_spec: `3-4-relay-refactoring-round.md`
+  summary: OPERATOR_WARNING per-bind flooding — the T9 starred banner (~14 lines) logs on EVERY denied bind with no once-per-condition/rate bound; a dead or typo'd provider under sustained binds floods the log (up to max-in-flight concurrent), undermining the "unmissable in any log aggregation" intent. Bounding options considered: first-banner + one-liner-per-bind, once-per-condition, keep per-bind.
+  evidence: Code review 2026-09-01 (blind-hunter + verification-gap layers, source-verified at `RopcBindCredentialVerifier.java:406-411`). Deferred by owner 2026-09-01: Epic 4 owns operator logging — decide with the production observer it lands.
+- source_spec: `3-4-relay-refactoring-round.md`
+  summary: Non-JWT (opaque-token) WARN inconsistent with the operator-banner pattern — not starred, carries no tokenEndpoint/providerUrl context (a multi-cell operator cannot tell which provider issued the opaque token), and repeats per bind; should align with whatever bound the OPERATOR_WARNING item above picks.
+  evidence: Code review 2026-09-01 (blind-hunter layer, source-verified at `RopcBindCredentialVerifier.java:448-450`). Deferred by owner 2026-09-01: Epic 4 owns operator logging — decide with the production observer it lands.

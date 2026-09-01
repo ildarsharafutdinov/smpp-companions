@@ -129,8 +129,8 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * every realm's OIDC endpoints under {@code <realm-base>/protocol/openid-connect/*}, so the
      * token endpoint is DERIVED from the configured {@code provider-url} (which MUST be the realm
      * base) — byte-identical to the realm layout the fixture containers serve
-     * ({@code KeycloakFixture.TOKEN_ENDPOINT} in the test tier) and to the endpoint the post-T8
-     * slice injects directly.
+     * ({@code KeycloakFixture.TOKEN_ENDPOINT} in the test tier) and to the endpoint the test-tier
+     * {@code RopcSlice} injects directly (aligned to it by Story 3.4 T8).
      */
     static final String TOKEN_ENDPOINT_PATH = "protocol/openid-connect/token";
 
@@ -157,8 +157,9 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * The loud operator WARN (Story 3.4 T9, 2026-08-29 — the retired startup-refusal/DAG-warning
      * posture's successor; the Mode B / over-budget banner pattern: a starred block so it is
      * unmissable in any log aggregation). Logged on the token-call connection-error and
-     * non-mapped-non-200 arms — exactly the arms a typo'd {@code provider-url}, a dead provider,
-     * or a Direct-Access-Grants-off client lands on. Log-only: the verdict table (AC2) is
+     * non-mapped-non-200 arms — the arms a typo'd {@code provider-url}, a dead provider, or a
+     * Direct-Access-Grants-off client land on (transient provider statuses — 3xx/403/404/429/5xx —
+     * share the arm; the verdict stays {@code DenyIndeterminate} either way). Log-only: the verdict table (AC2) is
      * unchanged. Three {@code {}} slots: what happened, the derived token endpoint, the
      * configured provider-url.
      */
@@ -189,6 +190,10 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     private final HttpClient http;              // the ONE shared provider-facing client (AD-36)
     private final ExecutorService adjudicationPool;   // bounded VT pool (AD-28(4)); the semaphore bounds it
     private final Semaphore admission;
+    /** Set at {@link #close()} entry (code review 2026-09-01, owner-sanctioned): the adapter's OWN
+     *  shutdown aborts are not provider misconfiguration — the transport-arm operator WARN stays off
+     *  routine restarts. Verdicts are unaffected (still {@code DenyIndeterminate}). */
+    private volatile boolean closed;
 
     /**
      * Eager, fail-closed construction (the T2 bean pattern): the client-secret file is read here and a
@@ -223,8 +228,10 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
                     + "AD-12 amended 2026-08-18).");
         }
         ProxyCompanionProperties.Oidc oidc = resolved.oidc();
-        this.providerUrl = oidc.providerUrl();
-        this.tokenEndpoint = deriveTokenEndpoint(oidc.providerUrl());
+        // Direct construction bypasses the component @NotNull — the same named-guard reason as
+        // maxInFlight/timeout below (a programmatic null fails named, not as a bare NPE in the derivation).
+        this.providerUrl = Objects.requireNonNull(oidc.providerUrl(), "providerUrl");
+        this.tokenEndpoint = deriveTokenEndpoint(this.providerUrl);
         Integer maxInFlight = Objects.requireNonNull(oidc.maxInFlight(), "maxInFlight");
         if (maxInFlight < 1) {
             // Direct construction bypasses the @Min(1) annotation; without this guard Semaphore(0) is
@@ -343,12 +350,14 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             return mapTokenResponse(response);
         } catch (Throwable t) {
             IOException transport = transportFailure(t);
-            if (transport != null) {
+            if (transport != null && !closed) {
                 // T9 (2026-08-29): the connection-error arm — an unreachable or typo'd
                 // provider-url, a TLS failure, a timeout — is where the retired startup refusal
                 // would have surfaced; this starred WARN is its loud successor (log-only, the
                 // verdict below is unchanged). A CANCELLATION (cancelHttp/AD-32) is not a
-                // provider problem and stays silent.
+                // provider problem and stays silent — and neither is the adapter's OWN shutdown
+                // abort (close()'s hard http.close() after a drain timeout; the closed flag,
+                // owner decision 2026-09-01).
                 log.warn(OPERATOR_WARNING,
                         "the token call failed at the transport layer (" + transport + ").",
                         tokenEndpoint, providerUrl);
@@ -390,22 +399,27 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             }
             // Not a credential verdict — including the DAG-off flagship: Keycloak answers a
             // Direct-Access-Grants-disabled client with 400 unauthorized_client (the retired
-            // startup DAG warning's runtime landing spot). T9: fail-closed deny + the operator WARN.
-            return unmappedStatus(response);
+            // startup DAG warning's runtime landing spot). T9: fail-closed deny + the operator WARN
+            // (code review 2026-09-01: the parsed error rides the WARN — unauthorized_client IS
+            // the DAG-off datum an operator needs).
+            return unmappedStatus(response, error);
         }
         // 3xx (redirects are never followed), 403/404/429, other 4xx, 5xx — not credential verdicts.
-        return unmappedStatus(response);
+        return unmappedStatus(response, null);
     }
 
     /**
      * The non-mapped-non-200 arm (T9, 2026-08-29): the verdict is unchanged fail-closed
-     * {@code DenyIndeterminate}, now with the starred operator WARN naming the status, the
+     * {@code DenyIndeterminate}, now with the starred operator WARN naming the status (plus the
+     * parsed OAuth {@code error} code on the 400 arm, when present — code review 2026-09-01), the
      * derived token endpoint, and the configured provider-url — the misconfiguration posture the
      * retired startup probe used to catch at boot.
      */
-    private Verdict unmappedStatus(HttpResponse<byte[]> response) {
+    private Verdict unmappedStatus(HttpResponse<byte[]> response, @Nullable String oauthError) {
+        String errorDetail = oauthError == null ? "" : " (OAuth error: " + oauthError + ")";
         log.warn(OPERATOR_WARNING,
-                "the token endpoint returned HTTP " + response.statusCode() + " — not a credential verdict.",
+                "the token endpoint returned HTTP " + response.statusCode() + errorDetail
+                        + " — not a credential verdict.",
                 tokenEndpoint, providerUrl);
         return new Verdict.DenyIndeterminate();
     }
@@ -699,6 +713,7 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      */
     @Override
     public void close() {
+        closed = true;   // our own aborts are not provider problems — keep the operator WARN off them
         adjudicationPool.shutdownNow();   // AD-22 step 2: deny in-flight
         // The drain bound: in-flight tasks are self-bounded by the per-request timeout clamp, so the
         // budget + 1s always suffices — the timeout arm below is defensive, and the hard close that

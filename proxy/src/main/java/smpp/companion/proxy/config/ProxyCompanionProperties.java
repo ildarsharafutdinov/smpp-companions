@@ -311,9 +311,10 @@ public record ProxyCompanionProperties(
         /**
          * Construction-time canonicalization (the 2026-08-19 T2 FIXME pass): strip exactly ONE
          * trailing {@code '/'} from the bound base URL, so the token-endpoint join
-         * ({@code URI.resolve} of the realm-relative token path over this base &mdash; the
-         * Story 3.4 T9 derivation, which replaced the former discovery-path join) never doubles a
-         * slash. The compact ctor is the only config-layer
+         * ({@code RopcBindCredentialVerifier}'s explicit append-after-last-segment join of its
+         * {@code TOKEN_ENDPOINT_PATH} over this base &mdash; the Story 3.4 T9 derivation, which
+         * replaced the 3.2-era discovery-fetched {@code token_endpoint}; plain {@code URI.resolve}
+         * would drop the realm segment) never doubles a slash. The compact ctor is the only config-layer
          * place a record can rewrite its own value &mdash; a Bean-Validation constraint can only accept
          * or reject, never normalize. Null-tolerant by necessity: binding instantiates the record
          * BEFORE validation runs (an absent key, or an empty string &mdash; which converts to null for

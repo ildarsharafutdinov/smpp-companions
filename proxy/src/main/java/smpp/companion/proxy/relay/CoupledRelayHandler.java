@@ -65,7 +65,8 @@ import smpp.companion.proxy.observability.RelayObserver;
  *
  * <p><b>RELAY logging rule (T3):</b> this handler observes {@code SystemId} only — never a
  * {@code SmppBindRequest}/{@code Password}/{@code BindCredential} object, never a password
- * {@code AsciiString} (it touches no credential at all; the zeroize lives in the interceptor's teardown).
+ * {@code AsciiString} (it touches no credential at all; the zeroize lives in {@code RelayStateManager}'s
+ * teardown/settle hygiene — Story 3.4 T6).
  */
 @SuppressWarnings("FutureReturnValueIgnored") // reason: close() on the relay's own channels is a
 // fire-and-forget fail-closed control operation — a failed close merely means the channel was already
