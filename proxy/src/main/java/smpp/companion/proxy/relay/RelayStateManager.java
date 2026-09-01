@@ -28,8 +28,10 @@ import smpp.companion.proxy.security.VerdictRequest;
  * ({@code denyAndTeardown} / {@code teardownForPreCoupleViolation} / {@code channelInactive} /
  * {@code exceptionCaught}, each pairing {@code beginTeardown} with its own
  * {@code cancelAndWipePending}) and the relay base's {@code teardownPair}/{@code channelInactive}/
- * {@code exceptionCaught}; they now consume the decision and run only their leg-specific tails
- * (closes, the AD-33 deny write, the reason stash).
+ * {@code exceptionCaught}. Of those, {@code teardownForPreCoupleViolation} died with the T5/T6 split
+ * (the ingress leg's {@code readPreCouple} calls {@code beginTeardown} directly); the survivors now
+ * consume the decision and run only their leg-specific tails (closes, the AD-33 deny write, the
+ * reason stash).
  * <li><b>Zeroize ownership (the caller being the manager):</b> the in-flight password's wipe runs in THIS
  * class &mdash; at teardown (the hygiene above) and at {@link #settleAdjudication(ConnectionEntry)} (the
  * verdict continuation's first act, every completion path, idempotent per RELAY-005). The interceptor's

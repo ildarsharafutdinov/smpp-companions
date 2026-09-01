@@ -104,8 +104,12 @@ public final class ConnectionEntry {
     /**
      * The awaiting-bind_resp &rarr; answered derivation (T6 absorption (b)): {@code true} iff the SMSC's bind
      * answer already resolved the pair &mdash; the ROK couple on one arm, the non-ROK/{@code generic_nack}
-     * teardown on the other (both transitions run in {@code RelayEgressHandler}, upstream of the bind-family
-     * forwarder, before the forwarder observes any answer; a pair torn down for any other reason has its
+     * teardown on the other. Both transitions run in {@code RelayEgressHandler}, but on OPPOSITE sides of the
+     * bind-family forwarder: the ROK couple precedes it, the non-ROK/{@code generic_nack} teardown FOLLOWS
+     * the verbatim forward (AD-32 case 4 &mdash; the answer must reach the legacy client first). The
+     * derivation is sound because {@code answered()} is consulted only in {@code EgressLeg}'s
+     * channelInactive/exceptionCaught &mdash; after the egress close the teardown already performed, so the
+     * transition has always completed by consultation time (a pair torn down for any other reason has its
      * wire effects owned by the teardown winner). DERIVED from the couple flag and the tearing-down mark on
      * every read (AD-32: never a shadow bit) &mdash; this is why the entry stays at six things.
      */
