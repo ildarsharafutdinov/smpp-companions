@@ -91,9 +91,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 // these calls' own returns.
 class RelayA1SmokeTest {
 
-    /** SMPP 3.4 §4.1.2 opaque PDUs the relay carries (never parsed — AD-3). */
+    /**
+     * SMPP 3.4 §4.1.2 opaque PDUs the relay carries (never parsed — AD-3; the codec decodes the bind
+     * family only). The DLR tag is deliberately NOT the real deliver_sm id (0x00000005, per
+     * {@code JsmppA1OracleTest}'s id note): a non-existent id guarantees no endpoint ever parses the
+     * frame (chunk-B review 2026-09-01).
+     */
     private static final int SUBMIT_SM = 0x00000004;
-    private static final int DELIVER_SM = 0x00000105;
+    private static final int OPAQUE_DLR_TAG = 0x00000105;
 
     /** The bind_resp wire contract, pinned as LITERALS (independent of the production constants). */
     private static final int BIND_TRANSCEIVER = 0x00000009;
@@ -166,8 +171,8 @@ class RelayA1SmokeTest {
                     .as("both coupled pairs are live (distinct ingress Channels, same system_id)").isEqualTo(2);
 
             // Uniquely-tagged deliver_sm injected per egress socket (the carrier-affinity emulation).
-            byte[] deliverToA = opaquePdu(DELIVER_SM, 1001, "DLR-FOR-BIND-A");
-            byte[] deliverToB = opaquePdu(DELIVER_SM, 1002, "DLR-FOR-BIND-B");
+            byte[] deliverToA = opaquePdu(OPAQUE_DLR_TAG, 1001, "DLR-FOR-BIND-A");
+            byte[] deliverToB = opaquePdu(OPAQUE_DLR_TAG, 1002, "DLR-FOR-BIND-B");
             smppSideA.deliver(deliverToA);
             smppSideB.deliver(deliverToB);
 
@@ -229,9 +234,9 @@ class RelayA1SmokeTest {
             // deliver_sm chain SMSC→legacy: THREE distinct PDUs in ONE mock-side write — the legacy
             // client reads exactly three complete framed PDUs, byte-exact.
             List<byte[]> delivers = List.of(
-                    opaquePdu(DELIVER_SM, 301, "DLR-ONE"),
-                    opaquePdu(DELIVER_SM, 302, "DLR-TWO"),
-                    opaquePdu(DELIVER_SM, 303, "DLR-THREE"));
+                    opaquePdu(OPAQUE_DLR_TAG, 301, "DLR-ONE"),
+                    opaquePdu(OPAQUE_DLR_TAG, 302, "DLR-TWO"),
+                    opaquePdu(OPAQUE_DLR_TAG, 303, "DLR-THREE"));
             smppSide.deliverAll(concat(delivers));
             assertThat(readPdu(legacy)).isEqualTo(delivers.get(0));
             assertThat(readPdu(legacy)).isEqualTo(delivers.get(1));

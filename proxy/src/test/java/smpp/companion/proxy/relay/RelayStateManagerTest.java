@@ -58,18 +58,6 @@ class RelayStateManagerTest {
         return new SystemId(AsciiString.of(value));
     }
 
-    /** {@code true} iff every value octet of the password's (shared-backing) AsciiString is zero. */
-    private static boolean zeroized(Password password) {
-        AsciiString value = password.value();
-        byte[] array = value.array();
-        for (int i = value.arrayOffset(); i < value.arrayOffset() + value.length(); i++) {
-            if (array[i] != 0) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     @Test
     @DisplayName("beginTeardown returns Won with the hygiene ALREADY done — cancelHttp + zeroize ran before "
             + "the Won return; the pair is removed and both attrs cleared; a second call is Lost with no re-cancel")
@@ -92,7 +80,7 @@ class RelayStateManagerTest {
                 .isSameAs(entry);
         // The hygiene ran BEFORE the Won return (the caller's tails start from a hygienic pair):
         assertThat(pending.cancelHttpCalls).as("the in-flight ROPC is aborted inside the decision (AD-12/AD-32)").hasValue(1);
-        assertThat(zeroized(password)).as("the pending password is wiped inside the decision (caller = the manager)").isTrue();
+        assertThat(CoupledPairHarness.zeroized(password.value())).as("the pending password is wiped inside the decision (caller = the manager)").isTrue();
         assertThat(registry.size()).as("the pair left the registry (remove BEFORE close, AD-32)").isZero();
         assertThat(manager.entryFor(ingress)).as("both legs' cached attributes are cleared").isNull();
         assertThat(manager.entryFor(egress)).isNull();
@@ -126,7 +114,7 @@ class RelayStateManagerTest {
         manager.settleAdjudication(entry);
 
         assertThat(pending.cancelHttpCalls).as("settling is NOT cancelling — the adjudication completed").hasValue(0);
-        assertThat(zeroized(password)).as("the caller-owned wipe runs on the settle path (every completion path)").isTrue();
+        assertThat(CoupledPairHarness.zeroized(password.value())).as("the caller-owned wipe runs on the settle path (every completion path)").isTrue();
         assertThat(manager.beginTeardown(ingress))
                 .as("the later teardown still owns the pair removal (Won)")
                 .isInstanceOf(RelayStateManager.Teardown.Won.class);

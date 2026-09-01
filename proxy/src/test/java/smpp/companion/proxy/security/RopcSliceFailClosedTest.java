@@ -163,7 +163,7 @@ class RopcSliceFailClosedTest {
     @Test
     @DisplayName("D7: 200 + three-segment GARBAGE token → Allow — the verdict is the endpoint's alone (nothing local parses it)")
     void threeSegmentGarbageToken_yieldsAllow() throws Exception {
-        // Three dot-separated segments of base64 garbage: structurally a JWS, cryptically worthless. It must Allow —
+        // Three dot-separated segments of base64 garbage: structurally a JWS, cryptographically worthless. It must Allow —
         // the token-endpoint response (over the TLS provider link) is the sole trust anchor. Reintroduce ANY local
         // check (signature, kid, claims — the retired 2.1 arms) and this row goes RED.
         HttpServer server = newServer(ex -> {
@@ -176,6 +176,37 @@ class RopcSliceFailClosedTest {
                     .isEqualTo(new Verdict.Allow());
         } finally {
             server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("the structural gate's segment-count BOUNDARIES: 2- and 4-segment tokens deny fail-closed "
+            + "(D6) — only EXACTLY three segments Allows (the production suite's twin row's shape)")
+    void segmentCountBoundariesDenyFailClosed() throws Exception {
+        // Chunk-B review 2026-09-01: the slice's D6/D7 rows drove only 0- and 3-segment shapes, so a
+        // neutered gate (segments < 3 / >= 3 / "more than one dot") stayed green in this tier too.
+        // Mirrors RopcBindCredentialVerifierTest.segmentCountBoundariesDenyFailClosed.
+        HttpServer fourSegment = newServer(ex -> {
+            drainBody(ex);
+            sendJson(ex, 200, "{\"access_token\":\"a.b.c.d\",\"token_type\":\"Bearer\"}");
+        });
+        try (RopcSlice slice = slice(fourSegment)) {
+            Verdict v = awaitVerdict(verify(slice, cred(new AsciiString("pw"))));
+            assertThat(v).as("a 4-segment (JWE-shaped) token is not a three-segment JWS — D6 fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        } finally {
+            fourSegment.stop(0);
+        }
+        HttpServer twoSegment = newServer(ex -> {
+            drainBody(ex);
+            sendJson(ex, 200, "{\"access_token\":\"a.b\",\"token_type\":\"Bearer\"}");
+        });
+        try (RopcSlice slice = slice(twoSegment)) {
+            Verdict v = awaitVerdict(verify(slice, cred(new AsciiString("pw"))));
+            assertThat(v).as("a 2-segment token is not a three-segment JWS — D6 fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        } finally {
+            twoSegment.stop(0);
         }
     }
 

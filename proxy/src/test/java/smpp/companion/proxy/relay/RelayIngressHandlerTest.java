@@ -133,7 +133,9 @@ class RelayIngressHandlerTest extends CoupledPairHarness {
         couple();
         byte[] submit = opaquePdu(SUBMIT_SM, 31);
         ingress.writeInbound(inbound(submit)); // in flight toward the SMSC
-        assertThat(egress.<ByteBuf>readOutbound()).as("precondition: the PDU crossed the relay").isNotNull();
+        ByteBuf crossed = egress.readOutbound();
+        assertThat(crossed).as("precondition: the PDU crossed the relay").isNotNull();
+        crossed.release();   // readOutbound hands the reader ownership (the T7 trap)
 
         ingress.close(); // the legacy client half-closes
 
@@ -166,6 +168,7 @@ class RelayIngressHandlerTest extends CoupledPairHarness {
         if (atSmsc != null) { // zero-or-one is the contract; when present it must be WHOLE
             assertThat(atSmsc.readableBytes()).as("a complete framed PDU — its own length prefix").isEqualTo(atSmsc.getInt(0));
             assertThat(bytesOf(atSmsc)).isEqualTo(submit);
+            atSmsc.release();   // readOutbound hands the reader ownership (the T7 trap)
         }
         assertThat(observer.connectionCloses()).isNotEmpty();
         assertThat(registry.size()).isZero();
@@ -174,14 +177,14 @@ class RelayIngressHandlerTest extends CoupledPairHarness {
         // (released + fail-closed close) — never written to the dead pair, never a partial frame. The
         // registry's beginTeardown leaves the closes to the caller, so clearing the entry here reproduces
         // the delivery-race window deterministically (the channel is still open at writeInbound time).
-        if (egress != null) {
-            egress.finishAndReleaseAll(); // (a)'s egress was closed by the teardown propagation
-        }
+        // (No null guard — couple() above guarantees the field is assigned; the pre-split suite's guard
+        // was dead code, chunk-B review 2026-09-01.)
+        egress.finishAndReleaseAll(); // (a)'s egress was closed by the teardown propagation
         freshIngress(); // a fresh coupled pair for (b)
         couple();
         assertThat(registry.beginTeardown(egress)).as("precondition: (b) starts from a torn-down entry").isNotNull();
         int ingressOutboundBefore = countOutbound(ingress);
-        ByteBuf raced = inbound(opaquePdu(DELIVER_SM, 42));
+        ByteBuf raced = inbound(opaquePdu(OPAQUE_DLR_TAG, 42));
         egress.writeInbound(raced);
         assertThat(countOutbound(ingress)).as("no partial/new frame reaches a torn-down pair").isEqualTo(ingressOutboundBefore);
         assertThat(raced.refCnt()).as("the raced frame is released, not leaked").isZero();
@@ -215,7 +218,7 @@ class RelayIngressHandlerTest extends CoupledPairHarness {
     void connectionClosedFiresExactlyOncePerChannel() {
         couple();
         ingress.writeInbound(inbound(opaquePdu(SUBMIT_SM, 51)));
-        egress.writeInbound(inbound(opaquePdu(DELIVER_SM, 52)));
+        egress.writeInbound(inbound(opaquePdu(OPAQUE_DLR_TAG, 52)));
         // A redundant/duplicate channelInactive delivery while the handlers are still installed —
         // whatever violates Netty's fire-once contract (an event-loop replay, a redundant fire) is
         // exactly what the AC5 CAS guards. NOTE: this must be delivered PRE-close — EmbeddedChannel's

@@ -58,6 +58,7 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         ByteBuf toLegacy = ingress.readOutbound();
         assertThat(toLegacy).as("the ROK bind_resp is forwarded verbatim by the EgressLeg (T7 split)").isNotNull();
         assertThat(bytesOf(toLegacy)).isEqualTo(bindResponse(SmppCommandIds.BIND_TRANSCEIVER_RESP, 5, 0, "SMSC01", new byte[0]));
+        toLegacy.release();   // readOutbound hands the reader ownership (the T7 trap)
         assertThat(registry.size()).as("the pair stays registered — it is relaying now").isEqualTo(1);
 
         // Post-couple ingress→egress relay: a submit_sm (opaque) crosses INGRESS.
@@ -71,7 +72,7 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         // Post-couple egress→ingress relay: a deliver_sm fed in MULTIPLE chunks (the RecordingAllocator-bypass
         // trap — one writeInbound of a whole buffer is tautological; chunked input exercises the framer's
         // reassembly through the REAL path) yields exactly ONE complete framed PDU at the legacy side.
-        byte[] deliver = opaquePdu(DELIVER_SM, 202);
+        byte[] deliver = opaquePdu(OPAQUE_DLR_TAG, 202);
         byte[] firstHalf = java.util.Arrays.copyOfRange(deliver, 0, 9);
         byte[] secondHalf = java.util.Arrays.copyOfRange(deliver, 9, deliver.length);
         egress.writeInbound(inbound(firstHalf));
@@ -104,6 +105,7 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         ByteBuf toLegacy = ingress.readOutbound();
         assertThat(toLegacy).as("the SMSC's own non-ROK answer reaches the legacy client VERBATIM (AD-32 case 4)").isNotNull();
         assertThat(bytesOf(toLegacy)).isEqualTo(nonRok);
+        toLegacy.release();   // readOutbound hands the reader ownership (the T7 trap)
         assertThat(ingress.<ByteBuf>readOutbound()).as("nothing follows the verbatim answer (no proxy deny synthesis)").isNull();
         assertThat(ingress.isOpen()).as("non-ROK → do NOT couple; tear down (AC3)").isFalse();
         assertThat(egress.isOpen()).as("both legs of the failed pair close").isFalse();
@@ -156,7 +158,7 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
             + "egress closes with PRE_COUPLE_NON_BIND_PDU and the bind fails via the AD-33 collapse")
     void egressPreCoupleNonBindPduIsNotLeaked() {
         awaitingBindResp();
-        byte[] deliver = opaquePdu(DELIVER_SM, 9);
+        byte[] deliver = opaquePdu(OPAQUE_DLR_TAG, 9);
         ByteBuf frame = inbound(deliver);
         egress.writeInbound(frame);
 
@@ -165,6 +167,7 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         assertThat(toLegacy.readableBytes()).as("the ONLY ingress-bound PDU is the header-only AD-33 deny").isEqualTo(HEADER);
         assertThat(toLegacy.getInt(8)).isEqualTo(ESME_RBINDFAIL);
         assertThat(bytesOf(toLegacy)).as("…and it is NOT the deliver_sm bytes — zero leak").isNotEqualTo(deliver);
+        toLegacy.release();   // readOutbound hands the reader ownership (the T7 trap)
         assertThat(egress.isOpen()).as("the violating egress leg closes").isFalse();
         assertThat(ingress.isOpen()).as("the unanswered bind tears the ingress down too").isFalse();
         assertThat(registry.size()).isZero();
@@ -188,6 +191,7 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         ByteBuf toLegacy = ingress.readOutbound();
         assertThat(toLegacy).as("the SMSC's own answer is ground truth — forwarded unchanged").isNotNull();
         assertThat(bytesOf(toLegacy)).isEqualTo(nack);
+        toLegacy.release();   // readOutbound hands the reader ownership (the T7 trap)
         assertThat(ingress.<ByteBuf>readOutbound()).as("nothing follows the verbatim nack (no proxy deny on top)").isNull();
         assertThat(observer.bindAccepts()).as("a nack never couples the pair").isEmpty();
         assertThat(ingress.isOpen()).as("both legs tear down after the forwarded answer").isFalse();
@@ -215,6 +219,7 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         assertThat(deny).as("the failed bind collapses to the AD-33 generic deny (the EgressLeg arm)").isNotNull();
         assertThat(deny.getInt(8)).isEqualTo(ESME_RBINDFAIL);
         assertThat(deny.getInt(12)).as("correlates the still-pending bind").isEqualTo(5);
+        deny.release();   // readOutbound hands the reader ownership (the T7 trap)
         assertThat(ingress.isOpen()).isFalse();
         assertThat(egress.isOpen()).isFalse();
         assertThat(registry.size()).isZero();

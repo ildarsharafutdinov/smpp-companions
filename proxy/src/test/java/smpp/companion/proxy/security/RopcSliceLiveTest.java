@@ -24,7 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * adapter): (1) ROPC with {@code client_secret} &rarr; 200 + JWT &rarr; the structural three-segment gate
  * &rarr; {@code Allow} on the endpoint verdict alone (no local verify — the D7 shape, pinned always-on in
  * {@link RopcSliceFailClosedTest}); (2a/2b) bad credentials &rarr; {@code DenyInvalid} both ways the fixture
- * exhibits them (400 {@code invalid_grant}, 401 {@code invalid_client}).
+ * exhibits them (400 {@code invalid_grant} &mdash; {@code path4a}; 401 {@code invalid_client} &mdash;
+ * {@code path4b}; the historical 4-path row names are kept — chunk-B review 2026-09-01).
  *
  * <p>Each test drives the <b>actual {@link BindCredentialVerifier#verify} port</b> (AC1 shape) with the
  * {@link RequestContext} bound via {@link ScopedValue} (AC4 / AD-5) and awaits the {@link Verdict} on the slice's

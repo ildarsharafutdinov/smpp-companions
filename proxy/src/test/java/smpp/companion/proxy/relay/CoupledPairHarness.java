@@ -48,7 +48,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * an embedded channel — the substrate options are pinned by {@code RelayChannelOptionsTest}, the
  * demand-driven behavior proves out on the real-socket suites. (2) An RST is simulated by firing
  * {@code IOException} through the pipeline ({@code fireExceptionCaught}) — exactly how a real reset
- * surfaces to the handler on a live NIO channel, pre-inactive.
+ * surfaces to the handler on a live NIO channel, pre-inactive. (3) {@code readOutbound()} hands the
+ * reader ownership (the T7 trap): EVERY take-site in the harness and both suites captures, asserts,
+ * then releases — {@code finishAndReleaseAll} only drains what is still IN the queues, never a
+ * buffer already read out (chunk-B review 2026-09-01).
  */
 @SuppressWarnings("FutureReturnValueIgnored") // reason: EmbeddedChannel.close()/writeInbound in tests are
 // synchronous fire-and-forget — the assertions observe the channels' outbound queues and lifecycle state,
@@ -60,9 +63,14 @@ abstract class CoupledPairHarness {
     /** AD-33 Q2 — the ratified generic bind-failure code, pinned independently of the production constant. */
     protected static final int ESME_RBINDFAIL = 0x0000000D;
 
-    /** SMPP 3.4 §4.1.2 opaque PDUs (never parsed — the codec passes them through on the command_id alone). */
+    /**
+     * SMPP 3.4 §4.1.2 opaque PDUs (never parsed — the codec decodes the bind family only and passes
+     * everything else through on the command_id alone). The DLR tag is deliberately NOT the real
+     * deliver_sm id (0x00000005, per {@code JsmppA1OracleTest}'s id note): a non-existent id
+     * guarantees no endpoint ever tries to parse the frame (chunk-B review 2026-09-01).
+     */
     protected static final int SUBMIT_SM = 0x00000004;
-    protected static final int DELIVER_SM = 0x00000105;
+    protected static final int OPAQUE_DLR_TAG = 0x00000105;
     protected static final int ENQUIRE_LINK = 0x00000015;
     protected static final int GENERIC_NACK = 0x80000000;
 
@@ -127,7 +135,9 @@ abstract class CoupledPairHarness {
         egress = new EmbeddedChannel(DefaultChannelId.newInstance(), egressInitializer);
         connector.result = egress.newSucceededFuture();
         ingress.writeInbound(inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 5, "legacy1", "pw123456")));
-        assertThat(egress.<ByteBuf>readOutbound()).as("precondition: the bind reached the SMSC").isNotNull();
+        ByteBuf bindAtSmsc = egress.readOutbound();
+        assertThat(bindAtSmsc).as("precondition: the bind reached the SMSC").isNotNull();
+        bindAtSmsc.release();   // readOutbound hands the reader ownership (the T7 trap)
     }
 
     /** Wires the pair AND couples it on the ROK bind_resp from the SMSC — the post-couple relay plane is live. */
@@ -135,7 +145,9 @@ abstract class CoupledPairHarness {
         awaitingBindResp();
         egress.writeInbound(inbound(bindResponse(SmppCommandIds.BIND_TRANSCEIVER_RESP, 5, 0, "SMSC01", new byte[0])));
         assertThat(observer.bindAccepts()).as("precondition: the couple fired").hasSize(1);
-        assertThat(ingress.<ByteBuf>readOutbound()).as("precondition: the ROK reached the legacy client").isNotNull();
+        ByteBuf rokAtLegacy = ingress.readOutbound();
+        assertThat(rokAtLegacy).as("precondition: the ROK reached the legacy client").isNotNull();
+        rokAtLegacy.release();  // readOutbound hands the reader ownership (the T7 trap)
     }
 
     /**
@@ -216,7 +228,9 @@ abstract class CoupledPairHarness {
 
     protected static int countOutbound(EmbeddedChannel channel) {
         int n = 0;
-        while (channel.<ByteBuf>readOutbound() != null) {
+        ByteBuf b;
+        while ((b = channel.<ByteBuf>readOutbound()) != null) {
+            b.release();   // readOutbound hands the reader ownership (the T7 trap) — drain AND release
             n++;
         }
         return n;

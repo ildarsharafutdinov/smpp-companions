@@ -124,11 +124,12 @@ public final class OidcDiscoveryStandIn {
     }
 
     /**
-     * Minimal but shape-faithful discovery doc; endpoints mirror the Keycloak realm layout. The
-     * 3.2-era {@code introspection_endpoint} field was removed with the RFC 7662 arm (Story 3.4
-     * T1, 2026-08-27) and the {@code jwks_uri} field with local JWT verification (Story 3.4 T2,
-     * same day) — every boot through this stand-in now also proves a document omitting both
-     * retired fields is ACCEPTED (the requirement is issuer + token endpoint only).
+     * Vestigial payload (chunk-B review 2026-09-01): since T9 nothing on either tier fetches this
+     * document — its only consumer is the never-hit pin's counting handler (a fetch turns that pin
+     * RED), so NO document-shape acceptance is pinned anywhere (there is no parser left to accept
+     * it). The shape stays faithful to the Keycloak realm layout for the day a fetch reappears; the
+     * 3.2-era {@code introspection_endpoint} field was removed with the RFC 7662 arm (Story 3.4 T1,
+     * 2026-08-27) and the {@code jwks_uri} field with local JWT verification (Story 3.4 T2, same day).
      */
     private static String discoveryDocument(String base) {
         String realm = base + "/realms/smpp-companions/protocol/openid-connect";

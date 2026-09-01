@@ -136,6 +136,11 @@ class ConnectionRegistryTest {
         ConnectionEntry coupled = registry.register(channel(), systemId("legacy2"));
         assertThat(coupled.couple()).isTrue();
         assertThat(coupled.answered()).as("the couple IS the answered transition's ROK arm").isTrue();
+        // The COMBINED cell (chunk-B review 2026-09-01): a COUPLED pair that then tears down stays
+        // answered — both disjuncts true at once (an XOR-shaped predicate would pass the three arms
+        // above while flipping this one).
+        assertThat(coupled.beginTearingDown()).isTrue();
+        assertThat(coupled.answered()).as("coupled ∧ tearing-down remains answered (monotone arms)").isTrue();
 
         // The non-ROK/nack arm: the teardown resolves the pair (the wire effects belong to its winner).
         ConnectionEntry tornDown = registry.register(channel(), systemId("legacy3"));

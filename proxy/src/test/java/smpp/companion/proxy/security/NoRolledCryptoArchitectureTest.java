@@ -72,7 +72,8 @@ class NoRolledCryptoArchitectureTest {
      * AC7 / AC10-T8: provider-JSON parsing goes through Nimbus (no hand-rolled JSON) — asserted of the test-tier
      * slice AND the production adapter, per class, for the same anti-masking reason as the HttpClient pin above.
      * (Amended role, Story 3.4 T8 2026-08-29: with local JWT verification gone from both tiers, this pin guards
-     * the token/discovery-response JSON parse — the token itself is checked only structurally, library-free.)
+     * the token-response JSON parse — the token itself is checked only structurally, library-free. T9 2026-08-29
+     * removed the startup probe: no discovery document exists in either tier anymore — chunk-B review 2026-09-01.)
      */
     @ArchTest
     static final ArchRule ropcClientsUseNimbus =
@@ -80,6 +81,7 @@ class NoRolledCryptoArchitectureTest {
             .that().haveSimpleName(RopcSlice.class.getSimpleName())
             .or().haveSimpleName(RopcBindCredentialVerifier.class.getSimpleName())
             .should().dependOnClassesThat().resideInAPackage("com.nimbusds..")
-            .because("AC7 / SEC-4: provider-JSON parsing (discovery + token responses) must use Nimbus, never "
+            .because("AC7 / SEC-4: provider-JSON parsing (the token-endpoint response — no discovery document "
+                    + "exists in either tier since Story 3.4 T9) must use Nimbus, never "
                     + "hand-rolled — the proxy carries no other JSON library (AD-36 amended role, Story 3.4 T1+T2+T8)");
 }
