@@ -494,7 +494,7 @@ Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3, FR-AUTH-1
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
 - Technique: parametrized negative via port; fake IdP returns 200 application/json without a JWT; assert DenyIndeterminate.
 - Tooling: JUnit5 + fake IdP HTTP + AssertJ.
-- Notes: Non-401 that does not yield a locally-verifiable JWT -> DENY per AD-11.
+- Notes: Non-401 that does not yield a locally-verifiable JWT -> DENY per AD-11. (The "locally-verifiable JWT" phrase died with local verification, Story 3.4 T1+T2, 2026-08-27 — the deny basis is "not a 200 + three-segment token", per the SEC-001 note; this note landed 2026-09-01, chunk C, closing the T2 sweep's one missed row.)
 
 **SEC-003** — Deny bind (DenyIndeterminate) when ROPC returns 200 with an HTML body
 Level: unit · Priority: P0 · Risks: R1 · NFR: FR-SEC-5, SEC-3
