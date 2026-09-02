@@ -59,6 +59,10 @@ class CompanionTlsBindingTest {
                                      "--companion.memory.concurrent-pairs=1",
                                      "--companion.memory.safety-factor=1.0",
                                      "--companion.bind.port="
+                                             + smpp.companion.proxy.testsupport.RelayTestFixtures.freePort(),
+                                     // Story 4.1 T2: keep this yml-loading boot off yml's shipped
+                                     // metrics 9090 (run-args outrank yml; .properties() does not).
+                                     "--companion.metrics.port="
                                              + smpp.companion.proxy.testsupport.RelayTestFixtures.freePort())) {
             ProxyCompanionProperties.Tls tls = ctx.getBean(ProxyCompanionProperties.class).tls();
             assertThat(tls).isNotNull();

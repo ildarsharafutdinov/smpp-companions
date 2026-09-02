@@ -66,6 +66,13 @@ class DirectMemoryBudgetStartupCheckTest {
      */
     private static final int BIND_PORT = RelayTestFixtures.freePort();
 
+    /**
+     * Story 4.1 T2: the same three lifecycle-reaching boots now also BIND the metrics endpoint — a
+     * free ephemeral port beats application.yml's shipped 9090 (same run-arg precedence, same
+     * locally-running-tool avoidance).
+     */
+    private static final int METRICS_PORT = RelayTestFixtures.freePort();
+
     @Test
     @DisplayName("mode-b with a budget under the live ceiling starts silently, and the AD-21 allocator bean is the shared DEFAULT")
     void modeBWithSmallBudgetStartsAndSelfCheckPasses(@TempDir Path dir, CapturedOutput out) throws IOException {
@@ -75,7 +82,8 @@ class DirectMemoryBudgetStartupCheckTest {
                 "--companion.memory.max-inbound-depth=1",
                 "--companion.memory.concurrent-pairs=1",
                 "--companion.memory.safety-factor=1.0",
-                "--companion.bind.port=" + BIND_PORT)) {
+                "--companion.bind.port=" + BIND_PORT,
+                "--companion.metrics.port=" + METRICS_PORT)) {
             assertThat(ctx.isActive()).isTrue();
             // The self-check bean exists → afterPropertiesSet ran and did not throw (budget 65536 < ceiling).
             assertThat(ctx.getBean(DirectMemoryBudgetStartupCheck.class)).isNotNull();
@@ -146,7 +154,8 @@ class DirectMemoryBudgetStartupCheckTest {
         try (ConfigurableApplicationContext ctx = modeBBuilder(dir).run(
                 "--companion.memory.concurrent-pairs=1000000",
                 "--companion.memory.budget-check=warn",
-                "--companion.bind.port=" + BIND_PORT)) {
+                "--companion.bind.port=" + BIND_PORT,
+                "--companion.metrics.port=" + METRICS_PORT)) {
             assertThat(ctx.isActive()).as("budget-check=warn: must start despite the over-ceiling budget").isTrue();
             assertThat(out.getAll())
                     .as("the loud over-budget accepted-risk banner must be emitted")
@@ -167,7 +176,8 @@ class DirectMemoryBudgetStartupCheckTest {
                 "--companion.memory.concurrent-pairs=1",
                 "--companion.memory.safety-factor=1.0",
                 "--companion.memory.budget-check=warn",
-                "--companion.bind.port=" + BIND_PORT)) {
+                "--companion.bind.port=" + BIND_PORT,
+                "--companion.metrics.port=" + METRICS_PORT)) {
             assertThat(ctx.isActive()).as("warn policy with an under-ceiling budget: must start").isTrue();
         }
         assertThat(out.getAll())

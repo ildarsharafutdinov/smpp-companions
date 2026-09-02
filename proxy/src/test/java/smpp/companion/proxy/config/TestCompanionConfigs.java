@@ -181,6 +181,13 @@ public final class TestCompanionConfigs {
         props.put("companion.memory.max-inbound-depth", "1");
         props.put("companion.memory.concurrent-pairs", "1");
         props.put("companion.memory.safety-factor", "1.0");
+        // Story 4.1 T2: the metrics endpoint EXISTS now — every runner-boot base carries a free
+        // ephemeral port for it (the bind-port probe pattern above; these runner contexts do NOT load
+        // application.yml, so without this key the metrics node is absent and the endpoint stays
+        // down — with it, every runner boot is port-safe the moment the endpoint exists). The
+        // yml-loading builder boots pass --companion.metrics.port=<freePort> as run-args instead
+        // (args outrank yml's shipped 9090; .properties() does not — see MetricsEndpointTest).
+        props.put("companion.metrics.port", String.valueOf(RelayTestFixtures.freePort()));
     }
 
     /**
