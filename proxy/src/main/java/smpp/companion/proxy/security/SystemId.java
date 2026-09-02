@@ -31,4 +31,16 @@ public record SystemId(AsciiString value) {
                             + " value octets (16 incl. NUL terminator)");
         }
     }
+
+    /**
+     * The {@code system_id} as a plain {@link String} &mdash; the logging/label-facing accessor
+     * (Story 4.1 T3). Callers that must stay Netty-free (the production observer, whose layer rule
+     * bans {@code io.netty..} dependencies) read the identity through here instead of {@link #value()},
+     * keeping the {@link AsciiString} backing inside this typed boundary &mdash; the same
+     * no-reinvention posture as the codec wrap (the lazy {@code AsciiString} decode cache is fine
+     * here: the identity is NOT secret, AD-14; the password never crosses this type).
+     */
+    public String asString() {
+        return value.toString();
+    }
 }

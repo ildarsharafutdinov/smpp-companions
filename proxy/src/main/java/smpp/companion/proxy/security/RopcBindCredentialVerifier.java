@@ -35,6 +35,7 @@ import java.util.concurrent.StructuredTaskScope;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.StructuredTaskScope.Joiner;
 import java.util.concurrent.StructuredTaskScope.Subtask;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
@@ -190,6 +191,14 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     private final HttpClient http;              // the ONE shared provider-facing client (AD-36)
     private final ExecutorService adjudicationPool;   // bounded VT pool (AD-28(4)); the semaphore bounds it
     private final Semaphore admission;
+    /**
+     * The VT-gauge seam (Story 4.1 T3, checkpoint 9): the in-flight adjudication count behind
+     * {@link #activeAdjudications()}. Incremented at pool SUBMIT (on the caller's thread, before
+     * {@code execute}) and decremented in the pool task's {@code finally}; a pool rejection between
+     * the two compensates inline, so the count can never leak. Observation only — it gates no
+     * behavior (the wrap adds no restructuring of the pool; the sanctioned VT-gauge seam edit).
+     */
+    private final AtomicLong activeAdjudications;
     /** Set at {@link #close()} entry (code review 2026-09-01, owner-sanctioned): the adapter's OWN
      *  shutdown aborts are not provider misconfiguration — the transport-arm operator WARN stays off
      *  routine restarts. Verdicts are unaffected (still {@code DenyIndeterminate}). */
@@ -246,6 +255,18 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         this.adjudicationPool = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("ropc-adjudication-", 0).factory());
         this.admission = new Semaphore(maxInFlight);
+        this.activeAdjudications = new AtomicLong();
+    }
+
+    /**
+     * In-flight adjudications (the VT-gauge seam, Story 4.1 T3): how many submitted-but-not-yet-settled
+     * adjudications are on the {@code ropc-adjudication} virtual-thread pool right now. Read by the
+     * observability tier's {@code ropc.adjudications.active} gauge &mdash; Micrometer's
+     * {@code jvm_threads_*} binders do not count virtual threads, which is why the pool counts
+     * itself. 0 at rest; never negative (rejection-compensated).
+     */
+    public long activeAdjudications() {
+        return activeAdjudications.get();
     }
 
     @Override
@@ -289,7 +310,24 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             // Publish the handle BEFORE verify() returns so cancelHttp() can abort the exchange race-free
             // (the relay only ever cancels the VerdictRequest it got back — after this line).
             adj.activeCall.set(tokenExchange);
-            adjudicationPool.execute(() -> settleAdjudication(ctx, adj, tokenExchange));
+            // VT-gauge seam (Story 4.1 T3): the adjudication counts as ACTIVE from submit — the inc
+            // happens here, on the caller's thread, BEFORE execute, so a just-submitted adjudication
+            // is never missed; the pool task's finally owns the dec. A pool rejection (shut down
+            // between admission and execute) never starts the task — the catch compensates so the
+            // gauge cannot leak it. Behavior is otherwise unchanged.
+            activeAdjudications.incrementAndGet();
+            try {
+                adjudicationPool.execute(() -> {
+                    try {
+                        settleAdjudication(ctx, adj, tokenExchange);
+                    } finally {
+                        activeAdjudications.decrementAndGet();
+                    }
+                });
+            } catch (RejectedExecutionException | IllegalStateException e) {
+                activeAdjudications.decrementAndGet(); // never started — do not leak the count
+                throw e;
+            }
         } catch (RejectedExecutionException | IllegalStateException e) {
             // Use-after-close hardening (deferred-work §2.1 item 2): the pool rejected the task (shut
             // down between acquire and execute) or the shared client is closed. Release the permit,

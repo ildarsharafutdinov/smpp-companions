@@ -61,4 +61,16 @@ public final class RoutingTable {
     public ProxyCompanionProperties.@Nullable RoutingEntry route(String systemId) {
         return entries.get(systemId);
     }
+
+    /**
+     * The bounded label universe (AD-19 / Story 4.1 T3): every routing-table {@code system_id} &mdash;
+     * the ONLY values a {@code system_id}-labeled metrics series may ever draw from (pre-registered
+     * at startup by the production observer; ids outside this set hit unlabeled counters, never a
+     * new series &mdash; a burst of distinct unknown ids cannot grow the series count). Empty by
+     * construction on reverse cells (no forward branch &rarr; nothing indexed), which is exactly why
+     * the reverse arm's labeled set is empty.
+     */
+    public java.util.Set<String> systemIds() {
+        return java.util.Set.copyOf(entries.keySet());
+    }
 }
