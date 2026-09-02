@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Story 4.1 (FR-OBS-2): JSON-lines structured logging on stdout — one JSON object per line,
+     @timestamp in ISO-8601 UTC. Pattern and zone are pinned EXPLICITLY (verified setters on
+     logstash-logback-encoder 8.1) so the shape never depends on encoder defaults or JVM zone.
+     Tests override this via src/test/resources/logback-test.xml (plain console) so
+     OutputCapture substring assertions keep matching raw text. logging.level.* (application.yml
+     / run args) still applies on top — the TRACE gating for PDU bodies rides that. -->
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <timestampPattern>[ISO_OFFSET_DATE_TIME]</timestampPattern>
+            <timeZone>UTC</timeZone>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

@@ -25,8 +25,10 @@ dependencies {
     implementation(platform("io.netty:netty-bom:4.2.16.Final"))
     implementation("io.netty:netty-transport")              // NIO/Epoll transport (relay-ready, Epic 2)
     implementation("io.netty:netty-handler")                // SSLHandler / SSLEngine wiring (Epic 3)
+    implementation("io.netty:netty-codec-http")             // /metrics endpoint HttpServerCodec (Epic 4); version via netty-bom
     implementation("com.nimbusds:nimbus-jose-jwt:10.9.1")   // JWT adjudication (Epic 3); >= 10.0.2 floor
     implementation("io.micrometer:micrometer-registry-prometheus") // version managed by SB BOM (1.17.0)
+    implementation("net.logstash.logback:logstash-logback-encoder:8.1") // JSON-lines logging (Epic 4); NOT BOM-managed — pinned; brings jackson-databind transitively (first Jackson on the proxy classpath — logging-internal only)
     implementation(project(":codec"))                       // inward seam
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")

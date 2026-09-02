@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Story 4.1 T3: PLAIN-text console for tests. Takes classpath precedence over logback-spring.xml,
+     so OutputCapture substring assertions match raw message text instead of JSON-escaped lines (a
+     multi-line starred banner would otherwise fold into one \n-escaped JSON line and break any
+     assertion spanning it). The production JSON shape is asserted by the story's log tests against
+     an explicitly-configured encoder. logging.level.* still applies on top. -->
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX, UTC} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

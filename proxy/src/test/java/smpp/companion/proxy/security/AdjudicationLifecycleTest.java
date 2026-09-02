@@ -183,7 +183,8 @@ class AdjudicationLifecycleTest {
                                 URI.create(providerUrl), "smpp-client-confidential", secret.toString(),
                                 new ProxyCompanionProperties.TrustStore(store.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                timeout, 8)), null));
+                                timeout, 8)), null),
+                null);
     }
 
     /** The deadline must outlive the test window — the per-REQUEST budget (oidc.timeout) is the real bound. */

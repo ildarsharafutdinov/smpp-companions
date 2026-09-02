@@ -256,7 +256,8 @@ class IdpSslContextFactoryTest {
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(protocols, tls12, tls13),
                 forward,
-                reverse);
+                reverse,
+                null);
     }
 
     private static ProxyCompanionProperties properties(List<String> protocols, List<String> tls12, List<String> tls13,

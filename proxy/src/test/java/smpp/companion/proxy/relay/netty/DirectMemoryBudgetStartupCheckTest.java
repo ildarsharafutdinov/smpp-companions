@@ -194,7 +194,8 @@ class DirectMemoryBudgetStartupCheckTest {
                         new ProxyCompanionProperties.ReverseModeB(
                                 new ProxyCompanionProperties.Smsc("smsc.example", 2775), true,
                                 RelayTestFixtures.testOidc()),
-                        null));
+                        null),
+                null);
         assertThatThrownBy(() -> new DirectMemoryBudgetStartupCheck(props).afterPropertiesSet())
                 .isInstanceOf(DirectMemoryBudgetException.class);
     }
