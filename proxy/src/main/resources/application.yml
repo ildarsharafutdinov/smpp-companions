@@ -11,6 +11,9 @@ spring:
   main:
     # Fail-safe: stay NON-web even if a webflux/web starter ever leaks onto the classpath (AD-16).
     web-application-type: none
+    # Story 4.1 (FR-OBS-2): stdout is a JSON-lines log stream — the ASCII banner would be the one
+    # non-JSON line an operator's log shipper chokes on. Off.
+    banner-mode: 'off'
   lifecycle:
     # Per-phase ceiling for SmartLifecycle.stop() — bounds the future AD-22 shutdown window (AC8).
     timeout-per-shutdown-phase: 30s
@@ -65,6 +68,14 @@ companion:
       - TLS_AES_256_GCM_SHA384
       - TLS_AES_128_GCM_SHA256
       - TLS_CHACHA20_POLY1305_SHA256
+
+  # Story 4.1 (FR-OBS-1): the read-only Prometheus /metrics endpoint. The bind address is NOT a
+  # key — the endpoint binds the literal 127.0.0.1 (loopback IPv4 is its sole authentication; a
+  # non-loopback exposure cannot be misconfigured into existence). Absent node = endpoint stays
+  # down (programmatic fixtures); this default keeps production observable. Scrapes are GET-only,
+  # exact-path, and mutate nothing.
+  metrics:
+    port: 9090
 
   # --- BRANCHES (populate EXACTLY ONE; all examples below are commented) ------------------
   # Every secret is a FILE PATH (AD-18); secrets never ship in-repo, so all branch material is

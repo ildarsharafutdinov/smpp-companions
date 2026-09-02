@@ -60,6 +60,7 @@ class CompanionRoleFailFastTest {
                                 new TrustStore("/run/secrets/truststore.p12", "changeit"),
                                 List.of(new RoutingEntry("carrierOne", "reverse.internal", 2776, null))),
                         null, null),
+                null,
                 null);
         new ProxyCompanionProperties(
                 new Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
@@ -75,7 +76,8 @@ class CompanionRoleFailFastTest {
                                 new Oidc(java.net.URI.create("https://idp.example.com"), "smpp-client-confidential",
                                         "/run/secrets/oidc-client-secret",
                                         new TrustStore("/run/secrets/idp-truststore.p12", null),
-                                        Duration.ofSeconds(4), 64))));
+                                        Duration.ofSeconds(4), 64))),
+                null);
     }
 
     @Test

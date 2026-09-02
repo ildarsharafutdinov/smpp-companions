@@ -138,7 +138,8 @@ class RopcBindCredentialVerifierLiveTest {
                                 URI.create(providerUrl), KeycloakFixture.CLIENT_A_ID, secret.toString(),
                                 new ProxyCompanionProperties.TrustStore(store.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                Duration.ofSeconds(4), 8)), null));
+                                Duration.ofSeconds(4), 8)), null),
+                null);
     }
 
     /** Verifies via the port, binding the context in a scope (models real relay usage). */

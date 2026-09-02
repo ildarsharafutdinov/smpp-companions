@@ -520,6 +520,7 @@ class CompanionConfigMatrixTest {
                                 new ProxyCompanionProperties.TrustStore("/run/secrets/truststore.p12", null),
                                 List.of()), // explicitly empty routing list
                         null, null),
+                null,
                 null);
         var violations = validator.validate(props);
         assertThat(violations)
@@ -768,6 +769,7 @@ class CompanionConfigMatrixTest {
                                 new ProxyCompanionProperties.TrustStore(certPath, null),
                                 routing),
                         null, null),
+                null,
                 null);
     }
 
@@ -789,7 +791,8 @@ class CompanionConfigMatrixTest {
                                         "/run/secrets/oidc-client-secret",
                                         new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
                                         Duration.ofSeconds(4), 64)),
-                        null, null));
+                        null, null),
+                null);
     }
 
     private static List<String> chainMessages(Throwable t) {

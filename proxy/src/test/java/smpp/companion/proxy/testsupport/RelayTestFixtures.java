@@ -128,7 +128,8 @@ public final class RelayTestFixtures {
                         null,
                         new ProxyCompanionProperties.ReverseModeB(
                                 new ProxyCompanionProperties.Smsc(smscHost, smscPort), true, testOidc()),
-                        null));
+                        null),
+                null);
     }
 
     /**
@@ -216,6 +217,7 @@ public final class RelayTestFixtures {
                                 List.of(new ProxyCompanionProperties.RoutingEntry(
                                         "carrierOne", reverseHost, reversePort, null))),
                         null, null),
+                null,
                 null);
     }
 
@@ -237,6 +239,7 @@ public final class RelayTestFixtures {
                                 List.of(new ProxyCompanionProperties.RoutingEntry(
                                         "carrierOne", reverseHost, reversePort, null))),
                         null),
+                null,
                 null);
     }
 
@@ -254,7 +257,8 @@ public final class RelayTestFixtures {
                                 new ProxyCompanionProperties.ServerCert(
                                         legs.reverseServerCert().toString(), legs.reverseServerKey().toString()),
                                 testOidc()),
-                        null, null));
+                        null, null),
+                null);
     }
 
     /** reverse &times; C: the reverse-A listener + trust store REQUIRE-validating the forward's client cert. */
@@ -272,7 +276,8 @@ public final class RelayTestFixtures {
                                 new ProxyCompanionProperties.ServerCert(
                                         legs.reverseServerCert().toString(), legs.reverseServerKey().toString()),
                                 legs.trustStoreRecord(),
-                                testOidc())));
+                                testOidc())),
+                null);
     }
 
     private static ProxyCompanionProperties.Bind baseBind(int bindPort) {

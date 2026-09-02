@@ -179,7 +179,8 @@ class SmppLegTlsFactoryTest {
                                 new ProxyCompanionProperties.ServerCert(
                                         garbageCert.toString(), legs.reverseServerKey().toString()),
                                 RelayTestFixtures.testOidc()),
-                        null, null));
+                        null, null),
+                null);
         assertThatThrownBy(() -> new SmppLegTlsFactory(reverseA, Runnable::run))
                 .as("garbage listener material must refuse startup (fail-closed, AD-17)")
                 .isInstanceOf(IllegalStateException.class);
@@ -304,7 +305,8 @@ class SmppLegTlsFactoryTest {
                                 reverseBase.reverse().modeC().smsc(),
                                 reverseBase.reverse().modeC().serverCert(),
                                 null, // the bypassed-validator null
-                                reverseBase.reverse().modeC().oidc())));
+                                reverseBase.reverse().modeC().oidc())),
+                null);
         assertThatThrownBy(() -> new SmppLegTlsFactory(reverseCNoStore, Runnable::run))
                 .as("a null REQUIRE-side store must refuse — never a silent ClientAuth.NONE")
                 .hasMessageContaining("SEC-050");
@@ -320,6 +322,7 @@ class SmppLegTlsFactoryTest {
                                 forwardBase.forward().modeC().trustStore(),
                                 forwardBase.forward().modeC().routing()),
                         null),
+                null,
                 null);
         assertThatThrownBy(() -> new SmppLegTlsFactory(forwardCNoCert, Runnable::run))
                 .as("a null per-instance dial cert must refuse — never a cert-less dial")
@@ -346,6 +349,7 @@ class SmppLegTlsFactoryTest {
                         null,
                         Map.of("primary", new ProxyCompanionProperties.ClientCert(
                                 legs.forwardClientCert().toString(), legs.forwardClientKey().toString()))),
+                null,
                 null);
         SmppLegTlsFactory factory = new SmppLegTlsFactory(withOverride, Runnable::run);
         assertThat(factory.egressTls()).as("the override context builds and indexes the entry").isTrue();
@@ -359,6 +363,7 @@ class SmppLegTlsFactoryTest {
                                 withOverride.forward().modeA().trustStore(),
                                 List.of(new ProxyCompanionProperties.RoutingEntry("carrierOne", "127.0.0.1", 2776, "ghost"))),
                         null, null),
+                null,
                 null);
         assertThatThrownBy(() -> new SmppLegTlsFactory(dangling, Runnable::run))
                 .as("a dangling tls-context-id must fail closed (SEC-098)")
@@ -377,6 +382,7 @@ class SmppLegTlsFactoryTest {
                                 "orphan", new ProxyCompanionProperties.ClientCert(
                                         dir.resolve("no-such-cert.pem").toString(),
                                         dir.resolve("no-such-key.pem").toString()))),
+                null,
                 null);
         assertThatThrownBy(() -> new SmppLegTlsFactory(orphanGarbage, Runnable::run))
                 .as("an unreferenced tls-contexts entry with unloadable material must refuse")
@@ -392,6 +398,7 @@ class SmppLegTlsFactoryTest {
                                         legs.forwardClientCert().toString(), legs.forwardClientKey().toString()),
                                 "future", new ProxyCompanionProperties.ClientCert(
                                         legs.foreignClientCert().toString(), legs.foreignClientKey().toString()))),
+                null,
                 null);
         assertThat(new SmppLegTlsFactory(orphanValid, Runnable::run).egressTls())
                 .as("a valid unreferenced entry boots — only unloadable orphans refuse")
@@ -410,6 +417,7 @@ class SmppLegTlsFactoryTest {
                                 new ProxyCompanionProperties.TrustStore(trustStorePath, password),
                                 base.forward().modeA().routing()),
                         null, null),
+                null,
                 null);
         return new SmppLegTlsFactory(mutated, Runnable::run);
     }
@@ -419,7 +427,8 @@ class SmppLegTlsFactoryTest {
         return new ProxyCompanionProperties(
                 base.bind(), base.memory(),
                 new ProxyCompanionProperties.Tls(protocols, tls12, tls13),
-                base.forward(), base.reverse());
+                base.forward(), base.reverse(),
+                null);
     }
 
     private static javax.net.ssl.SSLEngine listenerEngine(SmppLegTlsFactory factory) {

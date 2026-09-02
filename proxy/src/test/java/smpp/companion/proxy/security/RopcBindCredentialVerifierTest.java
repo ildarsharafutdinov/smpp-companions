@@ -1063,7 +1063,8 @@ class RopcBindCredentialVerifierTest {
                                 URI.create(providerUrl), "smpp-client-confidential", secretPath.toString(),
                                 new ProxyCompanionProperties.TrustStore(idpStore.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                timeout, maxInFlight)), null));
+                                timeout, maxInFlight)), null),
+                null);
     }
 
     /**

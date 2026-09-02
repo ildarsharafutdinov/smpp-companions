@@ -56,7 +56,9 @@ public record ProxyCompanionProperties(
 
         @Valid @Nullable Forward forward,
 
-        @Valid @Nullable Reverse reverse
+        @Valid @Nullable Reverse reverse,
+
+        @Valid @Nullable Metrics metrics
 ) {
 
     /**
@@ -385,6 +387,33 @@ public record ProxyCompanionProperties(
                 throw new IllegalArgumentException(
                         "companion.bind.adjudication-deadline must be positive — refusing to start (got "
                                 + adjudicationDeadline + ")");
+            }
+        }
+    }
+
+    /**
+     * The metrics node (Story 4.1, FR-OBS-1): the read-only Prometheus endpoint's configuration.
+     * OPTIONAL — absent means the endpoint stays down (programmatic fixtures construct without it);
+     * the shipped application.yml defaults it so production boots observable. The BIND ADDRESS IS
+     * DELIBERATELY NOT A KEY: the endpoint binds the literal 127.0.0.1 — loopback IPv4 is the
+     * endpoint's sole authentication, so a non-loopback exposure cannot be misconfigured into
+     * existence.
+     */
+    public record Metrics(
+            @Min(value = 1, message = "companion.metrics.port must be in [1,65535] — refusing to start.")
+            @Max(value = 65535, message = "companion.metrics.port must be in [1,65535] — refusing to start.")
+            int port
+    ) {
+
+        /**
+         * Fail-fast construction guard: the port range must hold even for programmatic construction,
+         * where the Bean Validation annotations above never fire (binder path only). Fires first at
+         * binding too — same wording as the annotations, one truth (AD-17).
+         */
+        public Metrics {
+            if (port < 1 || port > 65535) {
+                throw new IllegalArgumentException(
+                        "companion.metrics.port must be in [1,65535] — refusing to start (got " + port + ").");
             }
         }
     }
