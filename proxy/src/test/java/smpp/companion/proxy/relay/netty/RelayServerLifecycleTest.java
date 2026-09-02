@@ -229,7 +229,11 @@ class RelayServerLifecycleTest {
                 "--companion.memory.max-inbound-depth=1",
                 "--companion.memory.concurrent-pairs=1",
                 "--companion.memory.safety-factor=1.0",
-                "--companion.bind.port=" + port};
+                "--companion.bind.port=" + port,
+                // Story 4.1 T2: these yml-loading full boots otherwise bind yml's shipped metrics 9090
+                // (the metrics endpoint lifecycle) — a free ephemeral port keeps them deterministic
+                // against a locally-running Prometheus (run-args outrank yml; .properties() does not).
+                "--companion.metrics.port=" + RelayTestFixtures.freePort()};
     }
 
     /**

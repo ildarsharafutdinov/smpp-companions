@@ -40,7 +40,11 @@ class BootstrapLifecycleTest {
             "--companion.memory.safety-factor=1.0",
             // Story 3.3: the forward cell now BINDS its trusted-leg listener — a free ephemeral port
             // (beats yml's shipped 2775); the F13 cap IS concurrent-pairs=1 above (one number).
-            "--companion.bind.port=" + smpp.companion.proxy.testsupport.RelayTestFixtures.freePort()};
+            "--companion.bind.port=" + smpp.companion.proxy.testsupport.RelayTestFixtures.freePort(),
+            // Story 4.1 T2: these yml-loading boots otherwise bind yml's shipped metrics 9090 — a free
+            // ephemeral port keeps them deterministic against a locally-running Prometheus (run-args
+            // outrank yml; .properties() does not).
+            "--companion.metrics.port=" + smpp.companion.proxy.testsupport.RelayTestFixtures.freePort()};
 
     @Test
     void bootsAsNonWebContextAndStartsLifecycle(@TempDir Path dir) throws IOException {
