@@ -65,9 +65,11 @@ public final class RelayEgressHandler extends CoupledRelayHandler {
                 // structural-by-type: the ingress class has no bind-response arm to carry it).
                 // fire-and-arm order: couple first (the state transition), observe exactly at the
                 // couple, then hand the decoded PDU to the EgressLeg forwarder (the AD-25 split: the
-                // relay handler never forwards it).
+                // relay handler never forwards it). Story 4.1 T4: the accept fire is THROW-ISOLATED
+                // at the site — a throwing observer degrades the accept count/log line, never the
+                // couple, the re-arm, or the forward.
                 if (entry.couple()) {
-                    observer.onBindAccept(entry.systemId());
+                    fireGuarded("onBindAccept", () -> observer.onBindAccept(entry.systemId()));
                     entry.ingress().read(); // arm the post-couple data plane on both legs (AUTO_READ=false)
                     channel.read();
                 }

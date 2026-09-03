@@ -209,6 +209,10 @@ class BindInterceptorTest {
                     assertThat(reject.verdict()).isEqualTo(new Verdict.DenyInvalid());
                 });
         assertThat(frame.refCnt()).as("the denied bind's original frame is released (never forwarded)").isZero();
+        assertThat(observer.connectionCloses())
+                .as("Story 4.1 T4 hoist: the deny-path close carries BIND_REJECTED, not the OTHER default")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.BIND_REJECTED));
         assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
                 .as("caller-owned zeroize on the Deny path").isTrue();
     }
@@ -251,6 +255,11 @@ class BindInterceptorTest {
                 .isEmpty();
         assertThat(ingress.isOpen()).isFalse();
         assertThat(registry.size()).isZero();
+        assertThat(observer.connectionCloses())
+                .as("Story 4.1 T4 hoist: the connect-fail close carries EGRESS_CONNECT_FAILED — the "
+                        + "taxonomy value's namesake arm (no egress leg exists to close)")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.EGRESS_CONNECT_FAILED));
         assertThat(frame.refCnt()).as("the never-forwarded original frame is released").isZero();
     }
 
@@ -375,6 +384,13 @@ class BindInterceptorTest {
         assertThat(ingress.isOpen()).isFalse();
         assertThat(registry.size()).isZero();
         assertThat(observer.bindRejects()).as("not a Verdict — no onBindReject").isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("Story 4.1 T4 hoist: the pre-answer SMSC death is an egress-establishment "
+                        + "failure — the INGRESS deny-close carries EGRESS_CONNECT_FAILED (the egress "
+                        + "leg's own close fired first, unstashed: the pre-couple OTHER default)")
+                .contains(
+                        new CapturingRelayObserver.ConnectionClose(Direction.INGRESS, CloseReason.EGRESS_CONNECT_FAILED),
+                        new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.OTHER));
     }
 
     // ---------- teardown window: the legacy client vanishing mid-adjudication ----------

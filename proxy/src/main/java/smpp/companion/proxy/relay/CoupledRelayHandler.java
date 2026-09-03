@@ -3,9 +3,13 @@ package smpp.companion.proxy.relay;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -15,6 +19,7 @@ import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 
 import smpp.companion.codec.bind.SmppBindPdu;
+import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.observability.RelayObserver;
@@ -40,7 +45,10 @@ import smpp.companion.proxy.observability.RelayObserver;
  * AD-2 substrate: the write-completion listener re-arms the source leg's read only while the peer
  * stays writable, and {@link #channelWritabilityChanged} performs the explicit low-water re-arm (the
  * peer's outbound buffer drained below one max frame) — the emergent per-channel inbound bound of
- * AD-30.
+ * AD-30. Story 4.1 T4 hardened this plane's observer seam: the PDU-count fire is THROW-ISOLATED at
+ * the site ({@link #fireGuarded} — a throwing observer degrades the count, never the forward), and
+ * the relayed body is TRACE-logged ({@link #PDU_BODIES}, off by default; bind-family bodies
+ * redacted — the password cannot cross at any level).
  * <li><b>The shared teardown + exactly-once close telemetry (AD-27/AD-32):</b> the race-free
  * {@link #teardownPair} ordering (stash on BOTH legs, then the manager's single-sited
  * {@code beginTeardown} — remove + mark tearing-down + the cancel/wipe hygiene BEFORE close — then
@@ -49,9 +57,10 @@ import smpp.companion.proxy.observability.RelayObserver;
  * post-couple halves of {@link #channelInactive} (RELAY-008/010) and {@link #exceptionCaught}
  * (DecoderException &rarr; {@link CloseReason#DECODE_ERROR}; IOException &rarr; {@link CloseReason#PEER_RST}),
  * and {@link #fireClosedExactlyOnce} — {@link RelayObserver#onConnectionClosed} fires ONLY at the
- * {@code channelInactive} site, CAS-guarded per channel; every other path merely STASHES a
- * {@link CloseReason}. An unstashed close defaults to {@link CloseReason#PEER_HALF_CLOSE} for a
- * coupled pair (the RELAY-008 contract) and {@link CloseReason#OTHER} for a pre-couple leg.
+ * {@code channelInactive} site, CAS-guarded per channel and (Story 4.1 T4) THROW-ISOLATED — a
+ * throwing observer degrades close accounting, never the close itself; every other path merely
+ * STASHES a {@link CloseReason}. An unstashed close defaults to {@link CloseReason#PEER_HALF_CLOSE}
+ * for a coupled pair (the RELAY-008 contract) and {@link CloseReason#OTHER} for a pre-couple leg.
  * <li><b>The {@code CLOSE_REASON}/{@code CLOSE_FIRED} channel-attribute keys</b> — hoisted here from
  * the pre-split handler-private namespace (Story 3.4 T5 resolves D5: both per-leg classes share the
  * base's keys; runtime-only attributes, no wire effect — the reason SEMANTICS stay Epic-4).
@@ -71,6 +80,7 @@ import smpp.companion.proxy.observability.RelayObserver;
 @SuppressWarnings("FutureReturnValueIgnored") // reason: close() on the relay's own channels is a
 // fire-and-forget fail-closed control operation — a failed close merely means the channel was already
 // closing (the desired end state); every write whose completion we ACT on carries a listener.
+@Slf4j
 public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
 
     /** The {@link CloseReason} stash a violation/teardown path leaves for the {@code channelInactive} site. */
@@ -80,6 +90,18 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
     /** The exactly-once guard for {@link RelayObserver#onConnectionClosed} (CAS per channel, AC5). */
     protected static final AttributeKey<AtomicBoolean> CLOSE_FIRED =
             AttributeKey.valueOf(CoupledRelayHandler.class, "closeFired");
+
+    /**
+     * The PDU-body TRACE logger (Story 4.1 T4 / FR-OBS-2 / PRIV-1) — a DEDICATED name,
+     * {@code smpp.companion.proxy.relay.pdu}, so an operator enables exactly body logging via
+     * {@code logging.level.smpp.companion.proxy.relay.pdu=TRACE} (standard {@code logging.level.*};
+     * off by default) without opening any other relay logger. The ONE site that writes it is
+     * {@link #relayFramedPdu} — post-couple only: the bind HANDSHAKE family bypasses the relay plane
+     * (the AD-14 dial and the verbatim {@code bind_resp} forward), and the one residual password
+     * carrier that can reach the site (a stray post-couple re-bind, relayed as its original frame)
+     * is REDACTED there — so the bind password cannot cross at ANY level (the privacy contract).
+     */
+    private static final Logger PDU_BODIES = LoggerFactory.getLogger("smpp.companion.proxy.relay.pdu");
 
     /**
      * The pair-lifecycle state manager (Story 3.4 T6) — every transition routes through it;
@@ -157,7 +179,12 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
             teardownPair(self, entry, CloseReason.OTHER);
             return;
         }
-        observer.onFramedPdu(direction); // one fire per relayed PDU — the PDU count (AD-27)
+        // Story 4.1 T4: the PDU-count fire is THROW-ISOLATED at the site — a throwing observer
+        // degrades the count, never the forward below.
+        fireGuarded("onFramedPdu", () -> observer.onFramedPdu(direction)); // one fire per relayed PDU (AD-27)
+        if (PDU_BODIES.isTraceEnabled()) {
+            tracePduBody(direction, frame); // FR-OBS-2: bodies TRACE-only; bind-family redacted
+        }
         peer.writeAndFlush(frame).addListener((ChannelFutureListener) future -> {
             if (future.isSuccess()) {
                 if (peer.isWritable()) {
@@ -272,7 +299,54 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
         CloseReason stashed = channel.attr(CLOSE_REASON).get();
         CloseReason reason = stashed != null ? stashed
                 : coupled ? CloseReason.PEER_HALF_CLOSE : CloseReason.OTHER;
-        observer.onConnectionClosed(direction, reason);
+        // Story 4.1 T4: throw-isolated at the site — a throwing observer degrades close ACCOUNTING,
+        // never the close itself (the CAS above is already spent, so exactly-once holds regardless).
+        fireGuarded("onConnectionClosed", () -> observer.onConnectionClosed(direction, reason));
+    }
+
+    /**
+     * Story 4.1 T4 throw isolation at the fire sites: runs ONE {@link RelayObserver} trigger and
+     * swallows any {@link Throwable} it throws into a single bounded WARN — the relay path continues
+     * (frame forwarded/released, deny synthesis and teardown proceed, close stays exactly-once). The
+     * isolation lives at the FIRE SITE (the four sites in {@code relay/}), not inside an observer
+     * implementation, so it protects ANY implementation — the belt-and-braces contract the production
+     * observer additionally self-guards inside ({@code MeteredRelayObserver}). One WARN per swallowed
+     * throw (the I/O matrix's "bounded" column): no rethrow, no flood. Package-private static: the
+     * seam's single-sited mechanism, shared by the base's two sites and the two interceptor-plane
+     * sites ({@code RelayEgressHandler.onBindAccept}, {@code BindInterceptor.onBindReject}).
+     *
+     * @param trigger the seam method's name — names the WARN line (diagnostics and WARN-count tests)
+     * @param fire    the observer call, unexecuted until this method runs it
+     */
+    static void fireGuarded(String trigger, Runnable fire) {
+        try {
+            fire.run();
+        } catch (Throwable t) {
+            log.warn("RelayObserver.{} threw — bounded WARN, relay path continues (throw isolation)",
+                    trigger, t);
+        }
+    }
+
+    /**
+     * The TRACE-gated body line (Story 4.1 T4 / FR-OBS-2): ONE line per RELAYED PDU — direction, the
+     * framed length, the {@code command_id} read raw ({@code getInt(4)}, never a codec helper;
+     * EMITTING the id is TRACE-gated by rule), and the frame's hex body. The bind family's body is
+     * NEVER logged — a stray post-couple re-bind still carries the password, the RELAY logging
+     * rule's one hard exception — the line is redacted to metadata only. Reads are non-destructive
+     * ({@code hexDump} copies bytes; reader/writer indexes untouched), so the relayed frame is
+     * unaffected. The framer guarantees &ge; 16 readable bytes, so the raw {@code command_id} read
+     * cannot go out of bounds.
+     */
+    private static void tracePduBody(Direction direction, ByteBuf frame) {
+        int commandId = frame.getInt(4); // the established raw-id idiom (RelayEgressHandler's nack check)
+        if (SmppCommandIds.isBindFamily(commandId)) {
+            PDU_BODIES.trace("relayed pdu: direction={} command_id=0x{} length={} body=<redacted: bind family>",
+                    direction, Integer.toHexString(commandId), frame.readableBytes());
+            return;
+        }
+        PDU_BODIES.trace("relayed pdu: direction={} command_id=0x{} length={} body=0x{}",
+                direction, Integer.toHexString(commandId), frame.readableBytes(),
+                ByteBufUtil.hexDump(frame));
     }
 
     private static CloseReason classify(Throwable cause) {
