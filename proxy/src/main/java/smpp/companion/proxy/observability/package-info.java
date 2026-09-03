@@ -1,7 +1,8 @@
 /**
  * Structured logging and the read-only {@code /metrics} surface (Micrometer {@code
- * PrometheusMeterRegistry}). Story 4.1: the endpoint slice (T2) and the production observer,
- * resource gauges, and startup summary line (T3) are live; the relay-seam hardening (T4) and the
+ * PrometheusMeterRegistry}). Story 4.1: the endpoint slice (T2), the production observer, resource
+ * gauges, and startup summary line (T3), and the relay-seam hardening (T4: fire-site throw
+ * isolation, the {@link CloseReason} deny-path hoist, TRACE-gated PDU bodies) are live; the
  * warning bounding, log-shape, rules, and guard tests (T5-T6) follow in the story's remaining
  * tasks.
  */

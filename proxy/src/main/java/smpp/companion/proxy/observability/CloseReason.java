@@ -24,13 +24,46 @@ package smpp.companion.proxy.observability;
  *   <li>Lifecycle: {@link #SHUTDOWN_DRAIN}.</li>
  *   <li>Bounded catch-all: {@link #OTHER}.</li>
  * </ul>
+ *
+ * <p><b>Firing semantics (documented by the Story 4.1 T4 hoist):</b> <b>nine</b> of the sixteen values
+ * fire today, stashed by the relay's classification/teardown arms or the deny-path reason hoist
+ * ({@code BindInterceptor.denyAndTeardown}):
+ * <ul>
+ *   <li>Via the shared classification/stash arms: {@link #PEER_HALF_CLOSE} (also the unstashed coupled
+ *       default), {@link #PEER_RST}, {@link #DECODE_ERROR} (including the framer's over/undersized
+ *       rejects, which surface as {@code DecoderException}), and {@link #OTHER} (the catch-all and the
+ *       unstashed pre-couple default).</li>
+ *   <li>Via the AD-32 pre-couple policy arms: {@link #PRE_COUPLE_NON_BIND_PDU},
+ *       {@link #GENERIC_NACK_PRE_BIND}, {@link #BIND_FAILED_NON_ROK}.</li>
+ *   <li>{@link #BIND_REJECTED} &mdash; <b>since the T4 hoist</b>: every proxy-side AD-33 denial (a returned
+ *       {@code Deny*} verdict, the fail-closed verifier-failure/null arms, and the RELAY-004 retry-bind
+ *       guard) stashes it before the deny teardown.</li>
+ *   <li>{@link #EGRESS_CONNECT_FAILED} &mdash; <b>since the T4 hoist</b>: every egress-establishment
+ *       failure (a refused/failed connect, SMSC death before the {@code bind_resp}, and the egress-leg
+ *       pre-answer violations).</li>
+ * </ul>
+ * The remaining <b>seven are reserved</b> (kept for closed-set stability, never silently removed): the
+ * framer floor/ceiling pair ({@link #OVERSIZED_FRAME}, {@link #UNDERSIZED_FRAME} &mdash; their rejects
+ * currently classify as {@link #DECODE_ERROR}); {@link #UNKNOWN_COMMAND_ID} (the codec is structural
+ * &mdash; no known-set gate exists pre-couple, so a non-bind PDU closes as
+ * {@link #PRE_COUPLE_NON_BIND_PDU}); {@link #CLEAN_UNBIND_HANDSHAKE} (post-couple {@code unbind} relays
+ * opaquely; no unbind FSM exists); the TLS pair ({@link #INGRESS_TLS_HANDSHAKE_FAILED},
+ * {@link #EGRESS_TLS_HANDSHAKE_FAILED} &mdash; handshake failures currently classify generically as
+ * {@link #PEER_RST}/{@link #DECODE_ERROR}); and {@link #SHUTDOWN_DRAIN} (the AD-22 drain body is story
+ * 4.2). A dedicated classification for any reserved value is a taxonomy change, not a contract change
+ * &mdash; the value set itself is what the shape test pins.
  */
 public enum CloseReason {
     /** The peer (legacy client or SMSC) half-closed its leg (FIN); teardown propagates post-couple (REL-1). */
     PEER_HALF_CLOSE,
     /** The peer sent an abrupt RST mid-relay; both legs tear down and the teardown is observed (RELAY-010). */
     PEER_RST,
-    /** The egress connection to the SMSC could not be established; the ingress tears down too (RELAY-006). */
+    /**
+     * The egress connection to the SMSC could not be established; the ingress tears down too (RELAY-006).
+     * Fires since the Story 4.1 T4 hoist &mdash; for a refused/failed connect AND every pre-answer egress
+     * death or violation (the {@code EgressLeg} collapse arms); all indistinguishable on the wire by
+     * design (AD-33), all the same taxonomy value.
+     */
     EGRESS_CONNECT_FAILED,
     /** A frame exceeded {@code SmppFrame.MAX_COMMAND_LENGTH} (the AD-30 framer ceiling). */
     OVERSIZED_FRAME,
@@ -46,7 +79,12 @@ public enum CloseReason {
     CLEAN_UNBIND_HANDSHAKE,
     /** The SMSC sent a {@code generic_nack} pre-couple; forwarded verbatim then torn down (AD-32 case 4). */
     GENERIC_NACK_PRE_BIND,
-    /** The {@code BindCredentialVerifier} returned a {@code Deny*} verdict (AD-33 collapsed bind-failure). */
+    /**
+     * The {@code BindCredentialVerifier} returned a {@code Deny*} verdict (AD-33 collapsed bind-failure).
+     * Fires since the Story 4.1 T4 hoist &mdash; stashed by the deny teardown for every proxy-side AD-33
+     * denial: {@code Deny*} verdicts, the fail-closed verifier-failure/null arms, and the RELAY-004
+     * retry-bind guard.
+     */
     BIND_REJECTED,
     /** The SMSC returned a non-ROK {@code bind_*_resp}; the pair never couples, teardown (RELAY-001). */
     BIND_FAILED_NON_ROK,

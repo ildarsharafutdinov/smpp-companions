@@ -14,7 +14,8 @@ import smpp.companion.proxy.security.Verdict;
  * high-cardinality label) and AD-27 (the codec never emits metrics) both hold. The {@link SystemId} a
  * production impl receives is for structured logging only, <b>not</b> a metrics label (reverse.mode-b has
  * no routing table, so the labeled set is empty by construction). PDU <i>count</i> is observed by counting
- * {@link #onFramedPdu(Direction)} fires (one per framed PDU); the seam carries no byte-volume signal.
+ * {@link #onFramedPdu(Direction)} fires (one per relayed, post-couple framed PDU); the seam carries no
+ * byte-volume signal.
  *
  * <p><b>Pinned triggers (AC5):</b>
  * <ul>
@@ -28,8 +29,12 @@ import smpp.companion.proxy.security.Verdict;
 public interface RelayObserver {
 
     /**
-     * A framed PDU crossed a leg (pre- or post-couple). Carries no type or body &mdash; opaque framing is the
-     * AD-2 invariant. PDU count = the number of these fires; this never inspects content.
+     * A framed PDU crossed a leg of a <b>coupled</b> pair &mdash; <b>post-couple only</b> (the Story 4.1 T4
+     * javadoc truth: the single fire site is the opaque relay's forward in {@code
+     * CoupledRelayHandler.relayFramedPdu}; the pre-couple bind-handshake plane &mdash; the AD-14
+     * original-frame dial and the verbatim {@code bind_*_resp} propagation &mdash; never fires it).
+     * Carries no type or body &mdash; opaque framing is the AD-2 invariant. PDU count = the number of
+     * these fires; this never inspects content.
      *
      * @param direction the leg the PDU crossed; non-null.
      */

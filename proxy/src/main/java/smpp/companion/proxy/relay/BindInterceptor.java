@@ -25,6 +25,7 @@ import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.codec.framer.SmppFrame;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
+import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.observability.RelayObserver;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
@@ -277,9 +278,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         } else {
             // RELAY-004: a bind handshake is already in flight on this connection (the entry exists, not
             // coupled). Deterministic reject: the AD-33 generic deny answering the RETRY's sequence +
-            // teardown of the pair (cancel the in-flight adjudication; no second egress pair).
+            // teardown of the pair (cancel the in-flight adjudication; no second egress pair). The deny
+            // carries BIND_REJECTED (the T4 hoist) — a proxy-side rejection, not an egress failure.
             req.originalFrame().release();
-            denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
+            denyAndTeardown(channel, req.commandId(), req.sequenceNumber(), CloseReason.BIND_REJECTED);
             return;
         }
         ctx.read(); // keep the pre-couple read armed (the retry-bind must be readable; T8 owns the general gate)
@@ -315,9 +317,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             // (an exception is not a returned Verdict — AD-27). No pendingVerdict/pendingPassword is
             // stored on the entry on this arm (nothing was returned to track), so the manager's
             // beginTeardown hygiene inside denyAndTeardown finds nothing — correct — and the explicit
-            // zeroize below is this arm's single wipe of the never-adjudicated secret.
+            // zeroize below is this arm's single wipe of the never-adjudicated secret. The deny carries
+            // BIND_REJECTED (the T4 hoist): a proxy-side fail-closed rejection.
             req.originalFrame().release();
-            denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
+            denyAndTeardown(channel, req.commandId(), req.sequenceNumber(), CloseReason.BIND_REJECTED);
             cred.password().zeroize();
             return;
         }
@@ -327,9 +330,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             // deny, no onBindReject (null is not a returned Verdict, AD-27), and the single explicit
             // zeroize is this arm's wipe of the never-adjudicated secret. Without this arm the future()
             // dereference below would NPE OUTSIDE the try — the pair still tears down via exceptionCaught,
-            // but the original frame's pooled buffer leaks (review F12, 2026-08-17).
+            // but the original frame's pooled buffer leaks (review F12, 2026-08-17). BIND_REJECTED (the
+            // T4 hoist): same proxy-side fail-closed class as the synchronous blow-up above.
             req.originalFrame().release();
-            denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
+            denyAndTeardown(channel, req.commandId(), req.sequenceNumber(), CloseReason.BIND_REJECTED);
             cred.password().zeroize();
             return;
         }
@@ -365,12 +369,16 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             // Deny* verdict, an exceptional future (error != null — fail-closed, AD-11), or a
             // defensively-null verdict: all collapse to the same generic deny. onBindReject fires
             // ONLY for an actual returned Verdict (AD-27) — never for error/absence (which carry no
-            // Verdict to report).
+            // Verdict to report). Story 4.1 T4: the fire is THROW-ISOLATED at the site (a throwing
+            // observer degrades the reject count/log line, never the frame release, the deny
+            // synthesis, or the teardown below), and the deny teardown carries BIND_REJECTED (the
+            // close-reason hoist — the close counter sees the real reason, not the OTHER default).
             if (error == null && verdict != null) {
-                observer.onBindReject(entry.systemId(), verdict); // the decision, before the wire effect
+                CoupledRelayHandler.fireGuarded("onBindReject",
+                        () -> observer.onBindReject(entry.systemId(), verdict)); // the decision, before the wire effect
             }
             req.originalFrame().release();
-            denyAndTeardown(channel, req.commandId(), req.sequenceNumber());
+            denyAndTeardown(channel, req.commandId(), req.sequenceNumber(), CloseReason.BIND_REJECTED);
         }
     }
 
@@ -379,15 +387,25 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     /**
      * The shared denial path: the manager's single-sited teardown ordering (remove + mark BEFORE close,
      * then {@code cancelHttp} + zeroize — all inside {@code manager.beginTeardown}), then — iff this caller
-     * won the race — the header-only AD-33 deny answering the given request identifiers, followed by close
-     * ("bind_resp error, then close"). A losing racer no-ops: never a {@code bind_resp} on a connection
-     * being torn down (AD-32 Q1 invariant).
+     * won the race — the Story 4.1 T4 close-reason hoist ({@link CoupledRelayHandler#stash} of the
+     * caller's {@link CloseReason}: the deny-path close is OBSERVED with the real reason, not the
+     * pre-couple OTHER default — a WINNER's tail, so a losing racer never overwrites the concurrent
+     * winner's own reason), the header-only AD-33 deny answering the given request identifiers, followed
+     * by close ("bind_resp error, then close"). A losing racer no-ops: never a {@code bind_resp} on a
+     * connection being torn down (AD-32 Q1 invariant).
+     *
+     * @param reason the taxonomy value stashed for the exactly-once close fire —
+     *               {@link CloseReason#BIND_REJECTED} for the proxy-side adjudication denials (verifier
+     *               {@code Deny*}, the fail-closed verifier-failure arms, the RELAY-004 retry guard),
+     *               {@link CloseReason#EGRESS_CONNECT_FAILED} for the egress-establishment failures.
+     *               Observability-only: both arms collapse to the SAME wire deny by design (AD-33).
      */
-    private void denyAndTeardown(Channel ingress, int requestCommandId, int sequenceNumber) {
+    private void denyAndTeardown(Channel ingress, int requestCommandId, int sequenceNumber, CloseReason reason) {
         RelayStateManager.Teardown outcome = manager.beginTeardown(ingress);
         if (!(outcome instanceof RelayStateManager.Teardown.Won(ConnectionEntry won))) {
             return; // a concurrent teardown owns the close
         }
+        CoupledRelayHandler.stash(ingress, reason); // T4 hoist: the close counter sees the real reason
         writeBindFailureAndClose(ingress, requestCommandId, sequenceNumber);
         Channel egress = won.egress();
         if (egress != null) {
@@ -475,9 +493,11 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             if (!future.isSuccess()) {
                 // Egress-establishment failure: no SMSC response PDU will ever arrive — collapse to the SAME
                 // generic deny (a prober cannot distinguish verifier-reject from unreachable-SMSC). NOT a
-                // Verdict → no onBindReject (AD-27).
+                // Verdict → no onBindReject (AD-27). EGRESS_CONNECT_FAILED (the T4 hoist): this is the
+                // taxonomy value's namesake arm.
                 req.originalFrame().release();
-                denyAndTeardown(ingress, req.commandId(), req.sequenceNumber());
+                denyAndTeardown(ingress, req.commandId(), req.sequenceNumber(),
+                        CloseReason.EGRESS_CONNECT_FAILED);
                 return;
             }
             Channel egress = future.channel();
@@ -597,8 +617,9 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         public void channelInactive(ChannelHandlerContext ctx) {
             if (!entry.answered()) {
                 // SMSC death pre-bind_resp (RST/half-close/unbind): egress-establishment failure — same
-                // AD-33 generic deny as a refused connect (the arms are indistinguishable by design).
-                denyAndTeardown(ingress, requestCommandId, sequenceNumber);
+                // AD-33 generic deny as a refused connect (the arms are indistinguishable by design),
+                // and (the T4 hoist) the SAME close reason: EGRESS_CONNECT_FAILED.
+                denyAndTeardown(ingress, requestCommandId, sequenceNumber, CloseReason.EGRESS_CONNECT_FAILED);
             }
             ctx.fireChannelInactive(); // T8's post-answer teardown observation continues downstream
         }
@@ -613,7 +634,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         }
 
         private void collapse(ChannelHandlerContext ctx) {
-            denyAndTeardown(ingress, requestCommandId, sequenceNumber);
+            // Pre-answer egress violation (a bind REQUEST from the SMSC, a decode/pipeline break):
+            // no SMSC response PDU will answer our bind — an egress-establishment failure for taxonomy
+            // purposes (EGRESS_CONNECT_FAILED, the T4 hoist), collapsed to the AD-33 deny.
+            denyAndTeardown(ingress, requestCommandId, sequenceNumber, CloseReason.EGRESS_CONNECT_FAILED);
             ctx.close();
         }
     }
