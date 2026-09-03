@@ -621,6 +621,116 @@ class RopcBindCredentialVerifierTest {
         }
     }
 
+    // ── T5 (Story 4.1 checkpoint 24, 2026-09-03): operator-warning flood bounding ─────────────
+
+    @Test
+    @DisplayName("T5 flood bound: a dead provider under N binds logs the starred banner ONCE + one "
+            + "one-liner WARN per bind (the 2026-09-01 review's per-bind-flooding row)")
+    void deadProviderFloodLogsBannerOnceThenOneLinerPerBind(@TempDir Path dir, CapturedOutput out)
+            throws Exception {
+        // The flood row: the provider-url points at a probed-free port — every bind denies
+        // fail-closed on the connection-error arm, the exact condition a dead or typo'd provider
+        // creates. Five binds must produce ONE ~14-line banner (the condition is one: the
+        // transport failure class) and one one-liner per LATER bind — per-bind visibility
+        // survives the bound, only the banner stops repeating.
+        try (RopcBindCredentialVerifier adapter = adapter(reverseBProperties(idpStore(dir),
+                secret(dir), deadRealmBase(), Duration.ofSeconds(1), 4))) {
+            for (int i = 0; i < 5; i++) {
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("every bind denies fail-closed via the UNCHANGED AC2 mapping")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+            }
+        }
+        String logged = out.getAll();
+        assertThat(occurrences(logged, "OIDC TOKEN CALL FAILED"))
+                .as("the starred banner fires exactly once per condition — a dead provider is ONE "
+                        + "condition however many binds it denies")
+                .isEqualTo(1);
+        assertThat(occurrences(logged, "OIDC token call failed again"))
+                .as("every LATER bind gets exactly one one-liner WARN (binds 2-5)")
+                .isEqualTo(4);
+        assertThat(occurrences(logged, "token call failed at the transport layer"))
+                .as("the per-occurrence detail covers ALL five binds — the banner's own detail "
+                        + "line plus four one-liners")
+                .isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("T5 flood bound: the non-mapped-status arm — banner once per condition, one-liner "
+            + "per repeat; a SECOND condition earns its own banner (no cross-condition silencing)")
+    void statusArmFloodIsBoundedPerCondition(@TempDir Path dir, CapturedOutput out) throws Exception {
+        // Rotation: three 400 unauthorized_client responses (the DAG-off flagship — ONE
+        // condition), then one 404 (a second condition). The bound is per-condition: the banner
+        // may not repeat WITHIN a condition, but a NEW failure mode must not be silenced by an
+        // old one either — an operator who fixes the dead provider and hits DAG-off next still
+        // gets the full remediation banner for the new arm.
+        AtomicInteger rotation = new AtomicInteger();
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            if (rotation.getAndIncrement() < 3) {
+                respond(ex, 400, "{\"error\":\"unauthorized_client\"}");
+            } else {
+                respond(ex, 404, "{\"error\":\"misc\"}");
+            }
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            for (int i = 0; i < 4; i++) {
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("both conditions deny fail-closed via the UNCHANGED AC2 mapping")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+            }
+        } finally {
+            server.stop(0);
+        }
+        String logged = out.getAll();
+        assertThat(occurrences(logged, "OIDC TOKEN CALL FAILED"))
+                .as("one banner per condition: 400-unauthorized_client and 404 are two conditions")
+                .isEqualTo(2);
+        assertThat(occurrences(logged, "OIDC token call failed again"))
+                .as("only the 400 condition repeats (binds 2-3); the 404's single occurrence is "
+                        + "its own banner")
+                .isEqualTo(2);
+        assertThat(occurrences(logged, "the token endpoint returned HTTP 404"))
+                .as("the second condition's detail rides its own banner, once")
+                .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("T5: the opaque-token WARN is aligned to the banner pattern — full policy warning "
+            + "ONCE (now with provider context), one-liner per repeat")
+    void opaqueTokenWarningIsBoundedAndContextualized(@TempDir Path dir, CapturedOutput out)
+            throws Exception {
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 200, tokenBody("opaque-secret-token"));
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            for (int i = 0; i < 3; i++) {
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("an opaque token denies fail-closed on every bind (D6)")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+            }
+        } finally {
+            server.stop(0);
+        }
+        String logged = out.getAll();
+        assertThat(occurrences(logged, "configure the client/realm to issue JWT access tokens"))
+                .as("the full policy + remediation warning fires ONCE (the opaque arm's own bound)")
+                .isEqualTo(1);
+        assertThat(occurrences(logged, "opaque) access token again"))
+                .as("the two later binds get the one-liner, not a full-policy repeat")
+                .isEqualTo(2);
+        assertThat(occurrences(logged, "non-JWT (opaque) access token"))
+                .as("every occurrence names the token shape (full warning + two one-liners)")
+                .isEqualTo(3);
+        // The 2026-09-01 review's multi-cell context gap: both the full warning and the
+        // one-liner must identify WHICH provider issued the opaque token.
+        assertThat(logged)
+                .contains("token endpoint: https://localhost:")
+                .contains(REALM_SEGMENT + "/protocol/openid-connect/token")
+                .contains("provider-url: https://localhost:");
+    }
+
     // ── AC5: admission, capture, hardening ─────────────────────────────────────────────────────
 
     @Test
@@ -1207,6 +1317,17 @@ class RopcBindCredentialVerifierTest {
             }
         }
         throw new IllegalStateException("timed out awaiting " + what);
+    }
+
+    /** Non-overlapping substring count — the T5 bounding rows' observable (banner vs one-liner). */
+    private static int occurrences(String haystack, String needle) {
+        int count = 0;
+        int at = 0;
+        while ((at = haystack.indexOf(needle, at)) != -1) {
+            count++;
+            at += needle.length();
+        }
+        return count;
     }
 
     private static String base(HttpsServer server) {

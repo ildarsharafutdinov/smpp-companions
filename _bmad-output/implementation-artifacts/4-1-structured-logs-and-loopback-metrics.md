@@ -109,9 +109,9 @@ context:
   - [x] checkpoint 14: `proxy/src/main/java/smpp/companion/proxy/observability/RelayObserver.java` -- amend `onFramedPdu` javadoc to post-couple-only truth (no fire-site change; three pinned relay tests unaffected) -- contract honesty.
   - [x] checkpoint 15: `proxy/src/main/java/smpp/companion/proxy/observability/CloseReason.java` -- javadoc: which values fire post-hoist; enum values unchanged (shape test pins) -- taxonomy documentation.
   - [x] checkpoint 20: `proxy/src/test/java/smpp/companion/proxy/observability/ThrowingObserverHardeningTest.java` -- NEW: throwing double per method → relay invariants hold + WARN logged (reuse relay harness fixtures) -- seam hardening proof.
-- **T5 — operator-warning bounding**
-  - [ ] checkpoint 16: `proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java` -- bound `OPERATOR_WARNING` (full banner once per condition + one-liner per occurrence); align the opaque-token WARN (:462-464) to the same pattern -- flood bounding under a dead provider.
-  - [ ] checkpoint 24: `proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierTest.java` -- banner-once + one-liner-per-bind assertions (OutputCapture) -- flood bounding proof.
+- **T5 — operator-warning bounding** *(done — checkpoints 16, 24; 2026-09-03)*
+  - [x] checkpoint 16: `proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java` -- bound `OPERATOR_WARNING` (full banner once per condition + one-liner per occurrence); align the opaque-token WARN (:462-464) to the same pattern -- flood bounding under a dead provider.
+  - [x] checkpoint 24: `proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierTest.java` -- banner-once + one-liner-per-bind assertions (OutputCapture) -- flood bounding proof.
 - **T6 — log shape, rules, config guards**
   - [ ] checkpoint 21: `proxy/src/test/java/smpp/companion/proxy/observability/StructuredLogTest.java` -- NEW: every stdout line parses as JSON, ISO-8601 UTC stamps, startup line secret-free, accept/reject fields, TRACE gating + password never -- FR-OBS-2 proof.
   - [ ] checkpoint 23: `proxy/src/test/java/smpp/companion/proxy/observability/ObservabilityLayerRulesTest.java` -- keep the four-type Netty-ban rule as-is; add a rule that `MeteredRelayObserver` (and any future observer impl) stays Netty-free, with the endpoint handler explicitly exempted -- rule covers the real boundary: observers never touch Netty, the endpoint does.

@@ -25,7 +25,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Executors;
@@ -117,9 +119,12 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * REMOVED whole: the token endpoint is DERIVED from the configured {@code provider-url} (the
  * pinned-Keycloak realm path, {@link #deriveTokenEndpoint(URI)}), and provider misconfiguration
  * &mdash; a typo'd or dead {@code provider-url}, a DAG-off client &mdash; denies fail-closed at
- * FIRST BIND via the unchanged AC2 mapping, now with ONE starred operator WARN
- * ({@link #OPERATOR_WARNING}) naming the derived endpoint, the {@code provider-url}, and the
- * remediation. The Direct-Access-Grants prerequisite is an operator contract carried by the
+ * FIRST BIND via the unchanged AC2 mapping, now with a starred operator WARN
+ * ({@link #OPERATOR_WARNING}) that fires ONCE PER CONDITION (the Story 4.1 T5 flood bound,
+ * 2026-09-03) naming the derived endpoint, the {@code provider-url}, and the
+ * remediation — every later occurrence of the same condition logs
+ * {@link #OPERATOR_WARNING_REPEAT} instead, so a dead provider under sustained binds cannot
+ * bury the log under banner repeats. The Direct-Access-Grants prerequisite is an operator contract carried by the
  * application.yml policy block and the {@code Oidc.providerUrl} javadoc, not a runtime probe.
  */
 @Slf4j
@@ -163,6 +168,13 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * share the arm; the verdict stays {@code DenyIndeterminate} either way). Log-only: the verdict table (AC2) is
      * unchanged. Three {@code {}} slots: what happened, the derived token endpoint, the
      * configured provider-url.
+     *
+     * <p><b>The flood bound (Story 4.1 T5, checkpoint 16, 2026-09-03).</b> The banner fires ONCE
+     * PER CONDITION (the 2026-09-01 review's per-bind-flooding row, deferred to this story): under
+     * a dead or typo'd provider every denied bind used to re-emit these ~14 lines — up to
+     * {@code max-in-flight} concurrent — burying the log and the aggregation the banner is meant to
+     * be unmissable in. Later occurrences of the same condition log
+     * {@link #OPERATOR_WARNING_REPEAT} instead.
      */
     static final String OPERATOR_WARNING = """
             ************************************************************
@@ -182,6 +194,47 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             * (per-client and OFF by default since Keycloak 26.2) —
             * otherwise every bind denies fail-closed.
             ************************************************************""";
+
+    /**
+     * The repeat one-liner (Story 4.1 T5, checkpoint 16): every occurrence of a condition whose
+     * {@link #OPERATOR_WARNING} banner already fired logs this ONE line — per-bind visibility
+     * without the per-bind flood. Two {@code {}} slots: the per-occurrence detail (the same line
+     * the banner's first occurrence carried — a repeat may name a message variant the banner's
+     * occurrence did not) and the derived token endpoint (multi-cell operators grep by provider).
+     */
+    static final String OPERATOR_WARNING_REPEAT = "OIDC token call failed again — {} — token endpoint: {};"
+            + " the starred operator banner for this condition fired once above; this bind denies"
+            + " fail-closed (AD-11)";
+
+    /**
+     * The condition key of the opaque-token arm (Story 4.1 T5): a single literal — the issued token
+     * is not a three-segment JWS. Nothing finer is honest to key on (the token VALUE must never
+     * reach a key — secret hygiene), so the arm is one condition per adapter.
+     */
+    static final String OPAQUE_TOKEN_CONDITION = "opaque-token";
+
+    /**
+     * The full opaque-token operator warning (D6 arm), aligned to the banner PATTERN by Story 4.1
+     * T5 (checkpoint 16): fires once per {@link #OPAQUE_TOKEN_CONDITION}, and now carries the
+     * derived token endpoint and {@code provider-url} (the 2026-09-01 review's multi-cell context
+     * gap — an operator of several cells could not tell WHICH provider issued the opaque token).
+     * Deliberately NOT the starred {@link #OPERATOR_WARNING}: its headline would lie here — the
+     * token call SUCCEEDED (HTTP 200); the JWT-only policy is what denies. Two {@code {}} slots:
+     * the derived token endpoint, the configured provider-url.
+     */
+    static final String OPAQUE_TOKEN_WARNING = "the token endpoint issued a non-JWT (opaque) access token — "
+            + "the JWT-only adjudication policy (Story 3.4 T1/D6, 2026-08-27) denies fail-closed; "
+            + "operator remediation: configure the client/realm to issue JWT access tokens "
+            + "(token endpoint: {}; provider-url: {})";
+
+    /**
+     * The opaque-token repeat one-liner (Story 4.1 T5): later occurrences of the same condition log
+     * this ONE line — the same bound {@link #OPERATOR_WARNING_REPEAT} applies to the failure arms.
+     * One {@code {}} slot: the derived token endpoint.
+     */
+    static final String OPAQUE_TOKEN_WARNING_REPEAT = "the token endpoint issued a non-JWT (opaque) access "
+            + "token again — denied fail-closed under the JWT-only policy (the full policy warning "
+            + "fired once above; token endpoint: {})";
 
     private final URI providerUrl;           // the configured realm base — named in the WARN (T9)
     private final URI tokenEndpoint;         // DERIVED from provider-url at wiring (T9)
@@ -203,6 +256,17 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      *  shutdown aborts are not provider misconfiguration — the transport-arm operator WARN stays off
      *  routine restarts. Verdicts are unaffected (still {@code DenyIndeterminate}). */
     private volatile boolean closed;
+    /**
+     * The T5 flood bound's condition memory (Story 4.1 checkpoint 16, 2026-09-03): the conditions
+     * whose FULL operator warning has already fired. Keys draw from closed sets BY CONSTRUCTION —
+     * the transport arm keys on the failure's {@code IOException} class name, the status arm on
+     * {@code status:<code>[:<oauth-error>]} (HTTP status codes plus RFC 6749 &sect;5.2 error codes
+     * off the trusted, client-authenticated provider link), the opaque arm on one literal — so the
+     * set cannot grow per-bind, per-attacker, or per-token-value. Fire sites run on the
+     * adjudication pool's virtual threads; {@link Set#add} on the concurrent set is the atomic
+     * once-test (returns true exactly for the condition's first occurrence).
+     */
+    private final Set<String> operatorWarnedConditions = ConcurrentHashMap.newKeySet();
 
     /**
      * Eager, fail-closed construction (the T2 bean pattern): the client-secret file is read here and a
@@ -396,9 +460,13 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
                 // provider problem and stays silent — and neither is the adapter's OWN shutdown
                 // abort (close()'s hard http.close() after a drain timeout; the closed flag,
                 // owner decision 2026-09-01).
-                log.warn(OPERATOR_WARNING,
-                        "the token call failed at the transport layer (" + transport + ").",
-                        tokenEndpoint, providerUrl);
+                // T5 (Story 4.1 checkpoint 16): the banner is ONCE PER CONDITION — this arm keys
+                // on the failure's IOException class (a dead provider is ONE condition however
+                // many binds it denies); later occurrences log the one-liner. The condition is
+                // NOT registered when the closed flag suppressed this occurrence — an aborted
+                // shutdown bind must not spend the adapter's one banner.
+                warnOperatorFailure("transport:" + transport.getClass().getName(),
+                        "the token call failed at the transport layer (" + transport + ").");
             }
             return new Verdict.DenyIndeterminate();   // timeout / network error / cancel → AD-11
         }
@@ -451,15 +519,45 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * {@code DenyIndeterminate}, now with the starred operator WARN naming the status (plus the
      * parsed OAuth {@code error} code on the 400 arm, when present — code review 2026-09-01), the
      * derived token endpoint, and the configured provider-url — the misconfiguration posture the
-     * retired startup probe used to catch at boot.
+     * retired startup probe used to catch at boot. T5 (Story 4.1 checkpoint 16): the banner fires
+     * once per {@code status:<code>[:<oauth-error>]} condition, the one-liner on repeats — the
+     * status-plus-error pair is the condition (400 unauthorized_client and 404 are two conditions,
+     * and each earns its own banner).
      */
     private Verdict unmappedStatus(HttpResponse<byte[]> response, @Nullable String oauthError) {
         String errorDetail = oauthError == null ? "" : " (OAuth error: " + oauthError + ")";
-        log.warn(OPERATOR_WARNING,
+        warnOperatorFailure("status:" + response.statusCode()
+                + (oauthError == null ? "" : ":" + oauthError),
                 "the token endpoint returned HTTP " + response.statusCode() + errorDetail
-                        + " — not a credential verdict.",
-                tokenEndpoint, providerUrl);
+                        + " — not a credential verdict.");
         return new Verdict.DenyIndeterminate();
+    }
+
+    /**
+     * The T5 flood bound (Story 4.1 checkpoint 16, 2026-09-03): the FULL starred banner fires on
+     * the condition's FIRST occurrence, {@link #OPERATOR_WARNING_REPEAT} on every later one.
+     * Log-only either way — the verdict table (AC2) is unchanged on both arms that route here.
+     */
+    private void warnOperatorFailure(String condition, String detail) {
+        if (operatorWarnedConditions.add(condition)) {
+            log.warn(OPERATOR_WARNING, detail, tokenEndpoint, providerUrl);
+        } else {
+            log.warn(OPERATOR_WARNING_REPEAT, detail, tokenEndpoint);
+        }
+    }
+
+    /**
+     * The opaque-token arm's bound warning (Story 4.1 T5 — the 2026-09-01 review's alignment row):
+     * {@link #OPAQUE_TOKEN_WARNING} once per {@link #OPAQUE_TOKEN_CONDITION},
+     * {@link #OPAQUE_TOKEN_WARNING_REPEAT} on repeats. Log-only — the verdict is the unchanged
+     * D6 fail-closed deny either way.
+     */
+    private void warnOpaqueTokenIssued() {
+        if (operatorWarnedConditions.add(OPAQUE_TOKEN_CONDITION)) {
+            log.warn(OPAQUE_TOKEN_WARNING, tokenEndpoint, providerUrl);
+        } else {
+            log.warn(OPAQUE_TOKEN_WARNING_REPEAT, tokenEndpoint);
+        }
     }
 
     /** The parsed OAuth {@code error} code of a 400 body; {@code null} when absent or unparseable. */
@@ -497,9 +595,10 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             // adjudicable, and there is no second wire arm to ask. Fail-closed deny, never an
             // allow; the WARN carries the policy and the operator remediation (token shape is
             // observable only here, at bind time — a startup probe would need a real credential).
-            log.warn("the token endpoint issued a non-JWT (opaque) access token — the JWT-only "
-                    + "adjudication policy (Story 3.4 T1/D6, 2026-08-27) denies fail-closed; "
-                    + "operator remediation: configure the client/realm to issue JWT access tokens.");
+            // T5 (Story 4.1 checkpoint 16): the WARN is bounded like the operator banner — full
+            // policy warning once, one-liner per repeat — and now carries the derived endpoint
+            // and provider-url (the multi-cell context the 2026-09-01 review flagged missing).
+            warnOpaqueTokenIssued();
             return new Verdict.DenyIndeterminate();
         }
         // D7 (Story 3.4 T2, 2026-08-27): the TLS client-authenticated provider link is the sole
