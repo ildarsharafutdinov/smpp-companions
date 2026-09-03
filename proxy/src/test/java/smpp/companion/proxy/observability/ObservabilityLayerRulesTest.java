@@ -1,10 +1,20 @@
 package smpp.companion.proxy.observability;
 
+import java.util.List;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+
+import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * AC5 / AD-19 / AD-27 layer rule for the {@code observability} seam. The seeded contract types
@@ -21,6 +31,22 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * {@code JmhIsolationArchitectureTest}.
  *
  * <p>RED-on-neuter (AC9 / AI-1): add a Netty-typed member to any of the four contract types and this rule fails.
+ *
+ * <p><b>Story 4.1 T6 (checkpoint 23) &mdash; the companion rule:</b> the seam's IMPLEMENTATIONS are held to the
+ * same ban. Every class implementing {@link RelayObserver} &mdash; the production
+ * {@link MeteredRelayObserver}, the {@link NoopRelayObserver} seed, and any FUTURE impl &mdash; must stay
+ * Netty-free: observers fire inside the relay's event-loop continuations (the four fire sites), so a Netty
+ * dependency there puts data-plane machinery on the telemetry path and hands the impl the
+ * {@code Channel}/{@code ByteBuf} the contract above already refuses (the {@code SystemId} javadoc reserves
+ * {@code asString()} as exactly this escape hatch). Selection is BY TYPE ({@code implement(RelayObserver)}),
+ * so a future impl is covered the moment it lands &mdash; and the metrics ENDPOINT is the one deliberate
+ * exception on the other side of the boundary: {@link MetricsHttpHandler} (with
+ * {@link MetricsEndpointLifecycle}) is this package's sanctioned Netty citizen (FR-OBS-1 needs a real HTTP
+ * pipeline), exempted from the selection EXPLICITLY so the boundary is stated in code, not implied by
+ * what the selection happens to skip. Test-tier fixtures ({@link CapturingRelayObserver},
+ * {@link ThrowingRelayObserver}) pass unexempted today; a fixture that needs a {@link SystemId} should take
+ * one as a parameter (as both do), not build one from an {@code AsciiString} &mdash; if a future fixture
+ * must, exempt it by name and say why, the seeded rule's discipline.
  */
 @AnalyzeClasses(packages = "smpp.companion.proxy.observability")
 class ObservabilityLayerRulesTest {
@@ -36,4 +62,36 @@ class ObservabilityLayerRulesTest {
                     .because("the RelayObserver seam is a pure contract — no Netty type (Channel/ChannelId/"
                             + "ByteBuf) may appear on the interface or its seeded impl; that would smuggle a "
                             + "high-cardinality label or content across the seam (AD-19 / AD-27)");
+
+    @ArchTest
+    static final ArchRule observerImplementationsMustNotDependOnNetty =
+            noClasses()
+                    .that().implement(RelayObserver.class)
+                    .and().doNotHaveFullyQualifiedName(MetricsHttpHandler.class.getName())
+                    .should().dependOnClassesThat().resideInAPackage("io.netty..")
+                    .because("observers never touch Netty — they fire inside the relay's event-loop "
+                            + "continuations and must not see a Channel/ChannelId/ByteBuf (AD-19 / AD-27); "
+                            + "the metrics endpoint handler is this package's one deliberate Netty citizen "
+                            + "(FR-OBS-1: a real HTTP pipeline), explicitly exempted from the selection so "
+                            + "the boundary — observers never, the endpoint does — is stated, not implied");
+
+    /**
+     * Vacuity guard (the Story 1.2 lesson — both rules above select from the imported classes, so an
+     * import that saw NOTHING would pass them vacuously): the package import the rules evaluate must
+     * actually contain the production observer AND the endpoint handler, i.e. the selection of each
+     * rule is provably non-empty today.
+     */
+    @Test
+    @Tag("observability")
+    @DisplayName("vacuity guard: the package import sees the production observer and the endpoint handler")
+    void thePackageImportActuallySeesTheRulesTargets() {
+        JavaClasses imported = new ClassFileImporter().importPackages("smpp.companion.proxy.observability");
+        List<String> names = imported.stream().map(JavaClass::getName).toList();
+        assertThat(names)
+                .as("the import behind both layer rules resolves the classes they police")
+                .contains(RelayObserver.class.getName(),
+                        NoopRelayObserver.class.getName(),
+                        MeteredRelayObserver.class.getName(),
+                        MetricsHttpHandler.class.getName());
+    }
 }
