@@ -254,6 +254,18 @@ class CompanionConfigMatrixTest {
                 "SEC-055 SMSC port " + badPort, "smsc.port");
     }
 
+    @ParameterizedTest(name = "companion.metrics.port {0} (out of range) -> refuse")
+    @ValueSource(strings = {"0", "-1", "70000", "99999"})
+    @DisplayName("Story 4.1: a bad companion.metrics.port -> refuse (the Metrics compact-ctor guard, FR-OBS-1)")
+    void badMetricsPortRefuses(String badPort) {
+        // Story 4.1 T6 (checkpoint 25): the metrics endpoint's port guard — the same SEC-055 discipline
+        // as the bind/SMSC ports above. The exact out-of-range value is BOUND over the base's valid free
+        // port (never the key removed — the null-vs-blank trap), so the Metrics record's compact-ctor
+        // guard fires at refresh and names the key: an endpoint bound to a bogus port cannot exist.
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.metrics.port", badPort),
+                "metrics port " + badPort, "metrics.port");
+    }
+
     // --- AC3 secrets (SEC-060) + trust store 5-state (SEC-050) -------------------------------
 
     @ParameterizedTest(name = "SEC-060: missing {0} -> refuse")
