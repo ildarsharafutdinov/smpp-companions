@@ -29,6 +29,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.observability.MetricsEndpointLifecycle;
 import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
 import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
@@ -37,18 +38,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * AC1 (Story 3.2 T7) — {@link AdjudicationLifecycle}: the AD-22 phase discipline (strictly below
- * the relay acceptor's stop phase, so the acceptor closes first), the running-flag / callback /
- * idempotence contract (the {@code RelayServerLifecycle} house pattern), and the load-bearing stop
- * body — a stop during an in-flight adjudication DENIES it: {@code stop()} is synchronous with the
- * drain, so the in-flight future is SETTLED fail-closed the moment {@code stop()} returns, and
- * every post-stop verify settles fail-closed too (use-after-close).
+ * AC1 (Story 3.2 T7; phase pin re-authored by Story 4.2 T1) — {@link AdjudicationLifecycle}: the
+ * AD-22 phase discipline (the deny window strictly between the relay acceptor's stop phase and the
+ * metrics endpoint's scrape-late window — the acceptor closes first, the final scrape still sees
+ * the deny), the running-flag / callback / idempotence contract (the {@code RelayServerLifecycle}
+ * house pattern), and the load-bearing stop body — a stop during an in-flight adjudication DENIES
+ * it: {@code stop()} is synchronous with the drain, so the in-flight future is SETTLED fail-closed
+ * the moment {@code stop()} returns, and every post-stop verify settles fail-closed too
+ * (use-after-close). The 4.2 T1 deny/release SPLIT is pinned alongside: {@code deny()} alone
+ * settles the in-flight adjudication fail-closed (bounded, not synchronous — the await lives in
+ * the release half), and {@code release()} / the fused {@code close()} re-firing after the split
+ * sequence are no-ops (the destroy-method backstop contract).
  *
- * <p>The deny-in-flight case drives the REAL adapter over a parked in-process TLS stand-in IdP (the
+ * <p>The deny-in-flight cases drive the REAL adapter over a parked in-process TLS stand-in IdP (the
  * {@code RopcBindCredentialVerifierTest} pattern, compact): the bind's token exchange is parked on
- * a latch with a 4s per-request budget &mdash; far longer than the test window &mdash; so the ONLY
- * thing that can settle it inside the window is the lifecycle's drain (interrupt &rarr; STS join
- * throws &rarr; fail-closed settle; the request timeout is the 4s backstop).
+ * a latch, so the ONLY thing that can settle it inside the window is the deny path — the parked
+ * exchange aborts at its OWN per-request budget (the forked {@code CompletableFuture} join ignores
+ * the deny interrupt; the pin settles fail-closed with the abort), and the fused {@code stop()} is
+ * SYNCHRONOUS with that settle because release()'s {@code awaitTermination} joins it.
  */
 @Tag("unit")
 @Tag("security")
@@ -60,13 +67,20 @@ class AdjudicationLifecycleTest {
     private static final ScopedValue<RequestContext> CTX = ScopedValue.newInstance();
 
     @Test
-    @DisplayName("phase: the app-level slot, strictly BELOW the relay acceptor (AD-22 — acceptor stops first)")
-    void phaseSitsBelowTheRelayAcceptor() {
+    @DisplayName("phase: the deny window, strictly between the acceptor (stops first) and the metrics scrape-late window")
+    void phaseSitsStrictlyBetweenAcceptorAndMetricsScrapeWindow() {
         AdjudicationLifecycle lifecycle = new AdjudicationLifecycle(new AlwaysAllowBindCredentialVerifier());
-        assertThat(lifecycle.getPhase()).isEqualTo(ProxyCompanionLifecycle.APP_PHASE);
+        assertThat(lifecycle.getPhase()).isEqualTo(AdjudicationLifecycle.ADJUDICATION_PHASE);
         assertThat(lifecycle.getPhase())
-                .as("the adjudicator must stop AFTER the acceptor (AD-22 step order)")
+                .as("the adjudicator must stop AFTER the acceptor (AD-22 step order — no new binds before the deny)")
                 .isLessThan(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE);
+        assertThat(lifecycle.getPhase())
+                .as("the deny must run while the metrics scrape-late window is still live "
+                        + "(the operator's final scrape sees the denied binds)")
+                .isGreaterThan(MetricsEndpointLifecycle.METRICS_ENDPOINT_PHASE);
+        assertThat(lifecycle.getPhase())
+                .as("the deny window sits strictly between the acceptor and the app phases (the 5-step spine)")
+                .isGreaterThan(ProxyCompanionLifecycle.APP_PHASE);
     }
 
     @Test
@@ -106,9 +120,11 @@ class AdjudicationLifecycleTest {
 
             lifecycle.stop();
 
-            // stop() is SYNCHRONOUS with the drain (shutdownNow + bounded awaitTermination): the
-            // in-flight future is settled the moment stop() returns — the 4s request budget is the
-            // backstop, so only the drain can have settled it inside this window.
+            // stop() runs the adapter's FUSED close() — deny (shutdownNow) then release (the
+            // bounded awaitTermination) — so it is SYNCHRONOUS with the settle: the parked
+            // exchange aborts at its own 4s per-request budget, the pin settles fail-closed with
+            // that abort, and release()'s await JOINS it before stop() returns (the pin can never
+            // still be pending here — the 5s await budget outlasts the 4s abort).
             assertThat(inFlight.future().isDone())
                     .as("deny-in-flight: the adjudication must be settled when stop() returns (AD-22)")
                     .isTrue();
@@ -119,6 +135,53 @@ class AdjudicationLifecycleTest {
             // Post-stop verifies settle fail-closed (the adapter is closed — use-after-close).
             assertThat(ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX)).future().getNow(null))
                     .as("every post-stop verify settles fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        } finally {
+            hold.countDown();   // exception-safe: never strand the parked stand-in handler
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("deny/release split (4.2 T1): deny alone settles fail-closed; release + close re-fires are no-ops")
+    void denyReleaseSplitSettlesFailClosedAndReFiresAsNoOps(@TempDir Path dir) throws Exception {
+        CountDownLatch tokenReceived = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        HttpsServer server = parkedTokenIdp(tokenReceived, hold);
+        try {
+            // SHORT per-request budget for this row: the settle lands when the parked exchange
+            // aborts at its OWN budget (the forked join ignores the deny interrupt — the fused
+            // row's 4s duration proves the timing), so a 500ms budget keeps deny()-alone fast.
+            ProxyCompanionProperties props = reverseBProperties(dir, realmBase(server), Duration.ofMillis(500));
+            IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
+            RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
+
+            VerdictRequest inFlight = ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX));
+            assertTrue(tokenReceived.await(5, TimeUnit.SECONDS),
+                    "the adjudication must be in-flight (parked at the token endpoint) when deny() fires");
+
+            adapter.deny();   // AD-22 step 2 ALONE — no await, no client close
+
+            // deny() carries no await (the await is release()'s, so the coordinator can sequence
+            // work between the halves), so the settle is asserted BOUNDED here, not synchronous —
+            // the synchronous pin lives on the fused lifecycle stop above. The bound is the
+            // exchange's own abort (4x the 500ms budget).
+            assertThat(inFlight.future().get(2, TimeUnit.SECONDS))
+                    .as("deny() alone must settle the in-flight adjudication fail-closed (Story 3.2 AC5)")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            // No new adjudications after the deny: the pool rejects the task and verify() settles
+            // fail-closed synchronously (the use-after-close catch — the client is still OPEN here,
+            // the pool is what denies).
+            assertThat(ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX)).future().getNow(null))
+                    .as("every post-deny verify settles fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+
+            adapter.release();   // AD-22 steps 4/5: bounded await + shared client close + zeroize
+            adapter.release();   // idempotent second release — a no-op, never a hang or double-free
+            adapter.close();     // the destroy-method backstop re-firing after the halves ran — a no-op
+
+            assertThat(ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX)).future().getNow(null))
+                    .as("use-after-close stays fail-closed through the whole split sequence")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
         } finally {
             hold.countDown();   // exception-safe: never strand the parked stand-in handler
