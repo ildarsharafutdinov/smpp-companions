@@ -8,18 +8,18 @@ import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
 
 /**
  * Story 3.2 T7 (AC1) — the adjudicator's {@link SmartLifecycle}; the deny window re-phased by
- * Story 4.2 T1 (AD-22 pt. 1). On reverse cells (the verifier is the
- * {@link RopcBindCredentialVerifier}) {@link #stop()} runs the adapter's AD-22 stop body: DENY
- * in-flight (step 2 — {@code deny()}: {@code shutdownNow()}, every cancelled adjudication settles
- * {@code DenyIndeterminate}, Story 3.2 AC5), then RELEASE (steps 4/5 — {@code release()}: the
- * bounded VT await, the shared provider client, the client secret; the 3.2-era
- * key-cache-refresh-before-client-close step died with local JWT verification, Story 3.4 T2,
- * 2026-08-27). The halves are SPLIT and each idempotent on the adapter since 4.2 T1; this stop
- * runs them FUSED ({@code close()} = deny &rarr; release) until the 4.2 T3 coordinator owns
- * release-await at the app phase — then this bean runs the deny alone (on a still-live relay loop:
- * T2 moves the loop quiesce out of the acceptor's stop), and the bean destroy path keeps the fused
- * backstop. On forward cells (the always-allow stand-in) there is nothing to stop and the stop is
- * a pure flag flip.
+ * Story 4.2 T1 (AD-22 pt. 1), the stop reduced to the deny alone by 4.2 T3. On reverse cells (the
+ * verifier is the {@link RopcBindCredentialVerifier}) {@link #stop()} runs the adapter's AD-22
+ * step 2 ALONE: {@code deny()} — {@code shutdownNow()}, every cancelled adjudication settles
+ * {@code DenyIndeterminate} (Story 3.2 AC5) — fired while the relay loop is still LIVE (the
+ * acceptor's stop, 4.2 T2, no longer quiesces it), so every continuation executes and no
+ * fail-closed {@code bind_resp} strands. The release half (steps 4/5 — {@code release()}: the
+ * bounded VT await, the shared provider client, the client secret) is the app-phase coordinator's
+ * ({@code ProxyCompanionLifecycle}, 4.2 T3), sequenced behind the still-empty drain seam; the
+ * adapter bean's FUSED {@code close()} destroy method stays as the never-started-boot backstop
+ * (the 3.2-era key-cache-refresh-before-client-close step died with local JWT verification,
+ * Story 3.4 T2, 2026-08-27). On forward cells (the always-allow stand-in) there is nothing to stop
+ * and the stop is a pure flag flip.
  *
  * <p>Phase discipline (the 5-step spine, ARCHITECTURE-SPINE AD-22 amended 2026-08-27):
  * {@link #ADJUDICATION_PHASE} sits strictly BELOW the SMPP acceptor's
@@ -74,12 +74,13 @@ public final class AdjudicationLifecycle implements SmartLifecycle {
         }
         running = false;
         if (verifier instanceof RopcBindCredentialVerifier adapter) {
-            // The AD-22 stop body lives in the adapter (it owns the pool, the shared client and
-            // the client secret): fused deny → release until the 4.2 T3 coordinator re-homes the
-            // release half to the app phase. Both halves are idempotent on their own — the Spring
-            // destroy call (the adapter bean's inferred close()) is the never-started-lifecycle
-            // backstop and a no-op after this stop.
-            adapter.close();
+            // AD-22 step 2 ALONE (4.2 T3): deny-in-flight on the still-live relay loop —
+            // shutdownNow + the fail-closed settles. NO await, no client close, no zeroize: those
+            // are the release half, the app-phase coordinator's after the (empty, 4.3) drain seam.
+            // The adapter's deny is idempotent, so the coordinator's own deny re-fire (the walk's
+            // first step) and the Spring destroy call (the adapter bean's inferred fused close())
+            // are both no-ops after this stop — the never-started-lifecycle backstop.
+            adapter.deny();
         }
     }
 
