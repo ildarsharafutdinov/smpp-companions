@@ -47,8 +47,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link ThrowingRelayObserver}) pass unexempted today; a fixture that needs a {@link SystemId} should take
  * one as a parameter (as both do), not build one from an {@code AsciiString} &mdash; if a future fixture
  * must, exempt it by name and say why, the seeded rule's discipline.
+ *
+ * <p><b>Step-04 review (finding #11): the class import spans the WHOLE app</b>
+ * ({@code smpp.companion.proxy}, the {@code NoRolledCryptoArchitectureTest} scope) &mdash; a
+ * {@link RelayObserver} impl landed in any other package must not escape the ban. The seeded rule's
+ * FQN-scoped selection is unaffected by the wider import (it still names its four types); the
+ * implement()-based selection now evaluates every impl in the app, main or test.
  */
-@AnalyzeClasses(packages = "smpp.companion.proxy.observability")
+@AnalyzeClasses(packages = "smpp.companion.proxy")
 class ObservabilityLayerRulesTest {
 
     @ArchTest
@@ -77,21 +83,22 @@ class ObservabilityLayerRulesTest {
 
     /**
      * Vacuity guard (the Story 1.2 lesson — both rules above select from the imported classes, so an
-     * import that saw NOTHING would pass them vacuously): the package import the rules evaluate must
-     * actually contain the production observer AND the endpoint handler, i.e. the selection of each
-     * rule is provably non-empty today.
+     * import that saw NOTHING would pass them vacuously): the app-wide import the rules evaluate
+     * must actually contain the policed classes — the contract types, the production observer, the
+     * endpoint handler, and (the widened scope's point) classes OUTSIDE the observability package.
      */
     @Test
     @Tag("observability")
-    @DisplayName("vacuity guard: the package import sees the production observer and the endpoint handler")
-    void thePackageImportActuallySeesTheRulesTargets() {
-        JavaClasses imported = new ClassFileImporter().importPackages("smpp.companion.proxy.observability");
+    @DisplayName("vacuity guard: the app-wide import sees the policed classes, in and out of the package")
+    void theAppImportActuallySeesTheRulesTargets() {
+        JavaClasses imported = new ClassFileImporter().importPackages("smpp.companion.proxy");
         List<String> names = imported.stream().map(JavaClass::getName).toList();
         assertThat(names)
                 .as("the import behind both layer rules resolves the classes they police")
                 .contains(RelayObserver.class.getName(),
                         NoopRelayObserver.class.getName(),
                         MeteredRelayObserver.class.getName(),
-                        MetricsHttpHandler.class.getName());
+                        MetricsHttpHandler.class.getName(),
+                        smpp.companion.proxy.relay.BindInterceptor.class.getName());
     }
 }

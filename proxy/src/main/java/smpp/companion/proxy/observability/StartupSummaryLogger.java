@@ -16,6 +16,7 @@ import net.logstash.logback.argument.StructuredArgument;
 import smpp.companion.proxy.config.MemoryBudget;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
+import smpp.companion.proxy.relay.netty.DirectMemoryBudgetValidator;
 
 import static net.logstash.logback.argument.StructuredArguments.kv;
 
@@ -63,6 +64,12 @@ public final class StartupSummaryLogger {
         // The SAME derivation the AD-30 startup check used (MemoryBudget is the one source; RELAY-026 discipline).
         fields.add(kv("memory_budget_bytes", MemoryBudget.compute(
                 memory.maxInboundDepth(), memory.concurrentPairs(), memory.safetyFactor())));
+        // Step-04 review (finding #15): the CEILING the self-check compared that budget against —
+        // machine-derived and non-secret (the explicit -XX:MaxDirectMemorySize value, else -Xmx), so
+        // an operator reading the budget line can see the whole comparison without re-deriving the
+        // JVM side. DirectMemoryBudgetValidator is the one source (the same RELAY-026 discipline).
+        fields.add(kv("direct_memory_ceiling_bytes",
+                DirectMemoryBudgetValidator.liveDirectMemoryCeiling()));
         fields.add(kv("max_inbound_depth", memory.maxInboundDepth()));
         fields.add(kv("concurrent_pairs", memory.concurrentPairs()));
         fields.add(kv("safety_factor", memory.safetyFactor()));

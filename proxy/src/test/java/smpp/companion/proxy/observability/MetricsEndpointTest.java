@@ -2,6 +2,7 @@ package smpp.companion.proxy.observability;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -24,11 +25,14 @@ import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
+import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Story 4.1 T2 (checkpoint 18): the hardened endpoint contract — I/O matrix rows 1-4 plus the
@@ -55,6 +59,14 @@ class MetricsEndpointTest {
         int port = RelayTestFixtures.freePort();
         try (ConfigurableApplicationContext ctx = bootForwardA(dir, port)) {
             assertThat(ctx.getBean(MetricsEndpointLifecycle.class).isRunning()).isTrue();
+            // Step-04 review (finding #1): the @Primary displacement is observed in a BOOTED context —
+            // removing @Component from MeteredRelayObserver would silently hand the relay back to the
+            // noop while every direct-construction test stayed green. This row pins both halves: the
+            // booted context serves the PRODUCTION observer behind the seam, and its pre-registered
+            // close-grid series (zero-valued) is already on the scrape surface.
+            assertThat(ctx.getBean(RelayObserver.class))
+                    .as("@Primary displacement: the booted context serves the production observer")
+                    .isInstanceOf(MeteredRelayObserver.class);
             // One known meter so the scrape has deterministic content (a bare registry scrapes empty).
             Counter.builder("story41.endpoint.probe").description("T2 scrape-contract probe")
                     .register(ctx.getBean(PrometheusMeterRegistry.class)).increment(3.0);
@@ -66,7 +78,9 @@ class MetricsEndpointTest {
                     .contains("content-type: text/plain")
                     .contains("# help")
                     .contains("# type")
-                    .contains("story41_endpoint_probe_total 3.0");
+                    .contains("story41_endpoint_probe_total 3.0")
+                    // the production observer's pre-registered close grid rides the same scrape
+                    .contains("relay_connections_closed_total");
             assertThat(exchange(port, get(MetricsHttpHandler.SCRAPE_PATH)))
                     .as("row 1: idempotent — a scrape mutates nothing (not even a scrape counter)")
                     .isEqualTo(first);
@@ -172,7 +186,47 @@ class MetricsEndpointTest {
     }
 
     @Test
-    @DisplayName("by construction: the bind host is the LITERAL 127.0.0.1 and the loop is companion-metrics (source-pinned)")
+    @DisplayName("occupied metrics port: the boot FAILS (AD-17 fail-fast through start()) and the "
+            + "catch-path loop quiesce leaves no companion-metrics thread")
+    void occupiedMetricsPortFailsStartupAndQuiescesTheLoop(@TempDir Path dir) throws IOException {
+        // Step-04 review (finding #2) — mirrors RelayServerLifecycleTest's occupied-port row for the
+        // full-app boot: an occupied port must refuse the refresh (never a silently-down endpoint),
+        // and the lifecycle's catch block must have quiesced the freshly created dedicated loop —
+        // a failed boot may not strand a companion-metrics thread. The quiesce is AWAITED in
+        // start()'s catch, so this is race-free: the thread is gone before run() even throws.
+        // (This row caught a real bug: Netty's sync() sneaky-throws the raw checked BindException,
+        // which the original RuntimeException-only catch sailed past — the loop leaked.)
+        try (ServerSocket occupied = new ServerSocket(RelayTestFixtures.freePort())) {
+            Throwable thrown = catchThrowable(() -> bootForwardA(dir, occupied.getLocalPort()));
+            assertThat(thrown)
+                    .as("an occupied metrics port must fail the context refresh (AD-17 fail-fast)")
+                    .isNotNull();
+            assertThat(threadNames())
+                    .as("the failed start's catch path quiesced the dedicated loop (no thread leak)")
+                    .noneMatch(n -> n.startsWith("companion-metrics"));
+        }
+    }
+
+    @Test
+    @DisplayName("phase pin: METRICS_ENDPOINT_PHASE sits strictly between the acceptor (stops first) "
+            + "and the app lifecycle (stops last)")
+    void metricsPhaseSitsStrictlyBetweenAcceptorAndApp() {
+        // Step-04 review (finding #4) — mirrors RelayServerLifecycleTest's phase pin: exact constants,
+        // not just "running" (a neutered getPhase falls back to the implicit default and goes RED
+        // here), plus the load-bearing ORDER: scrapes stay live LATE — after the data plane has
+        // closed, before the app window (the future AD-22 drain).
+        assertThat(new MetricsEndpointLifecycle(RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1),
+                new PrometheusMeterRegistry(PrometheusConfig.DEFAULT)).getPhase())
+                .isEqualTo(MetricsEndpointLifecycle.METRICS_ENDPOINT_PHASE);
+        assertThat(MetricsEndpointLifecycle.METRICS_ENDPOINT_PHASE)
+                .as("the metrics endpoint stops after the app lifecycle, before the acceptor")
+                .isGreaterThan(ProxyCompanionLifecycle.APP_PHASE)
+                .isLessThan(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE);
+    }
+
+    @Test
+    @DisplayName("by construction: the bind host is the LITERAL 127.0.0.1, the loop is companion-metrics, "
+            + "and application.yml ships the metrics port default (source-pinned)")
     void theBindAddressIsTheLiteralLoopbackInSource() throws IOException {
         // The CWD of :proxy:test is the proxy module dir (the Relay026ConstantContractTest scan idiom;
         // `clean build` covers the incremental-UP-TO-DATE trap for source scans).
@@ -184,6 +238,15 @@ class MetricsEndpointTest {
         assertThat(code).as("the dedicated loop is named in code").contains("new DefaultThreadFactory(\"companion-metrics\")");
         assertThat(code).as("no host key can exist — the bind host is only ever the literal")
                 .doesNotContain(".metrics().host");
+        // Step-04 review (finding #3): the shipped default is part of the by-construction posture —
+        // deleting the yml node would ship an unobservable proxy with a green build (an absent node
+        // legitimately leaves the endpoint down for programmatic fixtures, so only this pin notices).
+        Path yml = Path.of("src/main/resources/application.yml");
+        assertThat(Files.exists(yml)).as("application.yml present (test CWD = proxy module)").isTrue();
+        assertThat(Files.readString(yml))
+                .as("application.yml ships the companion.metrics.port default — production boots observable")
+                .contains("metrics:")
+                .contains("port: 9090");
     }
 
     // --- fixtures ---------------------------------------------------------------------------

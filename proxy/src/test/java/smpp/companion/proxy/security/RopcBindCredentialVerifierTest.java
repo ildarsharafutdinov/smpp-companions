@@ -696,6 +696,45 @@ class RopcBindCredentialVerifierTest {
     }
 
     @Test
+    @DisplayName("T5 flood bound (step-04 review, finding #6): one STATUS is one condition — the same "
+            + "400 with two DIFFERENT provider-echoed error strings still earns exactly 1 banner + 1 "
+            + "one-liner (the error string rides the detail line, never the condition key)")
+    void sameStatusWithDistinctErrorStringsStaysOneCondition(@TempDir Path dir, CapturedOutput out)
+            throws Exception {
+        // The unbounded-growth vector the old status+error key admitted: a provider echoing
+        // DISTINCT error strings on the same status would re-fire the ~14-line banner per bind and
+        // grow operatorWarnedConditions without bound. Keying on the status alone keeps one
+        // condition per status; each occurrence's detail still names ITS error string.
+        AtomicInteger rotation = new AtomicInteger();
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 400, rotation.getAndIncrement() == 0
+                    ? "{\"error\":\"unauthorized_client\"}"
+                    : "{\"error\":\"expired_token\"}");
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            for (int i = 0; i < 2; i++) {
+                assertThat(awaitVerdict(verify(adapter)))
+                        .as("both occurrences deny fail-closed via the UNCHANGED AC2 mapping")
+                        .isInstanceOf(Verdict.DenyIndeterminate.class);
+            }
+        } finally {
+            server.stop(0);
+        }
+        String logged = out.getAll();
+        assertThat(occurrences(logged, "OIDC TOKEN CALL FAILED"))
+                .as("the STATUS is the condition — a distinct error echo must not re-fire the banner")
+                .isEqualTo(1);
+        assertThat(occurrences(logged, "OIDC token call failed again"))
+                .as("the second occurrence gets the one-liner")
+                .isEqualTo(1);
+        assertThat(logged)
+                .as("each occurrence's detail still names its own error string (per-bind visibility)")
+                .contains("unauthorized_client")
+                .contains("expired_token");
+    }
+
+    @Test
     @DisplayName("T5: the opaque-token WARN is aligned to the banner pattern — full policy warning "
             + "ONCE (now with provider context), one-liner per repeat")
     void opaqueTokenWarningIsBoundedAndContextualized(@TempDir Path dir, CapturedOutput out)

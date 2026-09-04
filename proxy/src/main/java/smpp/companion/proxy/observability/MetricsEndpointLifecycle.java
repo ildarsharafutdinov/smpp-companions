@@ -48,7 +48,9 @@ import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
  * <p><b>Bind and stop discipline</b> (mirrors {@code RelayServerLifecycle}): {@code
  * bind(...).syncUninterruptibly()} — an occupied port throws THROUGH {@code start()} &rarr; context
  * refresh aborts (AD-17 fail-fast, never a silently-unbound endpoint); on that failure the freshly
- * created group is quiesced before the throw (no leaked loop). {@code stop(Runnable)} runs the
+ * created group is quiesced — AWAITED, so the loop thread is provably gone before the throw (no
+ * leaked loop; the catch is Exception-wide because Netty's sync sneaky-throws the raw checked
+ * {@code BindException}, which a RuntimeException-only catch would sail past). {@code stop(Runnable)} runs the
  * callback in {@code finally} (releases the shutdown latch within the per-phase window); the body
  * closes the server channel first (port released deterministically), then {@code
  * shutdownGracefully(100ms quiet, 2s cap)} — an EXPLICIT short quiet period (the endpoint's only
@@ -117,10 +119,20 @@ public final class MetricsEndpointLifecycle implements SmartLifecycle {
         Channel channel;
         try {
             channel = bootstrap.bind(LOOPBACK_BIND_HOST, metrics.port()).syncUninterruptibly().channel();
-        } catch (RuntimeException e) {
-            // AD-17 fail-fast propagates — but not with a freshly created loop left behind.
-            group.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            throw e;
+        } catch (Exception e) {
+            // AD-17 fail-fast propagates — but not with a freshly created loop left behind. The catch
+            // is Exception, NOT RuntimeException: Netty's sync() SNEAKY-THROWS the raw checked cause
+            // (an occupied port surfaces as java.net.BindException, an IOException), which a
+            // RuntimeException-only catch sails straight past — leaking the loop's non-daemon thread
+            // past every failed boot (step-04 review, finding #2, proven by the occupied-port row).
+            // The quiesce is AWAITED (bounded by the 2s cap): the thread is gone before the throw,
+            // so a failed boot strands nothing. The rethrow is a wrap because precise rethrow cannot
+            // prove a checked cause from a declares-nothing call — the BindException stays in the
+            // chain for the operator.
+            group.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .syncUninterruptibly();
+            throw new IllegalStateException("the metrics endpoint failed to bind " + LOOPBACK_BIND_HOST + ":"
+                    + metrics.port() + " — AD-17 fail-fast (the dedicated loop is quiesced).", e);
         }
         metricsEventLoopGroup = group;
         serverChannel = channel;
@@ -148,12 +160,17 @@ public final class MetricsEndpointLifecycle implements SmartLifecycle {
         serverChannel = null;
         EventLoopGroup group = metricsEventLoopGroup;
         metricsEventLoopGroup = null;
-        if (acceptor != null) {
-            acceptor.close().syncUninterruptibly(); // port released (deterministic, before the loop quiesces)
-        }
-        if (group != null) {
-            group.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                    .syncUninterruptibly(); // awaited: the loop thread is gone when the phase completes
+        // Step-04 review (finding #8): the loop quiesce must run even when the acceptor close throws
+        // (a failing close would otherwise strand the dedicated loop's thread past the phase window).
+        try {
+            if (acceptor != null) {
+                acceptor.close().syncUninterruptibly(); // port released (deterministic, before the loop quiesces)
+            }
+        } finally {
+            if (group != null) {
+                group.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                        .syncUninterruptibly(); // awaited: the loop thread is gone when the phase completes
+            }
         }
     }
 

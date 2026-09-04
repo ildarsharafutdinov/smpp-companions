@@ -2,7 +2,7 @@
 title: 'Story 4.1 — Production observability: structured JSON-lines logs and read-only loopback /metrics'
 type: 'feature'
 created: '2026-09-02'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
 baseline_commit: 09858836722f33e2cac06015d9ae63244fc1ad53
 context:
@@ -143,3 +143,77 @@ context:
 
 **Manual checks (if no CLI):**
 - Boot a forward-A fixture; `curl -v http://127.0.0.1:9090/metrics` (200, Prometheus text), `curl -X POST` (405), `curl /metrics/x` (404); observe JSON lines on stdout and confirm no secret fields.
+
+## Suggested Review Order
+
+**Entry point — the production observer displacement**
+
+- The DI swap: `@Primary` displaces the noop deterministically, one counter source (AD-27).
+  [`MeteredRelayObserver.java:64`](../../proxy/src/main/java/smpp/companion/proxy/observability/MeteredRelayObserver.java#L64)
+
+**Endpoint hardening — the /metrics slice**
+
+- The review-found bug: Netty sneaky-throws checked `BindException`; Exception-wide catch + AWAITED quiesce before the wrap.
+  [`MetricsEndpointLifecycle.java:122`](../../proxy/src/main/java/smpp/companion/proxy/observability/MetricsEndpointLifecycle.java#L122)
+- Dedicated `companion-metrics` loop, literal loopback bind, own phase between acceptor and app.
+  [`MetricsEndpointLifecycle.java:102`](../../proxy/src/main/java/smpp/companion/proxy/observability/MetricsEndpointLifecycle.java#L102)
+- A throwing `scrape()` still answers: 500 + bounded WARN + close.
+  [`MetricsHttpHandler.java:118`](../../proxy/src/main/java/smpp/companion/proxy/observability/MetricsHttpHandler.java#L118)
+
+**Observer-seam hardening — the four fire sites**
+
+- `fireGuarded` isolates a throwing observer per relayed PDU; TRACE body log co-sited.
+  [`CoupledRelayHandler.java:184`](../../proxy/src/main/java/smpp/companion/proxy/relay/CoupledRelayHandler.java#L184)
+- Close stays exactly-once regardless of a throwing `onConnectionClosed`.
+  [`CoupledRelayHandler.java:304`](../../proxy/src/main/java/smpp/companion/proxy/relay/CoupledRelayHandler.java#L304)
+- The worst arm: deny synthesis + teardown proceed; `BIND_REJECTED` stashed for the close counter.
+  [`BindInterceptor.java:284`](../../proxy/src/main/java/smpp/companion/proxy/relay/BindInterceptor.java#L284)
+
+**Operator-warning bounding (T5 + review fix)**
+
+- Banner once per condition, one-liner per repeat; condition key = status ONLY (provider-echoed error strings never key).
+  [`RpcBindCredentialVerifier.java:543`](../../proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java#L543)
+
+**JSON-lines log shape**
+
+- The shipped encoder: LogstashEncoder, `[ISO_OFFSET_DATE_TIME]`, UTC, INFO root.
+  [`logback-spring.xml:11`](../../proxy/src/main/resources/logback-spring.xml#L11)
+- Startup summary field-complete + secret-free, now with the direct-memory ceiling (review fix).
+  [`StartupSummaryLogger.java:71`](../../proxy/src/main/java/smpp/companion/proxy/observability/StartupSummaryLogger.java#L71)
+- The TRACE knob made operator-discoverable (inert comment).
+  [`application.yml:21`](../../proxy/src/main/resources/application.yml#L21)
+
+**Resource gauges**
+
+- Direct-memory off the shared allocator's metric + active-VT gauge; JVM binders deliberately unbound.
+  [`ResourceMetrics.java:43`](../../proxy/src/main/java/smpp/companion/proxy/observability/ResourceMetrics.java#L43)
+
+**Config surface**
+
+- The one new key: `Metrics` record, compact-ctor 1-65535 guard, no host key.
+  [`ProxyCompanionProperties.java:402`](../../proxy/src/main/java/smpp/companion/proxy/config/ProxyCompanionProperties.java#L402)
+
+**Proofs — tests (peripherals)**
+
+- Displacement observed in a real boot + pre-registered series on the scrape (review fix, HIGH).
+  [`MetricsEndpointTest.java:67`](../../proxy/src/test/java/smpp/companion/proxy/observability/MetricsEndpointTest.java#L67)
+- Occupied-port row: refresh fails, loop thread provably gone (caught the sneaky-throw bug).
+  [`MetricsEndpointTest.java:191`](../../proxy/src/test/java/smpp/companion/proxy/observability/MetricsEndpointTest.java#L191)
+- Full boot = pure JSON-lines stdout, secret-free startup line.
+  [`StructuredLogTest.java:108`](../../proxy/src/test/java/smpp/companion/proxy/observability/StructuredLogTest.java#L108)
+- TRACE rows: bodies as JSON lines; bind-family redacted; password never (plaintext or hex).
+  [`StructuredLogTest.java:223`](../../proxy/src/test/java/smpp/companion/proxy/observability/StructuredLogTest.java#L223)
+- Throwing double per method → relay invariants hold.
+  [`ThrowingObserverHardeningTest.java:76`](../../proxy/src/test/java/smpp/companion/proxy/observability/ThrowingObserverHardeningTest.java#L76)
+- Flood rows: banner-once per condition, one-liner per bind.
+  [`RpcBindCredentialVerifierTest.java:629`](../../proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierTest.java#L629)
+- Per-cell role/mode resolution (forward-c + reverse a/b/c — review fix).
+  [`StartupSummaryLoggerTest.java:37`](../../proxy/src/test/java/smpp/companion/proxy/observability/StartupSummaryLoggerTest.java#L37)
+- Out-of-range `companion.metrics.port` fails fast naming the key.
+  [`CompanionConfigMatrixTest.java:260`](../../proxy/src/test/java/smpp/companion/proxy/config/CompanionConfigMatrixTest.java#L260)
+- App-wide scope: observer impls Netty-free anywhere; endpoint handler the stated exception.
+  [`ObservabilityLayerRulesTest.java:73`](../../proxy/src/test/java/smpp/companion/proxy/observability/ObservabilityLayerRulesTest.java#L73)
+- Nimbus-only JSON posture pinned now that Jackson rides the classpath (review fix).
+  [`NoJacksonArchitectureTest.java:28`](../../proxy/src/test/java/smpp/companion/proxy/observability/NoJacksonArchitectureTest.java#L28)
+- The extracted shared pair-harness (dedup of ~120 lines, exception-safe logback arm/restore).
+  [`ObservabilityPairHarness.java:69`](../../proxy/src/test/java/smpp/companion/proxy/observability/ObservabilityPairHarness.java#L69)
