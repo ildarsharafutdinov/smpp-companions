@@ -18,7 +18,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * AC8: Spring Boot boots a NON-web context and shuts down cleanly within the graceful-shutdown
  * timeout. "SIGTERM-equivalent" = closing the context ({@code ContextClosedEvent} ->
  * {@code SmartLifecycle.stop}), which is exactly what the JVM shutdown hook does on SIGTERM.
- * Framework only — not the AD-22 7-step body.
+ * Since Story 4.2 T3 the close drives the REAL AD-22 coordinator body
+ * ({@code ProxyCompanionLifecycle}'s 5-step walk); this suite stays the framework-level smoke —
+ * the meaningful shutdown upper-bound row is 4.2 T4's.
  *
  * <p>Story 1.3 lockstep: the boot now supplies a complete valid forward+A config (mode + the
  * cell-required secret paths + routing + OIDC) so the AD-17 matrix validator passes and the test
@@ -68,7 +70,8 @@ class BootstrapLifecycleTest {
         long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
         assertThat(lifecycle.isRunning()).isFalse(); // stop() ran
-        // Graceful-shutdown phase ceiling is 30s; a stub closes in well under that.
+        // Graceful-shutdown phase ceiling is 30s; the coordinator walk closes in well under that
+        // (the meaningful bound is 4.2 T4's row).
         assertThat(elapsedMs).isLessThan(30_000L);
     }
 

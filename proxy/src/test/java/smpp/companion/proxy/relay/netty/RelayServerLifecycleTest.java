@@ -28,6 +28,7 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
+import smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier;
 import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
@@ -220,13 +221,15 @@ class RelayServerLifecycleTest {
     void relayAcceptorStopsBeforeTheAppLifecycle() {
         // Exact pins (a neutered getPhase falls back to the implicit default and goes RED here), plus
         // the load-bearing ORDER: Spring stops higher phases first, so the acceptor must out-phase the
-        // app lifecycle whose Epic-4 body (AD-22 drain) runs after the data plane is down.
+        // app lifecycle — the AD-22 shutdown coordinator (4.2 T3), whose walk runs after the data
+        // plane is down and the deny window has fired. Constructed with the stand-in verifier + a
+        // scratch group (never walked): the phase pin needs no live walk.
         assertThat(new RelayServerLifecycle(
                 RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1), newGroup(),
                 newOptions(RelayTestFixtures.freePort()), RelayTestFixtures.modeBIngressInitializer(RelayTestFixtures.freePort()))
                 .getPhase())
                 .isEqualTo(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE);
-        assertThat(new ProxyCompanionLifecycle().getPhase())
+        assertThat(new ProxyCompanionLifecycle(new AlwaysAllowBindCredentialVerifier(), newGroup()).getPhase())
                 .isEqualTo(ProxyCompanionLifecycle.APP_PHASE);
         assertThat(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE)
                 .as("AD-22 step 1: the acceptor must stop BEFORE ProxyCompanionLifecycle "

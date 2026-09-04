@@ -43,9 +43,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * metrics endpoint's scrape-late window — the acceptor closes first, the final scrape still sees
  * the deny), the running-flag / callback / idempotence contract (the {@code RelayServerLifecycle}
  * house pattern), and the load-bearing stop body — a stop during an in-flight adjudication DENIES
- * it: {@code stop()} is synchronous with the drain, so the in-flight future is SETTLED fail-closed
- * the moment {@code stop()} returns, and every post-stop verify settles fail-closed too
- * (use-after-close). The 4.2 T1 deny/release SPLIT is pinned alongside: {@code deny()} alone
+ * it: {@code stop()} runs the adapter's deny ALONE (4.2 T3 — release-await is the app-phase
+ * coordinator's), so the DENY is synchronous with {@code stop()} (the pool is down before it
+ * returns; every post-stop verify settles fail-closed with no wait — use-after-close) while the
+ * in-flight settle lands BOUNDED, at the exchange's own per-request abort, never awaited here.
+ * The 4.2 T1 deny/release SPLIT is pinned alongside: {@code deny()} alone
  * settles the in-flight adjudication fail-closed (bounded, not synchronous — the await lives in
  * the release half), and {@code release()} / the fused {@code close()} re-firing after the split
  * sequence are no-ops (the destroy-method backstop contract).
@@ -54,8 +56,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code RopcBindCredentialVerifierTest} pattern, compact): the bind's token exchange is parked on
  * a latch, so the ONLY thing that can settle it inside the window is the deny path — the parked
  * exchange aborts at its OWN per-request budget (the forked {@code CompletableFuture} join ignores
- * the deny interrupt; the pin settles fail-closed with the abort), and the fused {@code stop()} is
- * SYNCHRONOUS with that settle because release()'s {@code awaitTermination} joins it.
+ * the deny interrupt; the pin settles fail-closed with the abort); the lifecycle stop() denies
+ * WITHOUT awaiting (the await is the coordinator's release half, 4.2 T3).
  */
 @Tag("unit")
 @Tag("security")
@@ -102,7 +104,7 @@ class AdjudicationLifecycleTest {
     }
 
     @Test
-    @DisplayName("stop() DENIES an in-flight adjudication: settled DenyIndeterminate when stop() returns (AD-22)")
+    @DisplayName("stop() DENIES in-flight adjudications synchronously (deny-only, 4.2 T3); the settle lands bounded fail-closed")
     void stopDeniesInFlightAdjudications(@TempDir Path dir) throws Exception {
         CountDownLatch tokenReceived = new CountDownLatch(1);
         CountDownLatch hold = new CountDownLatch(1);
@@ -120,21 +122,25 @@ class AdjudicationLifecycleTest {
 
             lifecycle.stop();
 
-            // stop() runs the adapter's FUSED close() — deny (shutdownNow) then release (the
-            // bounded awaitTermination) — so it is SYNCHRONOUS with the settle: the parked
-            // exchange aborts at its own 4s per-request budget, the pin settles fail-closed with
-            // that abort, and release()'s await JOINS it before stop() returns (the pin can never
-            // still be pending here — the 5s await budget outlasts the 4s abort).
+            // stop() runs the adapter's deny ALONE (4.2 T3 — the release half moved to the
+            // app-phase coordinator, sequenced behind the empty drain seam): shutdownNow fired
+            // INSIDE stop(), but NO await ran here — so the in-flight settle is still PENDING the
+            // instant stop() returns. The boolean pin that the fused await left this stop: a fused
+            // close() would have blocked on the parked task's ~4s abort before returning.
             assertThat(inFlight.future().isDone())
-                    .as("deny-in-flight: the adjudication must be settled when stop() returns (AD-22)")
-                    .isTrue();
-            assertThat(inFlight.future().getNow(null))
-                    .as("a shutdown-denied adjudication is fail-closed (AD-11)")
-                    .isInstanceOf(Verdict.DenyIndeterminate.class);
-
-            // Post-stop verifies settle fail-closed (the adapter is closed — use-after-close).
+                    .as("the lifecycle stop carries no await (4.2 T3) — the settle is still pending "
+                            + "at stop() return")
+                    .isFalse();
+            // The deny DID fire synchronously: the pool is down, so a post-stop verify is rejected
+            // and settles fail-closed SYNCHRONOUSLY (no wire call, no wait — use-after-close).
             assertThat(ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX)).future().getNow(null))
-                    .as("every post-stop verify settles fail-closed")
+                    .as("stop() denies synchronously: every post-stop verify settles fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            // ...and the parked exchange aborts at its OWN 4s per-request budget (the forked join
+            // ignores the deny interrupt), settling the pin fail-closed — bounded, never awaited
+            // by the stop (the await that JOINS it is the coordinator's release step).
+            assertThat(inFlight.future().get(8, TimeUnit.SECONDS))
+                    .as("a shutdown-denied adjudication settles fail-closed at its own abort budget (AD-11)")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
         } finally {
             hold.countDown();   // exception-safe: never strand the parked stand-in handler
