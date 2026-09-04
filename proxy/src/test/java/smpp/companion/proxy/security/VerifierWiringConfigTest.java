@@ -21,6 +21,7 @@ import org.springframework.context.annotation.Configuration;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.TestCompanionConfigs;
+import smpp.companion.proxy.observability.MetricsEndpointLifecycle;
 import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,9 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * startup — the token endpoint is derived from {@code provider-url} at wiring); the forward boots
  * prove the same context yields the stand-in and never constructs an adapter.
  *
- * <p>Also pins the {@link AdjudicationLifecycle} riding along in every context, below the relay
- * acceptor's stop phase (AD-22: the acceptor stops first), and the bean-construction refusal when
- * the provider credential is blank (fail-closed at refresh, SEC-060).
+ * <p>Also pins the {@link AdjudicationLifecycle} riding along in every context, in the AD-22 deny
+ * window strictly between the relay acceptor's stop phase (the acceptor stops first) and the
+ * metrics endpoint's scrape-late window (re-phased by Story 4.2 T1), and the bean-construction
+ * refusal when the provider credential is blank (fail-closed at refresh, SEC-060).
  */
 @Tag("unit")
 @Tag("security")
@@ -75,13 +77,18 @@ class VerifierWiringConfigTest {
                     .as(kind + ": the single bean is " + expected.getSimpleName())
                     .isInstanceOf(expected);
 
-            // The AD-22 lifecycle rides along, started, and strictly below the relay acceptor's
-            // stop phase (Spring stops higher phases first — the acceptor closes BEFORE the drain).
+            // The AD-22 lifecycle rides along, started, and in the deny window: strictly below
+            // the relay acceptor's stop phase (Spring stops higher phases first — the acceptor
+            // closes BEFORE the deny) and above the metrics scrape-late window (the final scrape
+            // still sees the denied binds — Story 4.2 T1).
             AdjudicationLifecycle lifecycle = ctx.getBean(AdjudicationLifecycle.class);
             assertThat(lifecycle.isRunning()).as(kind + ": the adjudication lifecycle must be running").isTrue();
             assertThat(lifecycle.getPhase())
                     .as(kind + ": the adjudicator must stop AFTER the acceptor (AD-22)")
                     .isLessThan(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE);
+            assertThat(lifecycle.getPhase())
+                    .as(kind + ": the deny must run while the metrics scrape-late window is live")
+                    .isGreaterThan(MetricsEndpointLifecycle.METRICS_ENDPOINT_PHASE);
         });
     }
 

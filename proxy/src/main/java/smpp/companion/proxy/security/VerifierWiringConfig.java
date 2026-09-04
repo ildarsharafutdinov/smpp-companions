@@ -20,7 +20,8 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * <p>{@link AlwaysAllowBindCredentialVerifier} lost its unconditional {@code @Component} for this:
  * a self-annotated stand-in would put TWO verifier beans in every reverse context. The
  * {@link AdjudicationLifecycle} rides along in every cell (inert where the verifier is the
- * stand-in), owning the AD-22 stop window below the relay acceptor's phase.
+ * stand-in), owning the AD-22 deny window between the relay acceptor's phase and the metrics
+ * endpoint's scrape-late window (Story 4.2 T1).
  *
  * <p>No bean here touches {@code relay/} — the acceptor and interceptor keep injecting the
  * UNCHANGED port type; only the selected implementation changes per cell (AC8-immutable port,
@@ -47,9 +48,11 @@ public class VerifierWiringConfig {
     }
 
     /**
-     * The adjudicator's lifecycle bean (AD-22): stops BELOW the relay acceptor's phase, so the
-     * acceptor (no new binds) closes before the adjudicator denies its in-flight adjudications. On
-     * forward cells (the stand-in verifier) its stop is a pure flag flip.
+     * The adjudicator's lifecycle bean (AD-22): stops strictly BETWEEN the relay acceptor's phase
+     * (the acceptor — no new binds — closes first) and the metrics endpoint's scrape-late window,
+     * so the adjudicator denies its in-flight adjudications while the final scrape still sees them
+     * (re-phased by Story 4.2 T1). On forward cells (the stand-in verifier) its stop is a pure
+     * flag flip.
      */
     @Bean
     public AdjudicationLifecycle adjudicationLifecycle(BindCredentialVerifier bindCredentialVerifier) {

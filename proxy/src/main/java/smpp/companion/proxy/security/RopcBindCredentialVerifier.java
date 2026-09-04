@@ -37,6 +37,7 @@ import java.util.concurrent.StructuredTaskScope;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.StructuredTaskScope.Joiner;
 import java.util.concurrent.StructuredTaskScope.Subtask;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -252,10 +253,23 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * behavior (the wrap adds no restructuring of the pool; the sanctioned VT-gauge seam edit).
      */
     private final AtomicLong activeAdjudications;
-    /** Set at {@link #close()} entry (code review 2026-09-01, owner-sanctioned): the adapter's OWN
-     *  shutdown aborts are not provider misconfiguration — the transport-arm operator WARN stays off
-     *  routine restarts. Verdicts are unaffected (still {@code DenyIndeterminate}). */
+    /** Set at {@link #deny()} entry — the stop body's FIRST half, so every own-shutdown abort from
+     *  the deny interrupt onward is suppressed (code review 2026-09-01, owner-sanctioned): the
+     *  adapter's OWN shutdown aborts are not provider misconfiguration — the transport-arm operator
+     *  WARN stays off routine restarts. Verdicts are unaffected (still {@code DenyIndeterminate}). */
     private volatile boolean closed;
+    /**
+     * The deny half's once-guard (Story 4.2 T1): {@link #deny()} runs its body for exactly the
+     * first caller — the deny step, the fused {@link #close()}, and any later re-fire (the
+     * destroy-method backstop) all collapse to one {@code shutdownNow()}.
+     */
+    private final AtomicBoolean denied = new AtomicBoolean();
+    /**
+     * The release half's once-guard (Story 4.2 T1): {@link #release()} runs its body exactly
+     * once — a double release, or the destroy backstop re-firing after the release already ran,
+     * is a no-op, never a second await/client-close/zeroize.
+     */
+    private final AtomicBoolean released = new AtomicBoolean();
     /**
      * The T5 flood bound's condition memory (Story 4.1 checkpoint 16, 2026-09-03): the conditions
      * whose FULL operator warning has already fired. Keys draw from closed sets BY CONSTRUCTION —
@@ -840,23 +854,39 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
     }
 
     /**
-     * The T7 AD-22 stop body (invoked by {@link AdjudicationLifecycle}; also the inferred destroy
-     * method — idempotent, the failed-boot backstop). Order: <b>deny in-flight FIRST</b> —
-     * {@code shutdownNow()} interrupts every pool task (each settles its pin fail-closed in its
-     * catch) and {@code awaitTermination} bounds the drain at the per-request budget + 1s, logging
-     * fail-closed and proceeding on timeout (the hard close below aborts whatever exchanges
-     * remain, and every aborted join settles {@code DenyIndeterminate}) — <b>then</b> the shared
-     * client and the client secret are released. (The 3.2-era key-cache-refresh-before-client-close
-     * step died with the cache — Story 3.4 T2, 2026-08-27; the pool and the one shared client are
-     * the adapter's whole executor surface now, AD-28.)
+     * AD-22 step 2 — the <b>deny</b> half of the stop body (the Story 4.2 T1 split; invoked by
+     * {@link AdjudicationLifecycle} and as the first half of {@link #close()}): idempotent —
+     * exactly the first call runs the body. {@code shutdownNow()} interrupts the pool and rejects
+     * every later task; the in-flight settles land fail-closed ({@code DenyIndeterminate}, Story
+     * 3.2 AC5) as each task's exchange aborts at its OWN per-request budget — the forked
+     * {@code CompletableFuture} join ignores the deny interrupt, so the pin settles with the
+     * exchange's abort, and {@link #release()}'s bounded {@code awaitTermination} is what JOINS
+     * the unwind (which is why the await lives in the release half, keeping this half bare for the
+     * coordinator to sequence around once story 4.3 fills the drain seam).
      */
-    @Override
-    public void close() {
+    public void deny() {
+        if (!denied.compareAndSet(false, true)) {
+            return;   // already denied — idempotent (the deny step re-firing is a no-op)
+        }
         closed = true;   // our own aborts are not provider problems — keep the operator WARN off them
         adjudicationPool.shutdownNow();   // AD-22 step 2: deny in-flight
-        // The drain bound: in-flight tasks are self-bounded by the per-request timeout clamp, so the
-        // budget + 1s always suffices — the timeout arm below is defensive, and the hard close that
-        // follows forces the unwind regardless (fail-closed, deferred-work §2.1 item 5).
+    }
+
+    /**
+     * AD-22 steps 4/5 — the <b>release</b> half of the stop body (the Story 4.2 T1 split; the
+     * second half of {@link #close()}): idempotent — exactly the first call runs the body. The
+     * drain bound: in-flight tasks are self-bounded by the per-request timeout clamp (each settles
+     * as its exchange aborts, {@link #deny()}-interrupted or not), so the budget + 1s always
+     * suffices — the timeout arm below is defensive, and the hard close that follows aborts
+     * whatever exchanges remain (every aborted join settles {@code DenyIndeterminate}; fail-closed,
+     * deferred-work §2.1 item 5). Then the ONE shared provider client closes and the client secret
+     * is zeroized (AD-10 — the adapter's own secret material; the bind password's wipe stays
+     * caller-owned, 2.2 T7).
+     */
+    public void release() {
+        if (!released.compareAndSet(false, true)) {
+            return;   // already released — idempotent (the destroy backstop re-firing is a no-op)
+        }
         Duration drainBudget = callTimeout.plusSeconds(1);
         try {
             if (!adjudicationPool.awaitTermination(drainBudget.toMillis(), TimeUnit.MILLISECONDS)) {
@@ -871,5 +901,20 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         }
         http.close();
         clientSecret.zeroize();   // AD-10: the adapter's own secret material
+    }
+
+    /**
+     * The fused AD-22 stop body (the inferred destroy method — the failed-boot backstop; also what
+     * {@link AdjudicationLifecycle} runs until the 4.2 T3 coordinator owns the halves): <b>deny
+     * in-flight FIRST</b> (step 2 — {@code shutdownNow()}, every cancelled adjudication settles
+     * fail-closed), <b>then release</b> (steps 4/5 — the bounded VT await, the shared client, the
+     * client secret). (The 3.2-era key-cache-refresh-before-client-close step died with the cache
+     * — Story 3.4 T2, 2026-08-27; the pool and the one shared client are the adapter's whole
+     * executor surface now, AD-28.)
+     */
+    @Override
+    public void close() {
+        deny();      // AD-22 step 2: deny in-flight — every cancelled adjudication settles fail-closed
+        release();   // AD-22 steps 4/5: bounded await, then release the shared client + the secret
     }
 }
