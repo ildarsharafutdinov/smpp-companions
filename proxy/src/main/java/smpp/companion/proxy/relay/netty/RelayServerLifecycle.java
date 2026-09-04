@@ -19,8 +19,13 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * {@link ProxyCompanionLifecycle}: AD-22's first shutdown step is "stop the Netty SMPP acceptor (no
  * new binds)", and Spring stops higher-phase beans first ({@link #RELAY_ACCEPTOR_PHASE} &gt;
  * {@link ProxyCompanionLifecycle#APP_PHASE} — the deferred-work 2nd-SmartLifecycle ordering item).
- * The full AD-22 7-step drain body is Epic 4; this bean owns only the acceptor window: start = bind;
- * stop = close the acceptor, then quiesce the shared event loop.
+ * The AD-22 5-step drain body is Epic 4; this bean owns only step 1's window: start = bind;
+ * stop = close the acceptor ONLY — the shared event loop SURVIVES the stop (Story 4.2 T2 re-authored
+ * the quiesce out: every deny-time continuation executes on that loop, so killing it here would
+ * strand the fail-closed {@code bind_resp}s AD-22 step 2 owes the clients). The quiesce — an explicit
+ * short quiet period, never Netty's 2s default — is the shutdown coordinator's final step
+ * ({@link ProxyCompanionLifecycle}, Story 4.2 T3), with the group bean's
+ * {@code destroyMethod="shutdownGracefully"} backstop ({@code RelayNettyConfig}) behind it.
  *
  * <p><b>Driven directly (AD-16):</b> the {@link ServerBootstrap} is built here — Netty's own API, no
  * Spring messaging integration, no WebFlux/Reactor. Group = the ONE shared event loop bean (AD-1/AD-2
@@ -44,11 +49,17 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  *
  * <p><b>Stop discipline.</b> {@link #stop(Runnable)} mirrors {@link ProxyCompanionLifecycle}: the
  * callback runs in {@code finally} (releases the shutdown latch within the per-phase graceful window,
- * {@code spring.lifecycle.timeout-per-shutdown-phase: 30s}). The body closes the server channel
- * first (no new binds), then {@code shutdownGracefully()} (Netty's default quiet window) — awaited so
- * the phase completes deterministically: the port is released and the loop threads are gone before
- * the next phase runs. Both shutdown paths are idempotent; the bean's own destroy method
- * ({@code shutdownGracefully} on the group bean) is the never-started-cell backstop.
+ * {@code spring.lifecycle.timeout-per-shutdown-phase: 30s}). The body closes the server channel and
+ * NOTHING else (Story 4.2 T2) — the port is released deterministically (no new binds, AD-22 step 1)
+ * but the shared loop SURVIVES this phase: the deny window runs strictly after it (ADJUDICATION_PHASE
+ * &lt; {@link #RELAY_ACCEPTOR_PHASE}), and every cancelled adjudication's continuation hops
+ * {@code channel.eventLoop().execute(...)} — a quiesced loop would reject that and strand the
+ * fail-closed {@code bind_resp} (the residue AD-22 exists to kill). The quiesce — an explicit short
+ * quiet period (the {@code MetricsEndpointLifecycle} 100ms/2s pattern, never Netty's 2s default) —
+ * is the shutdown coordinator's final step at the app phase (Story 4.2 T3); the group bean's
+ * {@code destroyMethod="shutdownGracefully"} backstop is what guarantees the loop still dies at
+ * full-app close until then, and a no-op re-fire after the coordinator (both paths idempotent; it is
+ * also the never-started-cell backstop — non-acceptor boots never call this stop).
  */
 @Component
 @RequiredArgsConstructor
@@ -57,9 +68,11 @@ public final class RelayServerLifecycle implements SmartLifecycle {
     /**
      * The relay acceptor's stop-order phase: strictly greater than
      * {@link ProxyCompanionLifecycle#APP_PHASE}, so Spring stops the acceptor FIRST (AD-22 step 1)
-     * and the app-level lifecycle (the future AD-22 drain coordinator) stops after the data plane is
-     * down. Starts after the app lifecycle (ascending phase) — harmless today (the app lifecycle's
-     * start is a flag) and the correct nesting for Epic 4's coordinator.
+     * and the app-level lifecycle (the AD-22 shutdown coordinator) stops after the acceptor is
+     * closed — with the shared loop still LIVE across that gap (the deny continuations need it; the
+     * loop dies at the coordinator's own quiesce, its final step). Starts after the app lifecycle
+     * (ascending phase) — harmless today (the app lifecycle's start is a flag) and the correct
+     * nesting for the coordinator.
      */
     public static final int RELAY_ACCEPTOR_PHASE = ProxyCompanionLifecycle.APP_PHASE + 1000;
 
@@ -112,10 +125,13 @@ public final class RelayServerLifecycle implements SmartLifecycle {
         running = false;
         Channel acceptor = serverChannel;
         serverChannel = null;
+        // AD-22 step 1 — and the WHOLE stop body (Story 4.2 T2): close the acceptor, no new binds.
+        // The shared loop is NOT quiesced here — it must stay live for the deny continuations (the
+        // coordinator, Story 4.2 T3, owns the explicit-args quiesce at the app phase; the group bean's
+        // destroyMethod is the backstop that still kills the loop at full-app close).
         if (acceptor != null) {
-            acceptor.close().syncUninterruptibly(); // no new binds (AD-22 step 1)
+            acceptor.close().syncUninterruptibly();
         }
-        eventLoopGroup.shutdownGracefully().syncUninterruptibly(); // bounded by Netty's defaults (2s quiet / 15s cap)
     }
 
     @Override

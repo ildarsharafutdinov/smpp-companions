@@ -39,7 +39,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code companion.bind.port} for the reverse.mode-b cell (this story's slice), stays inert for every
  * other cell, fails the boot fail-fast when the port is occupied (AD-17), and stops BEFORE
  * {@code ProxyCompanionLifecycle} (AD-22 step 1 &mdash; the deferred-work 2nd-SmartLifecycle ordering
- * item) with the stop callback invoked in {@code finally} and the port deterministically released.
+ * item) with the stop callback invoked in {@code finally}, the port deterministically released, and
+ * the shared loop LEFT LIVE (Story 4.2 T2: stop() is acceptor-close only &mdash; the quiesce belongs
+ * to the shutdown coordinator, asserted at full-app close instead).
  * The full-boot tests drive the REAL component-scan wiring via {@code ProxyCompanionApplication}
  * (no slice runner) so the bean's presence in the scanned context is proven, not assumed.
  *
@@ -91,14 +93,22 @@ class RelayServerLifecycleTest {
         assertThat(OidcDiscoveryStandIn.discoveryHits())
                 .as("context close makes no provider call either (the full lifecycle, T9 boot boundary)")
                 .isEqualTo(discoveryHitsBefore);
-        // Context close ran stop(Runnable): acceptor closed + group quiesced BEFORE close returned.
-        // Neuter-guard: running flips ONLY inside stop() — the group bean's destroyMethod releases the
-        // port and flips isShutdown() on its own, so the group/port checks alone would stay GREEN under
-        // an EMPTIED stop() body; this assert is the one that bites.
+        // Context close ran stop(Runnable): acceptor closed BEFORE close returned. Neuter-guard:
+        // running flips ONLY inside stop() — the group bean's destroyMethod releases the port and
+        // flips isShutdown() on its own, so the group/port checks alone would stay GREEN under an
+        // EMPTIED stop() body; this assert is the one that bites.
         assertThat(relay.isRunning())
                 .as("context close must have run stop() — running flips only there")
                 .isFalse();
-        assertThat(group.isShutdown()).as("stop() must quiesce the shared event loop").isTrue();
+        // 4.2 T2: stop() itself no longer quiesces the loop (the coordinator, 4.2 T3, owns that) —
+        // so the quiesce pin asserts the FULL-APP close instead: by the time close() returns, the
+        // group bean's destroyMethod backstop (destroyBeans runs inside close) has fired. Until T3
+        // lands this backstop IS the loop's death; after T3 it re-fires as a no-op after the
+        // coordinator — either way the loop is provably down once the context is gone.
+        assertThat(group.isShutdown())
+                .as("the full-app close must leave the shared event loop quiesced "
+                        + "(the destroyMethod backstop until the 4.2 T3 coordinator's explicit-args quiesce)")
+                .isTrue();
         // The port is released: the ServerSocket ctor THROWS (BindException) if anything still holds it
         // (no new binds — AD-22 step 1; the ctor is the assertion).
         try (ServerSocket reclaimed = new ServerSocket(port)) {
@@ -167,7 +177,7 @@ class RelayServerLifecycleTest {
     }
 
     @Test
-    @DisplayName("stop(Runnable) invokes the callback, releases the port, and quiesces the group")
+    @DisplayName("stop(Runnable) invokes the callback, releases the port, and leaves the loop ALIVE (4.2 T2)")
     void stopInvokesCallbackAndReleasesPort() throws IOException {
         int port = RelayTestFixtures.freePort();
         EventLoopGroup group = newGroup();
@@ -191,8 +201,15 @@ class RelayServerLifecycleTest {
                 // rebound — the ctor is the assertion
             }
             lifecycle.stop(); // idempotent second stop: a no-op, never a throw
+            // 4.2 T2 neuter-guard: stop() is acceptor-close ONLY — the loop must SURVIVE both stops
+            // (the deny continuations execute on it; the quiesce is the 4.2 T3 coordinator's). A
+            // re-added shutdownGracefully in stop() goes RED here.
+            assertThat(group.isShutdown())
+                    .as("stop() must NOT quiesce the shared event loop (4.2 T2 — acceptor close only)")
+                    .isFalse();
         } finally {
-            // Exception-safety: a failed assertion must not strand the acceptor, the port, or the group.
+            // Exception-safety: a failed assertion must not strand the acceptor, the port, or the group
+            // (stop() no longer quiesces the loop — the group is this test's OWN to release, 4.2 T2).
             lifecycle.stop();
             group.shutdownGracefully().syncUninterruptibly();
         }
