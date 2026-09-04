@@ -52,11 +52,15 @@ public class RelayNettyConfig {
      * {@code companion-relay-...} name makes the relay's loops identifiable in thread dumps (and lets
      * the AD-1 platform-thread pin observe them). Size 0 = Netty's default (2 &times; cores).
      *
-     * <p>Shutdown is owned by {@link RelayServerLifecycle#stop()} (acceptor close &rarr; graceful
-     * group shutdown, awaited within the per-phase window) when the relay ran;
-     * {@code destroyMethod = "shutdownGracefully"} is the never-started-cell backstop (non-mode-b
-     * boots never call the lifecycle's stop) and both paths are idempotent. Not {@code destroyMethod = ""}
-     * as on the allocator &mdash; this bean OWNS its group (created here, not a JVM-global singleton).
+     * <p>The loop quiesce is NOT the acceptor's stop (Story 4.2 T2 &mdash;
+     * {@link RelayServerLifecycle#stop()} closes the acceptor only; the loop must stay live across
+     * the deny phase so the fail-closed continuations execute): the AD-22 shutdown coordinator at the
+     * app phase ({@code ProxyCompanionLifecycle}, Story 4.2 T3) owns the quiesce &mdash; awaited,
+     * explicit short quiet period. {@code destroyMethod = "shutdownGracefully"} is the backstop that
+     * still guarantees the loop dies at full-app close (never-started cells never reach the
+     * coordinator; a re-fire after the coordinator's quiesce is a no-op &mdash; both paths
+     * idempotent). Not {@code destroyMethod = ""} as on the allocator &mdash; this bean OWNS its
+     * group (created here, not a JVM-global singleton).
      *
      * <p>{@link MultiThreadIoEventLoopGroup} + {@link NioIoHandler#newFactory()} (NOT the deprecated
      * {@code NioEventLoopGroup}) is Netty 4.2's NIO idiom &mdash; the 4.2 IoHandle refactor deprecated

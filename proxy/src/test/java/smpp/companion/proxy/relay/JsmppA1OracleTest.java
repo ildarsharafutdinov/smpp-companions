@@ -86,6 +86,7 @@ class JsmppA1OracleTest {
     private final List<Socket> clients = new ArrayList<>();
     private JsmppSmscServer smsc;
     private RelayServerLifecycle relay;
+    private EventLoopGroup relayLoop;
     private RelayTestFixtures.ModeBRelayHarness harness;
     private int relayPort;
 
@@ -97,8 +98,9 @@ class JsmppA1OracleTest {
                 RelayTestFixtures.modeBProperties(relayPort, 1, "127.0.0.1", smsc.port()));
         // The REAL production wiring behind the REAL acceptor (the T6-review deferred wiring pin):
         // real PDUs through the acceptor bite on any dropped wiring line.
+        relayLoop = newGroup();
         relay = new RelayServerLifecycle(
-                harness.properties(), newGroup(), newOptions(), harness.ingressInitializer());
+                harness.properties(), relayLoop, newOptions(), harness.ingressInitializer());
         relay.start();
         assertThat(relay.isRunning()).as("precondition: the relay acceptor is up").isTrue();
     }
@@ -114,7 +116,12 @@ class JsmppA1OracleTest {
         });
         clients.clear();
         if (relay != null) {
-            relay.stop(); // idempotent; also quiesces the shared event loop
+            relay.stop(); // idempotent — closes the acceptor ONLY (4.2 T2)
+        }
+        if (relayLoop != null) {
+            // 4.2 T2: stop() no longer quiesces the loop (the coordinator's job in production) — the
+            // hand-rolled group is this test's OWN to release.
+            relayLoop.shutdownGracefully().syncUninterruptibly();
         }
         if (smsc != null) {
             smsc.close();
