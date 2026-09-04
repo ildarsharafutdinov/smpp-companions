@@ -63,6 +63,13 @@ public enum CloseReason {
      * Fires since the Story 4.1 T4 hoist &mdash; for a refused/failed connect AND every pre-answer egress
      * death or violation (the {@code EgressLeg} collapse arms); all indistinguishable on the wire by
      * design (AD-33), all the same taxonomy value.
+     *
+     * <p><b>Single-direction semantics:</b> the hoist stashes the reason on the INGRESS leg only
+     * ({@code BindInterceptor.denyAndTeardown} stashes the ingress before the deny-and-close) &mdash;
+     * THIS value is what the client-facing leg's close fires. The egress leg's OWN close carries no
+     * stash and surfaces as the unstashed pre-couple default ({@link #OTHER}); when the connect
+     * itself failed there is no egress channel to close at all (which is why the value is named
+     * from the ingress's perspective: the egress could not be established).
      */
     EGRESS_CONNECT_FAILED,
     /** A frame exceeded {@code SmppFrame.MAX_COMMAND_LENGTH} (the AD-30 framer ceiling). */

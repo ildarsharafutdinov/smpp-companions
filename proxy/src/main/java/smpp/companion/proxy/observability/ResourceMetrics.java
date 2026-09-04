@@ -23,10 +23,11 @@ import smpp.companion.proxy.security.RopcBindCredentialVerifier;
  *       plane actually eating the arena set" &mdash; the allocator's own metric is the authoritative
  *       live number (no /proc, no reflection into JDK internals).</li>
  *   <li>{@link #ACTIVE_ADJUDICATIONS_GAUGE} &mdash; in-flight ROPC bind adjudications (the
- *       {@code ropc-adjudication} virtual-thread pool). Micrometer's {@code jvm_threads_*} binders
- *       count platform threads and DO NOT see VTs, which is why the pool counts itself: the adapter
- *       increments at submit and decrements in the pool task's {@code finally} (its sanctioned
- *       VT-gauge seam &mdash; no pool restructuring), and this gauge only READS
+ *       {@code ropc-adjudication} virtual-thread pool). No {@code jvm_threads_*} binder is bound on
+ *       this registry (deliberate, story scope: actuator is purity-banned, and those binders count
+ *       platform threads only &mdash; they cannot see VTs anyway), which is why the pool counts
+ *       itself: the adapter increments at submit and decrements in the pool task's {@code finally}
+ *       (its sanctioned VT-gauge seam &mdash; no pool restructuring), and this gauge only READS
  *       {@link RopcBindCredentialVerifier#activeAdjudications()}. Registered ONLY when the cell's
  *       verifier IS the ROPC adapter (reverse cells); a forward cell has no such pool, so the gauge's
  *       absence there is truthful, not a gap.</li>

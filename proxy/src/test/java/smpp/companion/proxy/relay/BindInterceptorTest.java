@@ -169,6 +169,10 @@ class BindInterceptorTest {
         assertThat(observer.bindRejects())
                 .as("the retry-guard reject is not a Verdict — no onBindReject (AD-27)")
                 .isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("Story 4.1 T4 hoist: the retry-guard deny close carries BIND_REJECTED, not OTHER")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.BIND_REJECTED));
         assertThat(retry.refCnt()).as("the retry bind's original frame is released (never forwarded)").isZero();
         assertThat(registry.size()).as("no registry corruption — the single entry was torn down").isZero();
 
@@ -431,6 +435,10 @@ class BindInterceptorTest {
         assertThat(deny.getInt(8)).isEqualTo(ESME_RBINDFAIL);
         assertThat(deny.getInt(12)).isEqualTo(11);
         assertThat(observer.bindRejects()).as("an exception is not a returned Verdict — no onBindReject (AD-27)").isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("Story 4.1 T4 hoist: the fail-closed exception arm's close carries BIND_REJECTED")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.BIND_REJECTED));
         assertThat(ingress.isOpen()).isFalse();
         assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value())).isTrue();
         assertThat(frame.refCnt()).isZero();
@@ -459,6 +467,11 @@ class BindInterceptorTest {
             assertThat(deny2.getInt(8)).isEqualTo(ESME_RBINDFAIL);
             assertThat(deny2.getInt(12)).isEqualTo(12);
             assertThat(throwingIngress.isOpen()).isFalse();
+            assertThat(observer.connectionCloses())
+                    .as("Story 4.1 T4 hoist: the synchronous-throw arm ALSO closes BIND_REJECTED "
+                            + "(freshIngress() above reset the observer — this is arm (b)'s own close)")
+                    .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                            Direction.INGRESS, CloseReason.BIND_REJECTED));
             assertThat(registry.size()).isZero();
         } finally {
             throwingIngress.finishAndReleaseAll();
@@ -493,6 +506,10 @@ class BindInterceptorTest {
             assertThat(deny.getInt(8)).isEqualTo(ESME_RBINDFAIL);
             assertThat(deny.getInt(12)).isEqualTo(13);
             assertThat(observer.bindRejects()).as("null is not a returned Verdict — no onBindReject (AD-27)").isEmpty();
+            assertThat(observer.connectionCloses())
+                    .as("Story 4.1 T4 hoist: the null-verdict arm's close carries BIND_REJECTED")
+                    .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                            Direction.INGRESS, CloseReason.BIND_REJECTED));
             assertThat(nullingIngress.isOpen()).isFalse();
             assertThat(registry.size()).isZero();
             assertThat(CoupledPairHarness.zeroized(seen[0].password().value()))

@@ -2,49 +2,29 @@ package smpp.companion.proxy.observability;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.text.ParseException;
-import java.time.OffsetDateTime;
-import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.slf4j.LoggerFactory;
-
-import com.nimbusds.jose.util.JSONObjectUtils;
 
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 
 import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.LoggerContext;
-import ch.qos.logback.classic.joran.JoranConfigurator;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.ConsoleAppender;
-import ch.qos.logback.core.OutputStreamAppender;
-import ch.qos.logback.core.joran.spi.JoranException;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandler;
-import io.netty.channel.DefaultChannelId;
 import io.netty.channel.embedded.EmbeddedChannel;
-import io.netty.util.AsciiString;
 
-import smpp.companion.codec.bind.SmppBindPdu;
 import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.codec.framer.SmppFrameDecoder;
@@ -58,17 +38,14 @@ import smpp.companion.proxy.relay.RelayIngressHandler;
 import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
-import smpp.companion.proxy.security.BindCredential;
-import smpp.companion.proxy.security.BindCredentialVerifier;
-import smpp.companion.proxy.security.RequestContext;
 import smpp.companion.proxy.security.SystemId;
-import smpp.companion.proxy.security.Verdict;
-import smpp.companion.proxy.security.VerdictRequest;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 import smpp.companion.proxy.tls.SmppLegTlsFactory;
 
+import io.netty.util.AsciiString;
+import org.slf4j.LoggerFactory;
+
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Story 4.1 T6 (checkpoint 21) &mdash; the FR-OBS-2 proof: stdout is JSON-LINES. One JSON object per
@@ -78,24 +55,18 @@ import static org.assertj.core.api.Assertions.fail;
  *
  * <p><b>The appender under test is the SHIPPED one, not a copy.</b> The tier's plain
  * {@code logback-test.xml} (which keeps {@code OutputCapture} assertions matching raw text) masks the
- * production shape for every other test &mdash; so this suite arms the REAL encoder three ways:
+ * production shape for every other test &mdash; so this suite arms the REAL encoder three ways
+ * (the shared {@link ObservabilityPairHarness} capture):
  * <ol>
  *   <li>a source pin on {@code logback-spring.xml} (encoder class, UTC, the ISO pattern, the INFO
  *       root &mdash; the {@code MetricsEndpointTest} source-pin idiom);</li>
  *   <li>a FULL boot under {@code --logging.config=classpath:logback-spring.xml} with stdout swapped
  *       into memory &mdash; Spring re-initializes logback from the production file, so EVERY boot line
  *       (framework noise included) must come out one-parseable-object-per-line;</li>
- *   <li>an in-memory capture appender REUSING the file-configured {@code LogstashEncoder} (loaded
- *       through {@link JoranConfigurator} from the classpath resource, then detached from the console
- *       and re-streamed into a sink) while the REAL fire sites are driven through the embedded-pair
- *       harness &mdash; the accept at the ROK couple, the reject at the AD-33 deny plane, the TRACE
- *       bodies at {@code relayFramedPdu} (the {@code ThrowingObserverHardeningTest} fixture mirror;
- *       the relay package's {@code CoupledPairHarness} is package-private).</li>
+ *   <li>the harness's in-memory capture reusing the file-configured {@code LogstashEncoder} while the
+ *       REAL fire sites are driven through the embedded-pair fixture &mdash; the accept at the ROK
+ *       couple, the reject at the AD-33 deny plane, the TRACE bodies at {@code relayFramedPdu}.</li>
  * </ol>
- *
- * <p><b>Strict parsing via Nimbus</b> ({@link JSONObjectUtils#parse} &mdash; the security suites'
- * idiom): json-path's json-smart backend accepts garbage, which would make the every-line-parses
- * row vacuous; Nimbus rejects plain text and trailing garbage.
  *
  * <p>RED-on-neuter: flip the encoder/timeZone/pattern in {@code logback-spring.xml}, add a secret to
  * the startup summary, drop the bind-family redaction, or emit a non-JSON stdout line from the boot
@@ -105,52 +76,20 @@ import static org.assertj.core.api.Assertions.fail;
 @Tag("observability")
 @Tag("p1")
 @DisplayName("StructuredLog — FR-OBS-2: stdout is JSON-lines (UTC ISO stamps, secret-free, TRACE-gated)")
-class StructuredLogTest {
-
-    private static final String PRODUCTION_CONFIG = "/logback-spring.xml";
-    private static final String TEST_CONFIG = "/logback-test.xml";
-
-    /** The production file's only appender name — the handle {@link #armProductionAppender} grabs. */
-    private static final String CONSOLE_APPENDER = "CONSOLE";
-
-    /**
-     * The PDU-body TRACE logger's name &mdash; pinned as the LITERAL (the
-     * {@code ThrowingObserverHardeningTest} idiom): the TRACE rows arm the level by this exact name,
-     * so a rename of the production constant silently kills body logging and those rows go red.
-     */
-    private static final String PDU_BODY_LOGGER = "smpp.companion.proxy.relay.pdu";
-
-    private static final int HEADER = 16;
-
-    /** SMPP 3.4 §4.1.2 opaque PDU (never parsed by the codec) — a relaying stand-in with a body. */
-    private static final int SUBMIT_SM = 0x00000004;
-
-    private final ByteArrayOutputStream sink = new ByteArrayOutputStream();
-    private final List<EmbeddedChannel> channels = new ArrayList<>();
-    private final List<ByteBuf> toRelease = new ArrayList<>();
-    private LoggerContext logback;
+class StructuredLogTest extends ObservabilityPairHarness {
 
     @TempDir
     Path dir;
 
-    @AfterEach
-    void releaseChannelsAndBuffers() {
-        channels.forEach(EmbeddedChannel::finishAndReleaseAll);
-        channels.clear();
-        toRelease.forEach(b -> {
-            if (b.refCnt() > 0) {
-                b.release();
-            }
-        });
-        toRelease.clear();
-    }
+    private ConnectionRegistry registry;
+    private RelayStateManager manager;
 
     // ---------- row 0: the shipped config pins the shape ------------------------------------
 
     @Test
     @DisplayName("logback-spring.xml pins the JSON-lines shape: LogstashEncoder, ISO_OFFSET_DATE_TIME, UTC, INFO root")
     void productionConfigPinsTheJsonLinesShape() throws IOException {
-        String xml = readResource(PRODUCTION_CONFIG);
+        String xml = readResource("/logback-spring.xml");
         assertThat(xml).as("the production console appender uses the logstash encoder")
                 .contains("net.logstash.logback.encoder.LogstashEncoder");
         assertThat(xml).as("the timestamp pattern is the bracketed ISO constant (never a hand-rolled pattern)")
@@ -167,7 +106,7 @@ class StructuredLogTest {
     @DisplayName("full boot under --logging.config: EVERY stdout line is one JSON object, UTC ISO stamps, "
             + "startup_summary present/secret-free, no bodies")
     void fullBootEmitsPureJsonLinesStdout() throws IOException {
-        RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
+        RelayTestFixtures.SmppTlsLegs tlsLegs = RelayTestFixtures.smppTlsLegs(dir);
         int bindPort = RelayTestFixtures.freePort();
         int metricsPort = RelayTestFixtures.freePort();
         // Stdout is swapped BEFORE the boot so even a start-time ConsoleAppender binding lands in the
@@ -180,7 +119,7 @@ class StructuredLogTest {
         try (ConfigurableApplicationContext ctx = new SpringApplicationBuilder(ProxyCompanionApplication.class)
                 .web(WebApplicationType.NONE)
                 .properties(
-                        "companion.forward.mode-a.trust-store.path=" + legs.trustStore(),
+                        "companion.forward.mode-a.trust-store.path=" + tlsLegs.trustStore(),
                         "companion.forward.mode-a.trust-store.password=" + RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD,
                         "companion.forward.mode-a.routing[0].system-id=carrierOne",
                         "companion.forward.mode-a.routing[0].host=reverse.internal",
@@ -225,6 +164,10 @@ class StructuredLogTest {
                 .isEqualTo(List.of("carrierOne"));
         assertThat((List<Object>) startup.get("tls_protocols")).containsExactlyInAnyOrder("TLSv1.3", "TLSv1.2");
         assertThat(((Number) startup.get("max_inbound_depth")).intValue()).isOne();
+        assertThat(startup.get("memory_budget_bytes")).as("the derived AD-30 budget is on the line").isNotNull();
+        assertThat(startup.get("direct_memory_ceiling_bytes"))
+                .as("the live ceiling the AD-30 self-check compared the budget against is on the line")
+                .isNotNull();
 
         // Secret-free: neither the fixture's trust-store PASSWORD value nor any secret-named key
         // crossed — the summary draws only from non-secret config structure (a future field that
@@ -245,10 +188,11 @@ class StructuredLogTest {
     @DisplayName("bind accept/reject JSON lines carry the contract fields: system_id, verdict type, "
             + "AD-33 wire status (driven through the real fire sites)")
     void bindAcceptAndRejectLinesCarryTheContractFields() {
-        armProductionAppender();
+        armProductionJsonAppender();
         try {
             MeteredRelayObserver observer = new MeteredRelayObserver(
-                    new PrometheusMeterRegistry(PrometheusConfig.DEFAULT), new RoutingTable(relayProperties()));
+                    new PrometheusMeterRegistry(PrometheusConfig.DEFAULT),
+                    new RoutingTable(relayProperties()));
 
             rejectBind(observer); // BindInterceptor's deny plane — the worst-arm fire site
             couple(observer);     // the AD-25 ROK couple — the accept fire site
@@ -277,16 +221,18 @@ class StructuredLogTest {
     @DisplayName("TRACE on the PDU logger: opaque bodies appear as parseable JSON lines (hex), the stray "
             + "re-bind is redacted — the password (plaintext AND hex) never crosses")
     void traceOnLogsBodiesAsJsonLinesButNeverThePassword() {
-        armProductionAppender();
+        armProductionJsonAppender();
         ch.qos.logback.classic.Logger pduLogger =
                 (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PDU_BODY_LOGGER);
         Level original = pduLogger.getLevel();
         pduLogger.setLevel(Level.TRACE);
         try {
             MeteredRelayObserver observer = new MeteredRelayObserver(
-                    new PrometheusMeterRegistry(PrometheusConfig.DEFAULT), new RoutingTable(relayProperties()));
+                    new PrometheusMeterRegistry(PrometheusConfig.DEFAULT),
+                    new RoutingTable(relayProperties()));
             couple(observer);
             ingress.writeInbound(inbound(opaquePdu(SUBMIT_SM, 301)));
+            egress.writeInbound(inbound(opaquePdu(OPAQUE_DLR_TAG, 302)));
             // The residual password carrier: a stray post-couple re-bind relays as its ORIGINAL frame
             // — the one bind-family PDU that can reach the TRACE site.
             byte[] strayRebind = bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 303, "legacy1", "sekrit-pw");
@@ -298,6 +244,8 @@ class StructuredLogTest {
             assertUtcIsoStamps(lines);
             assertThat(lines).anySatisfy(line -> assertThat(String.valueOf(line.get("message")))
                     .contains("relayed pdu: direction=" + Direction.INGRESS));
+            assertThat(lines).anySatisfy(line -> assertThat(String.valueOf(line.get("message")))
+                    .contains("relayed pdu: direction=" + Direction.EGRESS));
             String raw = sink.toString(StandardCharsets.UTF_8);
             assertThat(raw).as("the bind family's body is redacted — metadata only")
                     .contains("<redacted: bind family>");
@@ -315,10 +263,11 @@ class StructuredLogTest {
     @DisplayName("TRACE off (the default): relayed traffic logs NO bodies — the JSON stream stays "
             + "alive (the accept line) but carries no content")
     void traceOffLogsNoBodies() {
-        armProductionAppender(); // the production config's own levels: root INFO, no TRACE anywhere
+        armProductionJsonAppender(); // the production config's own levels: root INFO, no TRACE anywhere
         try {
             MeteredRelayObserver observer = new MeteredRelayObserver(
-                    new PrometheusMeterRegistry(PrometheusConfig.DEFAULT), new RoutingTable(relayProperties()));
+                    new PrometheusMeterRegistry(PrometheusConfig.DEFAULT),
+                    new RoutingTable(relayProperties()));
             couple(observer);
             ingress.writeInbound(inbound(opaquePdu(SUBMIT_SM, 401)));
 
@@ -334,108 +283,8 @@ class StructuredLogTest {
         }
     }
 
-    // ---------- the production appender under test -------------------------------------------
-
-    /**
-     * Reconfigures the JVM's logback from the PRODUCTION {@code logback-spring.xml} (classpath
-     * resource), then re-streams the file-configured encoder into an in-memory appender: the shape
-     * under test is the shipped one, not a test-side twin. The console appender is detached (its
-     * encoder is borrowed, not copied) and the whole arrangement is undone by
-     * {@link #restoreTestLogging()}.
-     */
-    private void armProductionAppender() {
-        logback = (LoggerContext) LoggerFactory.getILoggerFactory();
-        sink.reset();
-        logback.reset();
-        configure(PRODUCTION_CONFIG);
-        ConsoleAppender<ILoggingEvent> console = (ConsoleAppender<ILoggingEvent>)
-                logback.getLogger(ch.qos.logback.classic.Logger.ROOT_LOGGER_NAME).getAppender(CONSOLE_APPENDER);
-        assertThat(console).as("the production config declares the %s appender", CONSOLE_APPENDER).isNotNull();
-        assertThat(console.getEncoder()).as("the production encoder is the logstash one")
-                .isInstanceOf(net.logstash.logback.encoder.LogstashEncoder.class);
-        OutputStreamAppender<ILoggingEvent> capture = new OutputStreamAppender<>();
-        capture.setContext(logback);
-        capture.setName("STRUCTURED_LOG_TEST_CAPTURE");
-        capture.setEncoder(console.getEncoder()); // the SHIPPED encoder, shared (the console is detached)
-        capture.setOutputStream(sink);
-        capture.start();
-        ch.qos.logback.classic.Logger root = logback.getLogger(ch.qos.logback.classic.Logger.ROOT_LOGGER_NAME);
-        root.addAppender(capture);
-        root.detachAppender(console);
-    }
-
-    /** Restores the tier's plain {@code logback-test.xml} so later suites see the test console. */
-    private void restoreTestLogging() {
-        logback.reset();
-        configure(TEST_CONFIG);
-    }
-
-    private void configure(String resource) {
-        JoranConfigurator configurator = new JoranConfigurator();
-        configurator.setContext(logback);
-        try (InputStream in = StructuredLogTest.class.getResourceAsStream(resource)) {
-            assertThat(in).as("classpath resource %s", resource).isNotNull();
-            configurator.doConfigure(in);
-        } catch (JoranException | IOException e) {
-            throw new IllegalStateException("cannot configure logback from " + resource, e);
-        }
-    }
-
-    // ---------- JSON-stream assertion helpers -------------------------------------------------
-
-    /** Strict-parses EVERY captured line as one JSON object (Nimbus rejects plain text and garbage). */
-    private List<Map<String, Object>> capturedJsonLines() {
-        return parseEveryLine(sink.toString(StandardCharsets.UTF_8).lines()
-                .map(String::trim).filter(s -> !s.isEmpty()).toList());
-    }
-
-    private static List<Map<String, Object>> parseEveryLine(List<String> lines) {
-        List<Map<String, Object>> parsed = new ArrayList<>(lines.size());
-        for (String line : lines) {
-            try {
-                parsed.add(JSONObjectUtils.parse(line));
-            } catch (ParseException e) {
-                fail("stdout line is not one JSON object (FR-OBS-2): <" + line + ">", e);
-            }
-        }
-        return parsed;
-    }
-
-    /** Every line's {@code @timestamp} must be ISO-8601 with a UTC offset (a 'Z' or +00:00 render). */
-    private static void assertUtcIsoStamps(List<Map<String, Object>> parsed) {
-        for (Map<String, Object> line : parsed) {
-            Object ts = line.get("@timestamp");
-            assertThat(ts).as("@timestamp field on every line").isNotNull();
-            OffsetDateTime stamp;
-            try {
-                stamp = OffsetDateTime.parse(String.valueOf(ts));
-            } catch (DateTimeParseException e) {
-                throw new AssertionError("@timestamp is not ISO-8601: <" + ts + ">", e);
-            }
-            assertThat(stamp.getOffset().getTotalSeconds())
-                    .as("@timestamp offset is UTC (%s)", ts)
-                    .isZero();
-        }
-    }
-
-    private static Map<String, Object> lineByEvent(List<Map<String, Object>> lines, String event) {
-        return lines.stream()
-                .filter(line -> event.equals(line.get("event")))
-                .findFirst()
-                .orElseGet(() -> fail("no " + event + " line among " + lines.size() + " captured lines"));
-    }
-
-    private static String readResource(String resource) throws IOException {
-        try (InputStream in = StructuredLogTest.class.getResourceAsStream(resource)) {
-            assertThat(in).as("classpath resource %s", resource).isNotNull();
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
-    }
-
     // ---------- the embedded-pair fixture (the ThrowingObserverHardeningTest mirror) -----------
 
-    private ConnectionRegistry registry;
-    private RelayStateManager manager;
     private EmbeddedChannel ingress;
     private EmbeddedChannel egress;
 
@@ -486,99 +335,10 @@ class StructuredLogTest {
         return RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1);
     }
 
-    private EmbeddedChannel channel(ChannelHandler... handlers) {
-        EmbeddedChannel channel = new EmbeddedChannel(DefaultChannelId.newInstance(), handlers);
-        channels.add(channel); // released in @AfterEach however the row ends (exception-safe)
-        return channel;
-    }
-
-    /** A verifier whose future is ALREADY settled to {@code DenyInvalid} (the committed deny idiom). */
-    private static BindCredentialVerifier denyingVerifier() {
-        return (BindCredential cred, ScopedValue<RequestContext> ctx) -> new VerdictRequest() {
-            @Override
-            public java.util.concurrent.CompletableFuture<Verdict> future() {
-                return java.util.concurrent.CompletableFuture.completedFuture(new Verdict.DenyInvalid());
-            }
-
-            @Override
-            public void cancelHttp() {
-                // no wire call exists to cancel on this fixture
-            }
-        };
-    }
-
-    /** Releases whatever a channel's inbound queue holds (the EgressLeg-less ROK tail). */
-    private static void drainInbound(EmbeddedChannel channel) {
-        Object msg;
-        while ((msg = channel.readInbound()) != null) {
-            if (msg instanceof SmppBindPdu pdu) {
-                pdu.originalFrame().release();
-            } else if (msg instanceof ByteBuf buf) {
-                buf.release();
-            }
+    private static String readResource(String resource) throws IOException {
+        try (java.io.InputStream in = StructuredLogTest.class.getResourceAsStream(resource)) {
+            assertThat(in).as("classpath resource %s", resource).isNotNull();
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
-    }
-
-    // ---------- hand-authored PDU builders (raw bytes — independent of the codec) --------------
-
-    private static byte[] bindRequest(int commandId, int sequence, String systemId, String password) {
-        byte[] id = ascii(systemId);
-        byte[] pw = ascii(password);
-        byte[] type = ascii("SMPP");
-        byte[] range = ascii("");
-        int body = (id.length + 1) + (pw.length + 1) + (type.length + 1) + 3 + (range.length + 1);
-        return assemble(commandId, 0, sequence, body, out -> {
-            out.put(id).put((byte) 0);
-            out.put(pw).put((byte) 0);
-            out.put(type).put((byte) 0);
-            out.put((byte) 0x34).put((byte) 0).put((byte) 0);
-            out.put(range).put((byte) 0);
-        });
-    }
-
-    private static byte[] bindResponse(int commandId, int sequence, int commandStatus, String systemId,
-            byte[] tlvTail) {
-        byte[] id = ascii(systemId);
-        int body = (id.length + 1) + tlvTail.length;
-        return assemble(commandId, commandStatus, sequence, body, out -> {
-            out.put(id).put((byte) 0);
-            out.put(tlvTail);
-        });
-    }
-
-    /** An OPAQUE non-bind PDU: a valid 16-octet header + an arbitrary opaque body (never parsed). */
-    private static byte[] opaquePdu(int commandId, int sequence) {
-        byte[] body = new byte[] {0x01, 0x02, 0x03, 0x04};
-        return assemble(commandId, 0, sequence, body.length, out -> out.put(body));
-    }
-
-    private interface BodyWriter {
-        void writeTo(java.nio.ByteBuffer out);
-    }
-
-    private static byte[] assemble(int commandId, int commandStatus, int sequence, int bodyLen, BodyWriter writer) {
-        java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(HEADER + bodyLen);
-        out.putInt(HEADER + bodyLen).putInt(commandId).putInt(commandStatus).putInt(sequence);
-        writer.writeTo(out);
-        return out.array();
-    }
-
-    /** Lowercase hex of a PDU's bytes — the exact text {@code ByteBufUtil.hexDump} would emit. */
-    private static String hex(byte[] pdu) {
-        StringBuilder sb = new StringBuilder(pdu.length * 2);
-        for (byte b : pdu) {
-            sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
-        }
-        return sb.toString();
-    }
-
-    private static byte[] ascii(String s) {
-        return s.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    private ByteBuf inbound(byte[] pdu) {
-        ByteBuf buf = Unpooled.wrappedBuffer(pdu);
-        toRelease.add(buf); // backstop release; the normal path releases via the pipeline
-        return buf;
     }
 }

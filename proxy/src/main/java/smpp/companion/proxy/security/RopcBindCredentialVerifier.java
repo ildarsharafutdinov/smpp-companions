@@ -260,11 +260,11 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * The T5 flood bound's condition memory (Story 4.1 checkpoint 16, 2026-09-03): the conditions
      * whose FULL operator warning has already fired. Keys draw from closed sets BY CONSTRUCTION —
      * the transport arm keys on the failure's {@code IOException} class name, the status arm on
-     * {@code status:<code>[:<oauth-error>]} (HTTP status codes plus RFC 6749 &sect;5.2 error codes
-     * off the trusted, client-authenticated provider link), the opaque arm on one literal — so the
-     * set cannot grow per-bind, per-attacker, or per-token-value. Fire sites run on the
-     * adjudication pool's virtual threads; {@link Set#add} on the concurrent set is the atomic
-     * once-test (returns true exactly for the condition's first occurrence).
+     * {@code status:<code>} ONLY (HTTP status codes; the provider-echoed OAuth error string rides
+     * the detail line, never the key — step-04 review, finding #6), the opaque arm on one literal —
+     * so the set cannot grow per-bind, per-attacker, per-error-echo, or per-token-value. Fire
+     * sites run on the adjudication pool's virtual threads; {@link Set#add} on the concurrent set
+     * is the atomic once-test (returns true exactly for the condition's first occurrence).
      */
     private final Set<String> operatorWarnedConditions = ConcurrentHashMap.newKeySet();
 
@@ -520,14 +520,16 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
      * parsed OAuth {@code error} code on the 400 arm, when present — code review 2026-09-01), the
      * derived token endpoint, and the configured provider-url — the misconfiguration posture the
      * retired startup probe used to catch at boot. T5 (Story 4.1 checkpoint 16): the banner fires
-     * once per {@code status:<code>[:<oauth-error>]} condition, the one-liner on repeats — the
-     * status-plus-error pair is the condition (400 unauthorized_client and 404 are two conditions,
-     * and each earns its own banner).
+     * once per {@code status:<code>} condition, the one-liner on repeats — the STATUS is the
+     * condition (400 and 404 are two conditions, each earning its own banner). The provider-echoed
+     * OAuth error string rides the per-occurrence DETAIL line only, never the condition key
+     * (step-04 review, finding #6): it is provider-controlled free text, so keying on it would let
+     * a provider returning distinct error strings re-fire the banner per bind and grow the
+     * condition set without bound.
      */
     private Verdict unmappedStatus(HttpResponse<byte[]> response, @Nullable String oauthError) {
         String errorDetail = oauthError == null ? "" : " (OAuth error: " + oauthError + ")";
-        warnOperatorFailure("status:" + response.statusCode()
-                + (oauthError == null ? "" : ":" + oauthError),
+        warnOperatorFailure("status:" + response.statusCode(),
                 "the token endpoint returned HTTP " + response.statusCode() + errorDetail
                         + " — not a credential verdict.");
         return new Verdict.DenyIndeterminate();

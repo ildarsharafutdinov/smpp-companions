@@ -174,7 +174,10 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         assertThat(observer.framedPdus()).as("nothing crossed the relay — no onFramedPdu(INGRESS) leak").isEmpty();
         assertThat(observer.connectionCloses())
                 .as("the egress close carries the pre-couple reason")
-                .contains(new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.PRE_COUPLE_NON_BIND_PDU));
+                .contains(new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.PRE_COUPLE_NON_BIND_PDU))
+                .as("Story 4.1 T4 hoist: the EgressLeg collapse that synthesized the deny stashed "
+                        + "EGRESS_CONNECT_FAILED on the INGRESS leg (single-direction semantics)")
+                .contains(new CapturingRelayObserver.ConnectionClose(Direction.INGRESS, CloseReason.EGRESS_CONNECT_FAILED));
         assertThat(frame.refCnt()).as("the never-forwarded deliver_sm frame is released").isZero();
     }
 
@@ -225,6 +228,9 @@ class RelayEgressHandlerTest extends CoupledPairHarness {
         assertThat(registry.size()).isZero();
         assertThat(observer.connectionCloses())
                 .as("the decode reject is observed as DECODE_ERROR on the egress leg")
-                .contains(new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.DECODE_ERROR));
+                .contains(new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.DECODE_ERROR))
+                .as("Story 4.1 T4 hoist: the EgressLeg collapse behind the deny stashed "
+                        + "EGRESS_CONNECT_FAILED on the INGRESS leg")
+                .contains(new CapturingRelayObserver.ConnectionClose(Direction.INGRESS, CloseReason.EGRESS_CONNECT_FAILED));
     }
 }

@@ -18,6 +18,14 @@ spring:
     # Per-phase ceiling for SmartLifecycle.stop() — bounds the future AD-22 shutdown window (AC8).
     timeout-per-shutdown-phase: 30s
 
+# Story 4.1 (FR-OBS-2): PDU bodies are TRACE-gated and OFF by default. The relay's body logger is
+# addressable through the standard logging.level.* keys — uncomment for a debugging session (bodies
+# then appear as one JSON line per relayed PDU; the bind family stays redacted, so the password
+# never crosses at any level):
+# logging:
+#   level:
+#     smpp.companion.proxy.relay.pdu: TRACE
+
 companion:
   # --- COMMON (required by every cell; defaulted here) -----------------------------------
   bind:

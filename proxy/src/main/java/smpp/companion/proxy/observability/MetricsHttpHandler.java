@@ -106,7 +106,20 @@ final class MetricsHttpHandler extends SimpleChannelInboundHandler<FullHttpReque
             writeAndClose(ctx, response(HttpResponseStatus.NOT_FOUND, PLAIN_TEXT, "not found (exact path: /metrics)\n"));
             return;
         }
-        writeAndClose(ctx, response(HttpResponseStatus.OK, PROMETHEUS_TEXT, registry.scrape()));
+        // Step-04 review (finding #7): a scrape that THROWS must still get an HTTP answer — an
+        // exception escaping channelRead0 surfaces as a pipeline error, and unlike the two documented
+        // row-4 paths nothing here would answer it. Fail closed on the WIRE (500, static one-line
+        // body, connection closed) and log one bounded WARN (an operator-relevant anomaly, rare by
+        // construction — the registry is written only by construction-time pre-registrations).
+        String body;
+        try {
+            body = registry.scrape();
+        } catch (RuntimeException e) {
+            log.warn("metrics endpoint: scrape failed — answering 500 and closing", e);
+            writeAndClose(ctx, response(HttpResponseStatus.INTERNAL_SERVER_ERROR, PLAIN_TEXT, "scrape failed\n"));
+            return;
+        }
+        writeAndClose(ctx, response(HttpResponseStatus.OK, PROMETHEUS_TEXT, body));
     }
 
     /**

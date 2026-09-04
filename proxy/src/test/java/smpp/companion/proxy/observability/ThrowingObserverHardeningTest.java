@@ -1,11 +1,7 @@
 package smpp.companion.proxy.observability;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.EnumSet;
-import java.util.List;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -19,13 +15,10 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import ch.qos.logback.classic.Level;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.DefaultChannelId;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.AsciiString;
 import org.slf4j.LoggerFactory;
 
-import smpp.companion.codec.bind.SmppBindPdu;
 import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.command.SmppCommandIds;
 import smpp.companion.codec.framer.SmppFrameDecoder;
@@ -38,12 +31,8 @@ import smpp.companion.proxy.relay.RelayIngressHandler;
 import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
-import smpp.companion.proxy.security.BindCredential;
-import smpp.companion.proxy.security.BindCredentialVerifier;
-import smpp.companion.proxy.security.RequestContext;
 import smpp.companion.proxy.security.SystemId;
 import smpp.companion.proxy.security.Verdict;
-import smpp.companion.proxy.security.VerdictRequest;
 import smpp.companion.proxy.tls.SmppLegTlsFactory;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
@@ -84,28 +73,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(value = 10, threadMode = ThreadMode.SEPARATE_THREAD) // a hung handler chain must FAIL a test,
 // not hang the suite (the BindInterceptorTest pattern).
 @ExtendWith(OutputCaptureExtension.class)
-class ThrowingObserverHardeningTest {
+class ThrowingObserverHardeningTest extends ObservabilityPairHarness {
 
     /** AD-33 Q2 — the ratified generic bind-failure code, pinned independently of the production constant. */
     private static final int ESME_RBINDFAIL = 0x0000000D;
-
-    private static final int HEADER = 16;
-
-    /**
-     * SMPP 3.4 §4.1.2 opaque PDUs (never parsed by the codec). The DLR tag is deliberately NOT the
-     * real deliver_sm id (0x00000005) — a non-existent id guarantees no endpoint ever parses the
-     * frame (the CoupledPairHarness note).
-     */
-    private static final int SUBMIT_SM = 0x00000004;
-    private static final int OPAQUE_DLR_TAG = 0x00000105;
-
-    /**
-     * The PDU-body TRACE logger's name — pinned here as the LITERAL (the MetricsEndpointTest
-     * source-pin idiom, runtime flavor): the TRACE row arms the level by this exact name, so a rename
-     * of {@code CoupledRelayHandler}'s private constant silently kills body logging and this test
-     * goes red on the missing body lines.
-     */
-    private static final String PDU_BODY_LOGGER = "smpp.companion.proxy.relay.pdu";
 
     private ConnectionRegistry registry;
     private RelayStateManager manager;
@@ -115,7 +86,6 @@ class ThrowingObserverHardeningTest {
     private RelayChannelOptions channelOptions;
     private EmbeddedChannel ingress;
     private EmbeddedChannel egress;
-    private final List<ByteBuf> toRelease = new ArrayList<>();
 
     @BeforeEach
     void sharedBeans() {
@@ -125,22 +95,6 @@ class ThrowingObserverHardeningTest {
         routingTable = new RoutingTable(properties);
         tlsFactory = new SmppLegTlsFactory(properties, Runnable::run);
         channelOptions = new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT);
-    }
-
-    @AfterEach
-    void drainAndRelease() {
-        if (ingress != null) {
-            ingress.finishAndReleaseAll();
-        }
-        if (egress != null) {
-            egress.finishAndReleaseAll();
-        }
-        toRelease.forEach(b -> {
-            if (b.refCnt() > 0) {
-                b.release();
-            }
-        });
-        toRelease.clear();
     }
 
     // ---------- row 1: a throwing onBindAccept leaves the couple + relay plane intact ----------
@@ -226,8 +180,7 @@ class ThrowingObserverHardeningTest {
             + "close carries BIND_REJECTED (the T4 hoist — not OTHER)")
     void throwingOnBindRejectStillSynthesizesTheDenyAndTearsDown(CapturedOutput out) {
         ThrowingRelayObserver observer = new ThrowingRelayObserver(EnumSet.of(ThrowingRelayObserver.Trigger.BIND_REJECT));
-        ingress = new EmbeddedChannel(DefaultChannelId.newInstance(),
-                new SmppFrameDecoder(), new SmppCodec(),
+        ingress = channel(new SmppFrameDecoder(), new SmppCodec(),
                 new BindInterceptor(denyingVerifier(), manager, observer, properties,
                         new RelayEgressInitializer(manager, observer), channelOptions, routingTable, tlsFactory),
                 new RelayIngressHandler(manager, observer));
@@ -373,9 +326,8 @@ class ThrowingObserverHardeningTest {
      * ROK lands on the egress inbound queue; the tail releases it (see the class javadoc).
      */
     private void coupledPair(ThrowingRelayObserver observer) {
-        ingress = new EmbeddedChannel(DefaultChannelId.newInstance(),
-                new SmppFrameDecoder(), new SmppCodec(), new RelayIngressHandler(manager, observer));
-        egress = new EmbeddedChannel(DefaultChannelId.newInstance(), new RelayEgressInitializer(manager, observer));
+        ingress = channel(new SmppFrameDecoder(), new SmppCodec(), new RelayIngressHandler(manager, observer));
+        egress = channel(new RelayEgressInitializer(manager, observer));
         ConnectionEntry entry = manager.register(ingress, new SystemId(new AsciiString("legacy1")));
         manager.attachEgress(ingress.id(), egress);
 
@@ -390,33 +342,6 @@ class ThrowingObserverHardeningTest {
         drainInbound(ingress);
     }
 
-    /** A verifier whose future is ALREADY settled to {@code DenyInvalid} (the committed deny-test idiom). */
-    private static BindCredentialVerifier denyingVerifier() {
-        return (BindCredential cred, ScopedValue<RequestContext> ctx) -> new VerdictRequest() {
-            @Override
-            public java.util.concurrent.CompletableFuture<Verdict> future() {
-                return java.util.concurrent.CompletableFuture.completedFuture(new Verdict.DenyInvalid());
-            }
-
-            @Override
-            public void cancelHttp() {
-                // no wire call exists to cancel on this fixture
-            }
-        };
-    }
-
-    /** Releases whatever a channel's inbound queue holds (the EgressLeg-less ROK tail). */
-    private static void drainInbound(EmbeddedChannel channel) {
-        Object msg;
-        while ((msg = channel.readInbound()) != null) {
-            if (msg instanceof SmppBindPdu pdu) {
-                pdu.originalFrame().release();
-            } else if (msg instanceof ByteBuf buf) {
-                buf.release();
-            }
-        }
-    }
-
     /** Counts the throw-isolation WARN lines for one seam method (the marker is unique per method). */
     private static long isolationWarns(CapturedOutput out, String trigger) {
         return out.getAll().lines()
@@ -427,69 +352,6 @@ class ThrowingObserverHardeningTest {
     /** Substring occurrence count (AssertJ's containsOnce has no count flavor for plain strings). */
     private static long countOf(CapturedOutput out, String marker) {
         return out.getAll().lines().filter(line -> line.contains(marker)).count();
-    }
-
-    /** Lowercase hex of a PDU's bytes — the exact text {@code ByteBufUtil.hexDump} would emit. */
-    private static String hex(byte[] pdu) {
-        StringBuilder sb = new StringBuilder(pdu.length * 2);
-        for (byte b : pdu) {
-            sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
-        }
-        return sb.toString();
-    }
-
-    // ---------- hand-authored PDU builders (raw bytes — independent of the codec; the harness idiom) ---
-
-    private static byte[] bindRequest(int commandId, int sequence, String systemId, String password) {
-        byte[] id = ascii(systemId);
-        byte[] pw = ascii(password);
-        byte[] type = ascii("SMPP");
-        byte[] range = ascii("");
-        int body = (id.length + 1) + (pw.length + 1) + (type.length + 1) + 3 + (range.length + 1);
-        return assemble(commandId, 0, sequence, body, out -> {
-            out.put(id).put((byte) 0);
-            out.put(pw).put((byte) 0);
-            out.put(type).put((byte) 0);
-            out.put((byte) 0x34).put((byte) 0).put((byte) 0);
-            out.put(range).put((byte) 0);
-        });
-    }
-
-    private static byte[] bindResponse(int commandId, int sequence, int commandStatus, String systemId,
-            byte[] tlvTail) {
-        byte[] id = ascii(systemId);
-        int body = (id.length + 1) + tlvTail.length;
-        return assemble(commandId, commandStatus, sequence, body, out -> {
-            out.put(id).put((byte) 0);
-            out.put(tlvTail);
-        });
-    }
-
-    /** An OPAQUE non-bind PDU: a valid 16-octet header + an arbitrary opaque body (never parsed). */
-    private static byte[] opaquePdu(int commandId, int sequence) {
-        byte[] body = new byte[] {0x01, 0x02, 0x03, 0x04};
-        return assemble(commandId, 0, sequence, body.length, out -> out.put(body));
-    }
-
-    private interface BodyWriter {
-        void writeTo(java.nio.ByteBuffer out);
-    }
-
-    private static byte[] assemble(int commandId, int commandStatus, int sequence, int bodyLen, BodyWriter writer) {
-        java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(HEADER + bodyLen);
-        out.putInt(HEADER + bodyLen).putInt(commandId).putInt(commandStatus).putInt(sequence);
-        writer.writeTo(out);
-        return out.array();
-    }
-
-    private static byte[] ascii(String s) {
-        return s.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    private ByteBuf inbound(byte[] pdu) {
-        ByteBuf buf = Unpooled.wrappedBuffer(pdu);
-        toRelease.add(buf); // backstop release; the normal path releases via the pipeline
-        return buf;
     }
 
     private static byte[] bytesOf(ByteBuf buf) {
