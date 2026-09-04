@@ -4,16 +4,16 @@
 
 ## Goal
 
-Make the proxy operable in production: an operator scrapes a read-only Prometheus `/metrics` endpoint (loopback IPv4 only, cardinality bounded by the routing table), reads structured JSON-lines logs (startup/config-resolved, bind accept/reject with `system_id`, errors; full PDU/body TRACE-only and off by default), and triggers a SIGTERM graceful shutdown validated end-to-end. There is deliberately NO management API — no query/drain/reload/rotate at runtime; `/metrics` is read-only telemetry, never a control surface. The production observability implementation swaps the seeded noop observer behind unchanged seams, so the relay needs no re-architecture to become observable. Status: next up — Epics 1–3 are code-complete (every Epic-2/3 story done; the epic-2 tracker flag is not yet flipped).
+Make the proxy operable in production: an operator scrapes a read-only Prometheus `/metrics` endpoint (loopback IPv4 only, cardinality bounded by the routing table), reads structured JSON-lines logs (startup/config-resolved, bind accept/reject with `system_id`, errors; full PDU/body TRACE-only and off by default), and triggers a SIGTERM graceful shutdown validated end-to-end. There is deliberately NO management API — no query/drain/reload/rotate at runtime; `/metrics` is read-only telemetry, never a control surface. The production observability implementation swaps the seeded noop observer behind unchanged seams, so the relay needs no re-architecture to become observable. Status: Epics 1–3 done (tracker flags flipped 2026-09-04). Epic 4 in progress: 4.1 done; 4.2/4.3 specs drafted 2026-09-04 (AD-22 split in two); the relay-timeout round (4.4) still to slice.
 
 ## Stories
 
-Not yet decomposed — no story files exist; the epics file leaves story placeholders and the tracker appends keys as stories are created. Known committed scope blocks for slicing:
+Decomposition (updated 2026-09-04; the epics file leaves story placeholders and the tracker appends keys as stories are created):
 
-- Production observability impl in `proxy/observability/` (full): Micrometer `RelayObserver` + the loopback `/metrics` endpoint + JSON-lines logging, replacing Epic 2's noop observer behind the unchanged interface
-- AD-22 graceful-shutdown drain body, end-to-end (re-authors the current acceptor-stop behavior)
-- The deferred relay-timeout round (adjudication deadline, egress connect bounding, ingress `bind_resp` handling, idle-timeout residue) explicitly re-homed to this epic by the deferred-work ledger
-- Observer-seam hardening that must land with the production observer (details below)
+- **4.1 — structured logs and loopback metrics: DONE (2026-09-04).** Carried the full observability impl (Micrometer `RelayObserver`, `/metrics` endpoint, JSON-lines logs) plus the observer-seam hardening and operator-warning bounding that had to land with it.
+- **4.2 — AD-22 graceful shutdown pt. 1: deny-in-flight on a live loop + the 5-step skeleton** (spec `4-2-graceful-shutdown-deny-on-live-loop.md`, drafted 2026-09-04). Splits the verifier `close()` into deny/release, stops the acceptor killing the shared loop, lands the coordinator skeleton: deny → drain (empty seam) → release-await → quiesce. Fixes the stranded-continuation residue.
+- **4.3 — AD-22 graceful shutdown pt. 2: the connection drain body** (spec `4-3-graceful-shutdown-drain.md`, drafted 2026-09-04). Fills the seam: registry enumeration + mutation fence, `companion.shutdown.drain-timeout`, drain-to-deadline with `SHUTDOWN_DRAIN` force-close, the new-adjudication gate (OBS-017), full ordering proofs (OBS-016, RELAY-022, OBS-020).
+- **4.4 — relay-timeout round: NOT YET SLICED** (renumbered from the "story 4.3" references in 4.1's frozen block and earlier notes — adjudication deadline, egress connect bounding, ingress `bind_resp` handling, idle-timeout residue, re-homed to this epic by the deferred-work ledger). Re-check the ledger at story-creation.
 
 ## Requirements & Constraints
 
