@@ -1,7 +1,9 @@
 package smpp.companion.proxy.relay;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,6 +29,10 @@ import smpp.companion.proxy.security.SystemId;
  * failure after an optimistic entry leaves no orphan (RELAY-006). The race-free CAS proof is a single-shot
  * two-leg race here; the statistical jcstress proof (RELAY-007) is deferred to the nightly hardening story
  * (see Completion Notes).
+ *
+ * <p><b>Story 4.3 T1:</b> the read-only AD-22 drain-enumeration snapshot — empty registry, N pairs as
+ * {@code LivePair} projections (never the entry itself), and point-in-time isolation from later mutation.
+ * The mutation fence itself lives in {@code ConnectionRegistryMutationFenceArchitectureTest}.
  *
  * <p><b>EmbeddedChannel + explicit {@link DefaultChannelId#newInstance()}:</b> the no-arg {@link EmbeddedChannel}
  * ctor historically shares a singleton {@code EmbeddedChannelId}, so every test channel is constructed with an
@@ -267,5 +273,65 @@ class ConnectionRegistryTest {
         assertThat(registry.size()).as("no orphaned entry lingers (a phantom pair corrupts AD-22 drain enumeration)").isZero();
         assertThat(registry.entryFor(ingress)).isNull();
         assertThat(registry.beginTeardown(ingress)).isNull(); // idempotent re-entry is still a no-op
+    }
+
+    @Test
+    @DisplayName("snapshot of an empty registry is empty (the drain body's fast no-op walk)")
+    void snapshotOfEmptyRegistryIsEmpty() {
+        ConnectionRegistry registry = new ConnectionRegistry();
+
+        assertThat(registry.snapshot()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("snapshot enumerates every live pair as ingress+egress+systemId projections (never the entry)")
+    void snapshotEnumeratesEveryLivePairAsProjections() {
+        ConnectionRegistry registry = new ConnectionRegistry();
+        EmbeddedChannel ingressPending = channel();
+        EmbeddedChannel ingressCoupled = channel();
+        EmbeddedChannel egressCoupled = channel();
+        EmbeddedChannel ingressThird = channel();
+        registry.register(ingressPending, systemId("legacyPending"));
+        registry.register(ingressCoupled, systemId("legacyCoupled"));
+        registry.attachEgress(ingressCoupled.id(), egressCoupled);
+        registry.register(ingressThird, systemId("legacyThird"));
+
+        List<ConnectionRegistry.LivePair> snapshot = registry.snapshot();
+
+        assertThat(snapshot).containsExactlyInAnyOrder(
+                new ConnectionRegistry.LivePair(ingressPending, null, systemId("legacyPending")),
+                new ConnectionRegistry.LivePair(ingressCoupled, egressCoupled, systemId("legacyCoupled")),
+                new ConnectionRegistry.LivePair(ingressThird, null, systemId("legacyThird")));
+        assertThat(snapshot).as("the snapshot agrees with size()").hasSize(registry.size());
+    }
+
+    @Test
+    @DisplayName("snapshot is a point-in-time copy: later register/teardown never reach it, and it rejects mutation")
+    void snapshotIsIsolatedFromLaterMutation() {
+        ConnectionRegistry registry = new ConnectionRegistry();
+        EmbeddedChannel ingressA = channel();
+        EmbeddedChannel ingressB = channel();
+        registry.register(ingressA, systemId("legacyA"));
+        registry.register(ingressB, systemId("legacyB"));
+        List<ConnectionRegistry.LivePair> snapshot = registry.snapshot();
+
+        // Later mutation: a third pair registers, one snapshot row tears down.
+        EmbeddedChannel ingressC = channel();
+        registry.register(ingressC, systemId("legacyC"));
+        registry.beginTeardown(ingressA);
+
+        assertThat(snapshot).as("a point-in-time copy — neither the new pair nor the teardown reaches it")
+                .containsExactlyInAnyOrder(
+                        new ConnectionRegistry.LivePair(ingressA, null, systemId("legacyA")),
+                        new ConnectionRegistry.LivePair(ingressB, null, systemId("legacyB")));
+        assertThat(registry.snapshot()).as("a fresh snapshot reflects the mutated registry")
+                .containsExactlyInAnyOrder(
+                        new ConnectionRegistry.LivePair(ingressB, null, systemId("legacyB")),
+                        new ConnectionRegistry.LivePair(ingressC, null, systemId("legacyC")));
+        assertThat(registry.size()).isEqualTo(2);
+
+        // Read-only surface: the snapshot list rejects mutation itself.
+        assertThatThrownBy(() -> snapshot.add(new ConnectionRegistry.LivePair(channel(), null, systemId("rogue"))))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 }
