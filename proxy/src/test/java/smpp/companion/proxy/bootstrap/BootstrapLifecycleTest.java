@@ -10,6 +10,8 @@ import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 
+import io.netty.channel.EventLoopGroup;
+
 import smpp.companion.proxy.ProxyCompanionApplication;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,8 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * timeout. "SIGTERM-equivalent" = closing the context ({@code ContextClosedEvent} ->
  * {@code SmartLifecycle.stop}), which is exactly what the JVM shutdown hook does on SIGTERM.
  * Since Story 4.2 T3 the close drives the REAL AD-22 coordinator body
- * ({@code ProxyCompanionLifecycle}'s 5-step walk); this suite stays the framework-level smoke —
- * the meaningful shutdown upper-bound row is 4.2 T4's.
+ * ({@code ProxyCompanionLifecycle}'s 5-step walk); the MEANINGFUL shutdown upper bound (well
+ * under the 30s phase ceiling) landed with Story 4.2 T4 — the walk's race-level rows live in
+ * {@code GracefulShutdownRacesTest}.
  *
  * <p>Story 1.3 lockstep: the boot now supplies a complete valid forward+A config (mode + the
  * cell-required secret paths + routing + OIDC) so the AD-17 matrix validator passes and the test
@@ -63,16 +66,29 @@ class BootstrapLifecycleTest {
     void contextCloseStopsLifecycleWithinGracefulTimeout(@TempDir Path dir) throws IOException {
         ConfigurableApplicationContext ctx = builder(dir).run(MINIMAL_MEMORY);
         ProxyCompanionLifecycle lifecycle = ctx.getBean(ProxyCompanionLifecycle.class);
+        EventLoopGroup group = ctx.getBean(EventLoopGroup.class);
         assertThat(lifecycle.isRunning()).isTrue();
 
         long start = System.nanoTime();
         ctx.close(); // SIGTERM-equivalent (ContextClosedEvent -> SmartLifecycle.stop)
         long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
-        assertThat(lifecycle.isRunning()).isFalse(); // stop() ran
-        // Graceful-shutdown phase ceiling is 30s; the coordinator walk closes in well under that
-        // (the meaningful bound is 4.2 T4's row).
-        assertThat(elapsedMs).isLessThan(30_000L);
+        assertThat(lifecycle.isRunning()).isFalse(); // stop() ran (the flag flips only there)
+        // The walk's final step at FULL-APP close: the shared loop is provably down once close()
+        // returns (the coordinator's awaited quiesce; the group bean's destroyMethod backstop is
+        // a no-op re-fire behind it — an unawaited or missing quiesce goes RED here).
+        assertThat(group.isTerminated())
+                .as("the coordinator's quiesce ran and was awaited before close() returned")
+                .isTrue();
+        // The MEANINGFUL upper bound (Story 4.2 T4 — replaces the trivial 30s ceiling assert): an
+        // idle forward-cell walk is the flag + three no-op adapter steps + the 100ms-quiet quiesce,
+        // so a healthy close lands well under a second; 5s is 6x inside the 30s per-phase ceiling
+        // (application.yml) with CI-variance headroom, and still catches every gross walk
+        // regression the old assert waved through (a wedged step that eats most of the phase
+        // window, a re-added blocking drain before 4.3's deadline exists).
+        assertThat(elapsedMs)
+                .as("the full-app SIGTERM-equivalent close completes well under the 30s phase ceiling")
+                .isLessThan(5_000L);
     }
 
     /**
