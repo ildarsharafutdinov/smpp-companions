@@ -205,7 +205,8 @@ class DirectMemoryBudgetStartupCheckTest {
                                 new ProxyCompanionProperties.Smsc("smsc.example", 2775), true,
                                 RelayTestFixtures.testOidc()),
                         null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
         assertThatThrownBy(() -> new DirectMemoryBudgetStartupCheck(props).afterPropertiesSet())
                 .isInstanceOf(DirectMemoryBudgetException.class);
     }

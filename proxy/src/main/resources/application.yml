@@ -85,6 +85,16 @@ companion:
   metrics:
     port: 9090
 
+  # Story 4.3 (AD-22): the graceful-shutdown drain deadline. After the acceptor stops and in-flight
+  # adjudications deny, established pairs drain — in-flight writes flush and peers half-close — until
+  # this budget expires; the remainder is force-closed as SHUTDOWN_DRAIN (OBS-020), so a peer that
+  # never half-closes can never hang the exit. 10s default; keep STRICTLY below the 30s
+  # spring.lifecycle.timeout-per-shutdown-phase ceiling above — an operator contract, not validated
+  # (a deadline at/above the phase window would let Spring cut the walk mid-drain). Zero/negative
+  # refuses startup (compact-ctor guard).
+  shutdown:
+    drain-timeout: 10s
+
   # --- BRANCHES (populate EXACTLY ONE; all examples below are commented) ------------------
   # Every secret is a FILE PATH (AD-18); secrets never ship in-repo, so all branch material is
   # operator-supplied via env/args. Uncomment one block per instance.

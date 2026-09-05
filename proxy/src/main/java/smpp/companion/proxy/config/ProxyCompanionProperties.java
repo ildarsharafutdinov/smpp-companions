@@ -30,8 +30,9 @@ import smpp.companion.codec.framer.SmppFrame;
  * check).
  *
  * <p>Common inputs (all cells) live at the root: the AD-34 {@code companion.tls.*} defaults, the
- * {@code companion.bind.*} port, and the AD-30 {@code companion.memory.*} inputs (defaulted in
- * application.yml). Each branch record declares ONLY the fields its cell needs, so {@code @NotNull}
+ * {@code companion.bind.*} port, the AD-30 {@code companion.memory.*} inputs, and the AD-22
+ * {@code companion.shutdown.*} graceful-shutdown drain deadline (all defaulted in application.yml).
+ * Each branch record declares ONLY the fields its cell needs, so {@code @NotNull}
  * maps directly to "required for this cell" and {@code @Nullable} to "optional" &mdash; nullability now
  * corresponds to optionality by construction. {@code max-frame} / {@code max-command-length} are
  * <b>not</b> config keys &mdash; they ARE {@link SmppFrame#MAX_COMMAND_LENGTH}, referenced directly
@@ -58,7 +59,10 @@ public record ProxyCompanionProperties(
 
         @Valid @Nullable Reverse reverse,
 
-        @Valid @Nullable Metrics metrics
+        @Valid @Nullable Metrics metrics,
+
+        @NotNull(message = "companion.shutdown.* is required — refusing to start (AD-22).")
+        @Valid Shutdown shutdown
 ) {
 
     /**
@@ -414,6 +418,46 @@ public record ProxyCompanionProperties(
             if (port < 1 || port > 65535) {
                 throw new IllegalArgumentException(
                         "companion.metrics.port must be in [1,65535] — refusing to start (got " + port + ").");
+            }
+        }
+    }
+
+    /**
+     * The graceful-shutdown drain deadline (AD-22 step 3, Story 4.3): once the acceptor has stopped
+     * and in-flight adjudications have denied, established pairs drain &mdash; in-flight writes flush
+     * and peers half-close &mdash; until this budget expires; whatever remains is force-closed and
+     * stashed {@code CloseReason.SHUTDOWN_DRAIN} (OBS-020), so a peer that never half-closes can
+     * never hang the exit.
+     *
+     * @param drainTimeout the drain window the AD-22 shutdown coordinator polls the connection
+     *         registry against (a Clock-injectable deadline &mdash; the drain body, Story 4.3 T5).
+     *         Default {@code 10s} in {@code application.yml}; keeping it STRICTLY below the 30s
+     *         {@code spring.lifecycle.timeout-per-shutdown-phase} ceiling is an OPERATOR CONTRACT
+     *         documented there (the oidc.timeout pattern: the relation is not validated, but a
+     *         deadline at/above the phase window would let Spring cut the walk mid-drain). Positive
+     *         &mdash; zero and negative refuse startup (compact-ctor guard, AD-17).
+     */
+    public record Shutdown(
+            @NotNull(message = "companion.shutdown.drain-timeout is required — refusing to start (AD-22).")
+            Duration drainTimeout
+    ) {
+
+        /**
+         * Fail-fast construction guard (the Bind precedent): the drain deadline must be a POSITIVE
+         * duration &mdash; zero and negative are misconfigurations, not degenerate-but-usable
+         * windows (a zero deadline would force-close mid-write pairs immediately, exactly the cut
+         * the drain exists to avoid). Fires at construction (direct) and at refresh (yml/args), so
+         * an invalid value refuses startup (AD-17). The {@code requireNonNull} arm guards DIRECT
+         * construction: through binding, an empty-string value converts to null for a Duration
+         * target and the null-only node collapses the whole component to null, which the ROOT
+         * {@code @NotNull} refuses (the blank/absent collapse, SEC-054's precedent one level up).
+         */
+        public Shutdown {
+            Objects.requireNonNull(drainTimeout, "drainTimeout");
+            if (drainTimeout.isZero() || drainTimeout.isNegative()) {
+                throw new IllegalArgumentException(
+                        "companion.shutdown.drain-timeout must be positive — refusing to start (got "
+                                + drainTimeout + ")");
             }
         }
     }
