@@ -257,7 +257,8 @@ class IdpSslContextFactoryTest {
                 new ProxyCompanionProperties.Tls(protocols, tls12, tls13),
                 forward,
                 reverse,
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
     }
 
     private static ProxyCompanionProperties properties(List<String> protocols, List<String> tls12, List<String> tls13,

@@ -20,6 +20,7 @@ import smpp.companion.proxy.config.ProxyCompanionProperties.Reverse;
 import smpp.companion.proxy.config.ProxyCompanionProperties.ReverseModeC;
 import smpp.companion.proxy.config.ProxyCompanionProperties.RoutingEntry;
 import smpp.companion.proxy.config.ProxyCompanionProperties.ServerCert;
+import smpp.companion.proxy.config.ProxyCompanionProperties.Shutdown;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Smsc;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Tls;
 import smpp.companion.proxy.config.ProxyCompanionProperties.TrustStore;
@@ -61,7 +62,8 @@ class CompanionRoleFailFastTest {
                                 List.of(new RoutingEntry("carrierOne", "reverse.internal", 2776, null))),
                         null, null),
                 null,
-                null);
+                null,
+                new Shutdown(Duration.ofSeconds(10)));
         new ProxyCompanionProperties(
                 new Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
@@ -77,7 +79,8 @@ class CompanionRoleFailFastTest {
                                         "/run/secrets/oidc-client-secret",
                                         new TrustStore("/run/secrets/idp-truststore.p12", null),
                                         Duration.ofSeconds(4), 64))),
-                null);
+                null,
+                new Shutdown(Duration.ofSeconds(10)));
     }
 
     @Test

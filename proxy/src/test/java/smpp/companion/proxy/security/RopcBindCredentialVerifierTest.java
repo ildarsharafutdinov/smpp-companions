@@ -1275,7 +1275,8 @@ class RopcBindCredentialVerifierTest {
                                 new ProxyCompanionProperties.TrustStore(idpStore.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
                                 timeout, maxInFlight)), null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
     }
 
     /**

@@ -44,6 +44,12 @@ public final class RelayTestFixtures {
     public static final Duration DEFAULT_ADJUDICATION_DEADLINE = Duration.ofSeconds(4);
 
     /**
+     * The documented application.yml default for {@code companion.shutdown.drain-timeout} (Story 4.3
+     * T3, the AD-22 drain deadline) — same uniformity rule as {@link #DEFAULT_ADJUDICATION_DEADLINE}.
+     */
+    public static final Duration DEFAULT_DRAIN_TIMEOUT = Duration.ofSeconds(10);
+
+    /**
      * PKCS12 password of the Keycloak fixture's {@code truststore.p12} / {@code client-keystore.p12}
      * ({@code keycloak/certs/} — see {@code KeycloakFixture.STORE_PASSWORD}; restated here because
      * that constant is package-private to {@code security/}). NOT a production secret.
@@ -145,7 +151,8 @@ public final class RelayTestFixtures {
                         new ProxyCompanionProperties.ReverseModeB(
                                 new ProxyCompanionProperties.Smsc(smscHost, smscPort), true, testOidc()),
                         null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(DEFAULT_DRAIN_TIMEOUT));
     }
 
     /**
@@ -194,7 +201,8 @@ public final class RelayTestFixtures {
                                 URI.create(providerUrl), "smpp-client-confidential", secret.toString(),
                                 new ProxyCompanionProperties.TrustStore(store.toString(), IDP_STORE_PASSWORD),
                                 oidcTimeout, 8)), null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(DEFAULT_DRAIN_TIMEOUT));
     }
 
     /**
@@ -287,7 +295,8 @@ public final class RelayTestFixtures {
                                         "carrierOne", reverseHost, reversePort, null))),
                         null, null),
                 null,
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(DEFAULT_DRAIN_TIMEOUT));
     }
 
     /**
@@ -309,7 +318,8 @@ public final class RelayTestFixtures {
                                         "carrierOne", reverseHost, reversePort, null))),
                         null),
                 null,
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(DEFAULT_DRAIN_TIMEOUT));
     }
 
     /** reverse &times; A: internet-leg TLS listener (server cert) + plaintext SMSC dial + OIDC. */
@@ -327,7 +337,8 @@ public final class RelayTestFixtures {
                                         legs.reverseServerCert().toString(), legs.reverseServerKey().toString()),
                                 testOidc()),
                         null, null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(DEFAULT_DRAIN_TIMEOUT));
     }
 
     /** reverse &times; C: the reverse-A listener + trust store REQUIRE-validating the forward's client cert. */
@@ -346,7 +357,8 @@ public final class RelayTestFixtures {
                                         legs.reverseServerCert().toString(), legs.reverseServerKey().toString()),
                                 legs.trustStoreRecord(),
                                 testOidc())),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(DEFAULT_DRAIN_TIMEOUT));
     }
 
     private static ProxyCompanionProperties.Bind baseBind(int bindPort) {

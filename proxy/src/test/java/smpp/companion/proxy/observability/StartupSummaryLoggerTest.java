@@ -68,7 +68,8 @@ class StartupSummaryLoggerTest extends ObservabilityPairHarness {
                                 List.of(new ProxyCompanionProperties.RoutingEntry(
                                         "alpha", "reverse.internal", 2776, null))),
                         null),
-                null, null);
+                null, null,
+                shutdown());
     }
 
     private static ProxyCompanionProperties reverseAProperties() {
@@ -80,7 +81,8 @@ class StartupSummaryLoggerTest extends ObservabilityPairHarness {
                                 new ProxyCompanionProperties.ServerCert("/unused.crt", "/unused.key"),
                                 oidc()),
                         null, null),
-                null);
+                null,
+                shutdown());
     }
 
     private static ProxyCompanionProperties reverseBProperties() {
@@ -93,7 +95,8 @@ class StartupSummaryLoggerTest extends ObservabilityPairHarness {
                                 true, // ack present — the logger reads structure only
                                 oidc()),
                         null),
-                null);
+                null,
+                shutdown());
     }
 
     private static ProxyCompanionProperties reverseCProperties() {
@@ -106,7 +109,8 @@ class StartupSummaryLoggerTest extends ObservabilityPairHarness {
                                 new ProxyCompanionProperties.ServerCert("/unused.crt", "/unused.key"),
                                 new ProxyCompanionProperties.TrustStore("/unused.p12", null),
                                 oidc())),
-                null);
+                null,
+                shutdown());
     }
 
     private static ProxyCompanionProperties.Bind bind() {
@@ -120,6 +124,10 @@ class StartupSummaryLoggerTest extends ObservabilityPairHarness {
 
     private static ProxyCompanionProperties.Tls tls() {
         return new ProxyCompanionProperties.Tls(List.of("TLSv1.3"), List.of(), List.of());
+    }
+
+    private static ProxyCompanionProperties.Shutdown shutdown() {
+        return new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(10));
     }
 
     private static ProxyCompanionProperties.Oidc oidc() {

@@ -159,6 +159,7 @@ class MeteredRelayObserverTest {
                                         new ProxyCompanionProperties.RoutingEntry(
                                                 "beta", "reverse2.internal", 2776, null))),
                         null, null),
-                null, null);
+                null, null,
+                new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(10)));
     }
 }

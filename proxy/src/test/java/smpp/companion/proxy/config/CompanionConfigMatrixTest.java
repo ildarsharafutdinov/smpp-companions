@@ -266,6 +266,32 @@ class CompanionConfigMatrixTest {
                 "metrics port " + badPort, "metrics.port");
     }
 
+    // --- Story 4.3 T3 (AD-22): the shutdown drain deadline's fail-fast guard -----------------
+
+    @ParameterizedTest(name = "AD-22: drain-timeout \"{0}\" -> refuse")
+    @MethodSource("invalidDrainTimeouts")
+    @DisplayName("Story 4.3: an invalid companion.shutdown.drain-timeout -> refuse (the Shutdown compact-ctor guard)")
+    void invalidDrainTimeoutRefuses(String bad, String token) {
+        // The exact INVALID value is BOUND over the base's valid 10s (never the key removed — the
+        // null-vs-blank trap). The empty string converts to null for the Duration target and the
+        // null-only node collapses the whole shutdown component to null — the ROOT @NotNull refuses
+        // it (the SEC-054 blank/absent collapse, one level up); 0s/-5s bite the compact-ctor
+        // positive guard (a zero deadline would force-close mid-write pairs immediately — exactly
+        // the cut the drain exists to avoid); a non-duration token refuses at conversion. Per-case
+        // tokens keep each parametrized branch independently falsifiable (the
+        // invalidTrustStoreStates pattern).
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.shutdown.drain-timeout", bad),
+                "drain-timeout " + bad, token);
+    }
+
+    static Stream<Arguments> invalidDrainTimeouts() {
+        return Stream.of(
+                Arguments.of("", "companion.shutdown.* is required"), // null-only node -> the root @NotNull (the SEC-054 collapse)
+                Arguments.of("0s", "must be positive"),   // zero: a degenerate drain window is a misconfiguration
+                Arguments.of("-5s", "must be positive"),
+                Arguments.of("not-a-duration", "not-a-duration")); // conversion refusal names the value
+    }
+
     // --- AC3 secrets (SEC-060) + trust store 5-state (SEC-050) -------------------------------
 
     @ParameterizedTest(name = "SEC-060: missing {0} -> refuse")
@@ -533,7 +559,8 @@ class CompanionConfigMatrixTest {
                                 List.of()), // explicitly empty routing list
                         null, null),
                 null,
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(10)));
         var violations = validator.validate(props);
         assertThat(violations)
                 .as("an empty routing list must be refused (SEC-058 isEmpty branch)")
@@ -782,7 +809,8 @@ class CompanionConfigMatrixTest {
                                 routing),
                         null, null),
                 null,
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(10)));
     }
 
     /** Minimal valid reverse-A props for the pure-HV path. */
@@ -804,7 +832,8 @@ class CompanionConfigMatrixTest {
                                         new ProxyCompanionProperties.TrustStore("/run/secrets/idp-truststore.p12", null),
                                         Duration.ofSeconds(4), 64)),
                         null, null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(10)));
     }
 
     private static List<String> chainMessages(Throwable t) {

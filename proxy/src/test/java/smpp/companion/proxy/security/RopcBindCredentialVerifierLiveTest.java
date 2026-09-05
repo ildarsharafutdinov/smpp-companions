@@ -139,7 +139,8 @@ class RopcBindCredentialVerifierLiveTest {
                                 new ProxyCompanionProperties.TrustStore(store.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
                                 Duration.ofSeconds(4), 8)), null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
     }
 
     /** Verifies via the port, binding the context in a scope (models real relay usage). */

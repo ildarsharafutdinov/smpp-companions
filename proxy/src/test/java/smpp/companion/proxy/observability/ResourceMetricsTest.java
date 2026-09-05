@@ -189,6 +189,7 @@ class ResourceMetricsTest {
                                                 RelayTestFixtures.IDP_STORE_PASSWORD),
                                         Duration.ofSeconds(2), 4)),
                         null),
-                null);
+                null,
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
     }
 }

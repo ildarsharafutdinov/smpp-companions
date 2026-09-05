@@ -188,6 +188,12 @@ public final class TestCompanionConfigs {
         // yml-loading builder boots pass --companion.metrics.port=<freePort> as run-args instead
         // (args outrank yml's shipped 9090; .properties() does not — see MetricsEndpointTest).
         props.put("companion.metrics.port", String.valueOf(RelayTestFixtures.freePort()));
+        // Story 4.3 T3: companion.shutdown.drain-timeout is a required key (the AD-22 drain deadline;
+        // the Shutdown compact-ctor guard refuses zero/negative). Same rule as the adjudication-deadline
+        // key above: these runner contexts do NOT load application.yml, so the documented 10s default
+        // is stated explicitly (no @DefaultValue — the default lives in yml for real boots; test
+        // configs state it).
+        props.put("companion.shutdown.drain-timeout", "10s");
     }
 
     /**
