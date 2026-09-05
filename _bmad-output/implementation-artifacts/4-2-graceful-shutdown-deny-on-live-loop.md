@@ -2,7 +2,7 @@
 title: 'Story 4.2 — AD-22 graceful shutdown pt. 1: deny-in-flight on a live loop + the 5-step skeleton'
 type: 'feature'
 created: '2026-09-04'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
 baseline_commit: f9549a9ebfd20a6a7864935baa93fa41842b4e4a
 context:
@@ -96,3 +96,60 @@ context:
 
 **Manual checks (if no CLI):**
 - Boot a forward cell, park a bind against a fake verifier, send SIGTERM: the client sees a non-ROK `bind_resp` before the socket drops, and the process exits well under 30s.
+
+## Suggested Review Order
+
+**The coordinator walk (the story's heart)**
+
+- Entry point: the 5-step walk — deny → drain seam → release → quiesce-in-finally, idempotent by the running flag
+  [`ProxyCompanionLifecycle.java:122`](../../proxy/src/main/java/smpp/companion/proxy/bootstrap/ProxyCompanionLifecycle.java#L122)
+
+- The empty step-3 seam 4.3 fills; the quiesce uses explicit 100ms/2s args, never Netty's default
+  [`ProxyCompanionLifecycle.java:135`](../../proxy/src/main/java/smpp/companion/proxy/bootstrap/ProxyCompanionLifecycle.java#L135)
+
+**The adapter deny/release split (T1)**
+
+- deny(): CAS once-guard + `shutdownNow()` only — no await, so the coordinator can sequence around it
+  [`RopcBindCredentialVerifier.java:877`](../../proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java#L877)
+
+- release(): self-deny pairing guard, bounded await, client close with zeroize-in-finally (review hardening)
+  [`RopcBindCredentialVerifier.java:896`](../../proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java#L896)
+
+- The review round's F2 guard: a post-deny verify settles before admission — no wire call, ever
+  [`RopcBindCredentialVerifier.java:382`](../../proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java#L382)
+
+- The fused `close()` = deny → release, kept as the bean-destroy backstop
+  [`RopcBindCredentialVerifier.java:933`](../../proxy/src/main/java/smpp/companion/proxy/security/RopcBindCredentialVerifier.java#L933)
+
+**Acceptor re-author (T2) and the phase re-ordering (T1)**
+
+- stop() is acceptor-close ONLY — the loop survives for the deny continuations
+  [`RelayServerLifecycle.java:133`](../../proxy/src/main/java/smpp/companion/proxy/relay/netty/RelayServerLifecycle.java#L133)
+
+- The deny window's new phase slot: strictly between the acceptor (1000) and the metrics scrape (500)
+  [`AdjudicationLifecycle.java:45`](../../proxy/src/main/java/smpp/companion/proxy/security/AdjudicationLifecycle.java#L45)
+
+- The lifecycle's stop now runs the deny ALONE (release is the coordinator's, behind the drain seam)
+  [`AdjudicationLifecycle.java:83`](../../proxy/src/main/java/smpp/companion/proxy/security/AdjudicationLifecycle.java#L83)
+
+**The race suite (T4)**
+
+- RELAY-023/OBS-019: latch-held Allow vs the walk — non-ROK `bind_resp` on the live loop, couple never flips
+  [`GracefulShutdownRacesTest.java:159`](../../proxy/src/test/java/smpp/companion/proxy/bootstrap/GracefulShutdownRacesTest.java#L159)
+
+- The ordering prefix as a chain of windows (3s row budget — review-hardened arming race)
+  [`GracefulShutdownRacesTest.java:317`](../../proxy/src/test/java/smpp/companion/proxy/bootstrap/GracefulShutdownRacesTest.java#L317)
+
+- The exception-safe rig: real stack + real Spring stop order, daemon loop, cleanup on build failure
+  [`GracefulShutdownRacesTest.java:456`](../../proxy/src/test/java/smpp/companion/proxy/bootstrap/GracefulShutdownRacesTest.java#L456)
+
+**Re-authored pins + the review round's new rows**
+
+- The no-await boolean: settle still pending at stop() return (6s budget, review-hardened)
+  [`AdjudicationLifecycleTest.java:108`](../../proxy/src/test/java/smpp/companion/proxy/security/AdjudicationLifecycleTest.java#L108)
+
+- Deny-window no-wire-call canary (bite disclosure in-comment) + the unpaired-release pairing-guard row
+  [`RopcBindCredentialVerifierTest.java:896`](../../proxy/src/test/java/smpp/companion/proxy/security/RopcBindCredentialVerifierTest.java#L896)
+
+- Coordinator pins: phases, synchronous settle, backstop no-ops, source-scanned walk order
+  [`ProxyCompanionLifecycleTest.java:88`](../../proxy/src/test/java/smpp/companion/proxy/bootstrap/ProxyCompanionLifecycleTest.java#L88)

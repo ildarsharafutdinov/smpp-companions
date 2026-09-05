@@ -315,7 +315,12 @@ class GracefulShutdownRacesTest {
     @DisplayName("ordering prefix: acceptor-stopped ≤ adjudications-denied ≤ vt-released ≤ "
             + "loop-quiesced — four monotonic probes on one timeline, independent of the stop calls")
     void theWalksOrderingPrefixAcceptorDeniedReleasedQuiesced(@TempDir Path dir) throws Exception {
-        Rig rig = rig(dir, 1);
+        // A LONG per-request budget for THIS row (4.2 review, not the suite's 500ms idiom): the
+        // pinned exchange self-aborts at its OWN budget, so a 500ms budget races the watcher arming
+        // and the acceptor stop (a slow runner between awaitTokens() and ctx.close() would settle
+        // the pin BEFORE the acceptor stopped → t1 < t2 false-RED). 3s makes the arming race
+        // unwinnable and widens every watcher's stamp margin from ~100ms to seconds.
+        Rig rig = rig(dir, 1, true, Duration.ofSeconds(3));
         ExecutorService watchers = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "shutdown-race-watcher");
             t.setDaemon(true);
@@ -432,7 +437,11 @@ class GracefulShutdownRacesTest {
      * See {@link #rig(Path, int, boolean)}.
      */
     private static Rig rig(Path dir, int tokenCount) throws IOException {
-        return rig(dir, tokenCount, true);
+        return rig(dir, tokenCount, true, OIDC_TIMEOUT);
+    }
+
+    private static Rig rig(Path dir, int tokenCount, boolean park) throws IOException {
+        return rig(dir, tokenCount, park, OIDC_TIMEOUT);
     }
 
     /**
@@ -444,41 +453,67 @@ class GracefulShutdownRacesTest {
      * + the two destroy backstops as Spring beans so {@code ctx.close()} walks the REAL phase
      * order.
      */
-    private static Rig rig(Path dir, int tokenCount, boolean park) throws IOException {
+    private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout)
+            throws IOException {
         MockSmsc smsc = MockSmsc.start();
         CountDownLatch tokenReceived = new CountDownLatch(tokenCount);
         CountDownLatch hold = new CountDownLatch(1);
         HttpsServer idp = allowIdp(tokenReceived, hold, park);
         EventLoopGroup group = new MultiThreadIoEventLoopGroup(
-                1, new DefaultThreadFactory("shutdown-race-relay"), NioIoHandler.newFactory());
-        ProxyCompanionProperties properties =
-                reverseBProperties(dir, realmBase(idp), smsc.port());
-        IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
-        RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
-        RecordingVerifier recorder = new RecordingVerifier(adapter);
-        RelayTestFixtures.RelayHarness harness = RelayTestFixtures.relayHarness(properties, recorder);
-        RelayServerLifecycle relay = new RelayServerLifecycle(properties, group,
-                new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                harness.ingressInitializer());
-        AdjudicationLifecycle adjudication = new AdjudicationLifecycle(adapter);
-        ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group);
-
+                // daemon: a test that times out wedged inside the uninterruptible walk never runs its
+                // finally — a non-daemon loop thread would then outlive the failure and hang the JVM.
+                1, new DefaultThreadFactory("shutdown-race-relay", true), NioIoHandler.newFactory());
         AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext();
-        // The production bean set the stop order needs — the group bean's destroyMethod backstop
-        // (RelayNettyConfig) and the adapter bean's fused close() backstop included, so a full
-        // close() exercises their re-fire-as-no-op contract too.
-        ctx.registerBean(EventLoopGroup.class, () -> group,
-                bd -> ((AbstractBeanDefinition) bd).setDestroyMethodName("shutdownGracefully"));
-        ctx.registerBean(RopcBindCredentialVerifier.class, () -> adapter,
-                bd -> ((AbstractBeanDefinition) bd).setDestroyMethodName("close"));
-        ctx.registerBean(RelayServerLifecycle.class, () -> relay);
-        ctx.registerBean(AdjudicationLifecycle.class, () -> adjudication);
-        ctx.registerBean(ProxyCompanionLifecycle.class, () -> coordinator);
-        ctx.refresh(); // starts ascending (coordinator 0, deny window 750, acceptor 1000 — the port binds)
+        try {
+            ProxyCompanionProperties properties =
+                    reverseBProperties(dir, realmBase(idp), smsc.port(), oidcTimeout);
+            IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
+            RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
+            RecordingVerifier recorder = new RecordingVerifier(adapter);
+            RelayTestFixtures.RelayHarness harness = RelayTestFixtures.relayHarness(properties, recorder);
+            RelayServerLifecycle relay = new RelayServerLifecycle(properties, group,
+                    new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
+                    harness.ingressInitializer());
+            AdjudicationLifecycle adjudication = new AdjudicationLifecycle(adapter);
+            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group);
 
-        assertThat(relay.isRunning()).as("precondition: the real acceptor is up").isTrue();
-        return new Rig(smsc, idp, tokenReceived, hold, group, adapter, recorder, harness,
-                relay, adjudication, coordinator, ctx, properties.bind().port());
+            // The production bean set the stop order needs — the group bean's destroyMethod backstop
+            // (RelayNettyConfig) and the adapter bean's fused close() backstop included, so a full
+            // close() exercises their re-fire-as-no-op contract too.
+            ctx.registerBean(EventLoopGroup.class, () -> group,
+                    bd -> ((AbstractBeanDefinition) bd).setDestroyMethodName("shutdownGracefully"));
+            ctx.registerBean(RopcBindCredentialVerifier.class, () -> adapter,
+                    bd -> ((AbstractBeanDefinition) bd).setDestroyMethodName("close"));
+            ctx.registerBean(RelayServerLifecycle.class, () -> relay);
+            ctx.registerBean(AdjudicationLifecycle.class, () -> adjudication);
+            ctx.registerBean(ProxyCompanionLifecycle.class, () -> coordinator);
+            ctx.refresh(); // starts ascending (coordinator 0, deny window 750, acceptor 1000 — the port binds)
+
+            assertThat(relay.isRunning()).as("precondition: the real acceptor is up").isTrue();
+            return new Rig(smsc, idp, tokenReceived, hold, group, adapter, recorder, harness,
+                    relay, adjudication, coordinator, ctx, properties.bind().port());
+        } catch (RuntimeException | Error e) {
+            // A rig that fails to build must not strand what it already created (4.2 review): the
+            // caller's try/finally never engages when the rig never returns — release it HERE.
+            hold.countDown();
+            try {
+                ctx.close();   // safe unrefreshed (a no-op); walks the stop order if refresh half-ran
+            } catch (Exception ignored) {
+                // teardown best-effort — the build failure is the signal
+            }
+            try {
+                idp.stop(0);
+            } catch (Exception ignored) {
+                // already stopped
+            }
+            try {
+                smsc.close();
+            } catch (Exception ignored) {
+                // already closed
+            }
+            group.shutdownGracefully().syncUninterruptibly();
+            throw e;
+        }
     }
 
     /**
@@ -562,7 +597,7 @@ class GracefulShutdownRacesTest {
 
     /** A reverse×B properties record: the SMSC targeted at the mock, the provider at the stand-in. */
     private static ProxyCompanionProperties reverseBProperties(
-            Path dir, String realmBase, int smscPort) throws IOException {
+            Path dir, String realmBase, int smscPort, Duration oidcTimeout) throws IOException {
         Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
         return new ProxyCompanionProperties(
@@ -584,7 +619,7 @@ class GracefulShutdownRacesTest {
                                 URI.create(realmBase), "smpp-client-confidential", secret.toString(),
                                 new ProxyCompanionProperties.TrustStore(store.toString(),
                                         RelayTestFixtures.IDP_STORE_PASSWORD),
-                                OIDC_TIMEOUT, OIDC_MAX_IN_FLIGHT)), null),
+                                oidcTimeout, OIDC_MAX_IN_FLIGHT)), null),
                 null);
     }
 
@@ -712,7 +747,10 @@ class GracefulShutdownRacesTest {
             throw new EOFException("peer closed mid-header (expected a complete framed PDU)");
         }
         int commandLength = ByteBuffer.wrap(header).getInt(0);
-        if (commandLength < 16) {
+        // Sanity bounds (4.2 review): < 16 is unframed; > 64KB cannot be a bind_resp this suite
+        // reads — a garbage frame from the relay under test must FAIL THE READ, never steer a
+        // copyOf into a ~2GB allocation that OOMs the test JVM instead of failing the test.
+        if (commandLength < 16 || commandLength > 65_536) {
             throw new IOException("nonsense command_length " + commandLength + " on the wire");
         }
         byte[] pdu = java.util.Arrays.copyOf(header, commandLength);

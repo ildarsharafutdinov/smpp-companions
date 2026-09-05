@@ -892,6 +892,68 @@ class RopcBindCredentialVerifierTest {
     }
 
     @Test
+    @DisplayName("deny window: a post-deny verify() denies fail-closed with NO wire call (F2, 4.2 review)")
+    void denyWindowVerifyDeniesWithoutWireCall(@TempDir Path dir) throws Exception {
+        CountDownLatch secondToken = new CountDownLatch(1);
+        AtomicInteger tokenHits = new AtomicInteger();
+        HttpsServer server = standInIdP(ex -> {
+            if (tokenHits.incrementAndGet() > 1) {
+                secondToken.countDown();   // any request after the warm-up IS the leak
+            }
+            drain(ex);
+            respond(ex, 401, "{}");
+        });
+        try (RopcBindCredentialVerifier adapter = adapter(properties(dir, server))) {
+            // WARM the shared client first (one completed exchange, pooled keep-alive) so the quiet
+            // window below observes the ADVERSARIAL case: a live connection the leak could ride.
+            awaitVerdict(verify(adapter));
+            assertThat(tokenHits.get()).as("the warm-up exchange reached the IdP").isOne();
+
+            adapter.deny();   // the deny window opens: pool down, client STILL open until release()
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("a deny-window verify settles DenyIndeterminate (AD-11)")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            // F2's deny-window arm, as a QUIET WINDOW: the post-deny verify settles with NO wire
+            // call — nothing else reaches the IdP for the rest of the row. Bite disclosure (4.2
+            // review mutation pass): a NEUTERED guard is NOT caught here — its fired-then-cancelled
+            // exchange is aborted before transmission (empirically, even over a warm connection),
+            // so the guard's no-wire-call property has no black-box-observable behavioral delta;
+            // this row pins the settle shape and the guarded world's silence, not RED-on-neuter.
+            assertThat(secondToken.await(500, TimeUnit.MILLISECONDS))
+                    .as("a deny-window bind must not transmit the ROPC form (F2 ordering)")
+                    .isFalse();
+            assertThat(tokenHits.get()).as("still exactly the warm-up exchange").isOne();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("unpaired release() self-denies (the 4.2 review pairing guard): never awaits a LIVE pool")
+    void unpairedReleaseSelfDeniesAndNeverAwaitsALivePool(@TempDir Path dir) throws Exception {
+        HttpsServer server = standInIdP(ex -> {
+            drain(ex);
+            respond(ex, 401, "{}");
+        });
+        RopcBindCredentialVerifier adapter = adapter(properties(dir, server, Duration.ofMillis(500), 8));
+        try {
+            long start = System.nanoTime();
+            adapter.release();   // deliberately NO prior deny() — the pairing guard must supply it
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            // Neutered (no self-deny): the await burns the full budget + 1s = 1.5s on the LIVE pool;
+            // with the guard the deny shuts the (empty) pool down and the await joins instantly.
+            assertThat(elapsedMs)
+                    .as("an unpaired release must not wait out the drain budget on a live pool")
+                    .isLessThan(1_000L);
+            assertThat(awaitVerdict(verify(adapter)))
+                    .as("the self-deny left the adapter fail-closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     @DisplayName("AC5/F12: a null ScopedValue handle fails FAST (requireNonNull guards the handle itself)")
     void nullContextHandleFailsFast(@TempDir Path dir) throws Exception {
         HttpsServer server = standInIdP(ex -> {
