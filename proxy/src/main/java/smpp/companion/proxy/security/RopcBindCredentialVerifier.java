@@ -374,6 +374,16 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         }
         Duration budget = callTimeout.compareTo(remaining) < 0 ? callTimeout : remaining;
 
+        // The deny-window arm of the same F2 property (4.2 review): once deny() has fired the pool is
+        // down while the shared client stays open until release() — a bind arriving in that gap must
+        // never START a wire call. Settling here, before admission, keeps the password-bearing form
+        // off the wire; the residual check-to-fire race lands in the pool-rejection catch below,
+        // which cancels whatever fired.
+        if (denied.get()) {
+            adj.pin.complete(new Verdict.DenyIndeterminate());
+            return new RopcVerdictRequest(adj.pin, adj.activeCall);
+        }
+
         // Fail-closed admission (AD-28(4)/F2): a saturated pool denies WITHOUT starting work. sendAsync
         // fires only after tryAcquire succeeds, so a denied bind never transmits the password-bearing
         // form to the provider (the pre-fix shape leaked exactly that).
@@ -887,6 +897,9 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         if (!released.compareAndSet(false, true)) {
             return;   // already released — idempotent (the destroy backstop re-firing is a no-op)
         }
+        deny();   // pairing guard (4.2 review): an unpaired release must never await a LIVE pool —
+                  // the idempotent deny shuts it down first, so the await below always joins a
+                  // draining pool (a no-op when deny() already ran)
         Duration drainBudget = callTimeout.plusSeconds(1);
         try {
             if (!adjudicationPool.awaitTermination(drainBudget.toMillis(), TimeUnit.MILLISECONDS)) {
@@ -899,13 +912,17 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
             log.warn("the adjudication drain was interrupted — proceeding with the hard close "
                     + "(every in-flight adjudication settles DenyIndeterminate; AD-22 fail-closed).");
         }
-        http.close();
-        clientSecret.zeroize();   // AD-10: the adapter's own secret material
+        try {
+            http.close();
+        } finally {
+            clientSecret.zeroize();   // AD-10: the adapter's own secret material — even a throwing close
+        }
     }
 
     /**
-     * The fused AD-22 stop body (the inferred destroy method — the failed-boot backstop; also what
-     * {@link AdjudicationLifecycle} runs until the 4.2 T3 coordinator owns the halves): <b>deny
+     * The fused AD-22 stop body (the inferred destroy method — the failed-boot backstop; the halves'
+     * normal owner since the 4.2 T3 coordinator, with {@link AdjudicationLifecycle} running the deny
+     * alone): <b>deny
      * in-flight FIRST</b> (step 2 — {@code shutdownNow()}, every cancelled adjudication settles
      * fail-closed), <b>then release</b> (steps 4/5 — the bounded VT await, the shared client, the
      * client secret). (The 3.2-era key-cache-refresh-before-client-close step died with the cache

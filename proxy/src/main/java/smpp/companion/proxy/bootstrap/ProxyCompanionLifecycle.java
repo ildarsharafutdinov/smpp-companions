@@ -41,10 +41,11 @@ import smpp.companion.proxy.security.RopcBindCredentialVerifier;
  * threads provably gone.</li>
  * </ol>
  *
- * <p><b>Bounded exit.</b> The walk's worst case is release's await (bounded by the adapter's
- * {@code oidc.timeout + 1s} clamp) plus the 2s quiesce cap — well inside the per-phase ceiling
- * {@code spring.lifecycle.timeout-per-shutdown-phase: 30s} (application.yml). No new config keys in
- * this story (the drain deadline key is 4.3's).
+ * <p><b>Bounded exit.</b> The walk's worst case is release's await ({@code oidc.timeout + 1s} over
+ * the DOCUMENTED [2s, 5s] operator window, PERF-3 — a contract the config layer deliberately does
+ * NOT validate, so the bound holds for in-window values only) plus the 2s quiesce cap — inside the
+ * per-phase ceiling {@code spring.lifecycle.timeout-per-shutdown-phase: 30s} (application.yml). No
+ * new config keys in this story (the drain deadline key is 4.3's).
  *
  * <p><b>Idempotent end-to-end.</b> The running flag makes a second {@code stop()} a no-op (the
  * house pattern), the adapter's deny/release halves are independently once-guarded, and Netty's

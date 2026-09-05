@@ -110,7 +110,11 @@ class AdjudicationLifecycleTest {
         CountDownLatch hold = new CountDownLatch(1);
         HttpsServer server = parkedTokenIdp(tokenReceived, hold);
         try {
-            ProxyCompanionProperties props = reverseBProperties(dir, realmBase(server), Duration.ofSeconds(4));
+            // 6s budget (4.2 review, up from 4s): the isDone()==false pin below races the exchange's
+            // OWN self-abort budget — a loaded runner stalling the test thread past the budget would
+            // settle the pin early and false-fail the no-await boolean. 6s makes that stall window
+            // unreachable while the get(10s) backstop still bounds the row.
+            ProxyCompanionProperties props = reverseBProperties(dir, realmBase(server), Duration.ofSeconds(6));
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
             AdjudicationLifecycle lifecycle = new AdjudicationLifecycle(adapter);
@@ -126,7 +130,7 @@ class AdjudicationLifecycleTest {
             // app-phase coordinator, sequenced behind the empty drain seam): shutdownNow fired
             // INSIDE stop(), but NO await ran here — so the in-flight settle is still PENDING the
             // instant stop() returns. The boolean pin that the fused await left this stop: a fused
-            // close() would have blocked on the parked task's ~4s abort before returning.
+            // close() would have blocked on the parked task's ~6s abort before returning.
             assertThat(inFlight.future().isDone())
                     .as("the lifecycle stop carries no await (4.2 T3) — the settle is still pending "
                             + "at stop() return")
@@ -136,10 +140,10 @@ class AdjudicationLifecycleTest {
             assertThat(ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX)).future().getNow(null))
                     .as("stop() denies synchronously: every post-stop verify settles fail-closed")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
-            // ...and the parked exchange aborts at its OWN 4s per-request budget (the forked join
+            // ...and the parked exchange aborts at its OWN 6s per-request budget (the forked join
             // ignores the deny interrupt), settling the pin fail-closed — bounded, never awaited
             // by the stop (the await that JOINS it is the coordinator's release step).
-            assertThat(inFlight.future().get(8, TimeUnit.SECONDS))
+            assertThat(inFlight.future().get(10, TimeUnit.SECONDS))
                     .as("a shutdown-denied adjudication settles fail-closed at its own abort budget (AD-11)")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
         } finally {

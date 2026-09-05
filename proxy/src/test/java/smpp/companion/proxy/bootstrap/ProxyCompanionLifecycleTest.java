@@ -75,7 +75,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("unit")
 @Tag("bootstrap")
 @Tag("p1")
-@Timeout(30)
+@Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 @DisplayName("Story 4.2 T3 — ProxyCompanionLifecycle: the AD-22 coordinator skeleton")
 class ProxyCompanionLifecycleTest {
 
@@ -354,6 +354,7 @@ class ProxyCompanionLifecycleTest {
     /** Mirrors the RelayNettyConfig bean: the Netty 4.2 NIO idiom (NOT the deprecated NioEventLoopGroup). */
     private static EventLoopGroup newGroup() {
         return new MultiThreadIoEventLoopGroup(
-                1, new DefaultThreadFactory("coordinator-test"), NioIoHandler.newFactory());
+                // daemon: a wedged walk past the timeout must not outlive the failure (hang the JVM).
+                1, new DefaultThreadFactory("coordinator-test", true), NioIoHandler.newFactory());
     }
 }
