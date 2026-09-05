@@ -94,7 +94,7 @@ development_status:
   # --- Epic 4: Operate the proxy in production — structured logs and read-only loopback /metrics ---
   epic-4: in-progress
   4-1-structured-logs-and-loopback-metrics: done
-  4-2-graceful-shutdown-deny-on-live-loop: review
+  4-2-graceful-shutdown-deny-on-live-loop: done
   4-3-graceful-shutdown-drain: ready-for-dev
   epic-4-retrospective: optional
 
