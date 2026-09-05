@@ -3,6 +3,7 @@ package smpp.companion.proxy.relay.netty;
 import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
@@ -110,11 +111,14 @@ class RelayServerLifecycleTest {
                 .as("the full-app close must leave the shared event loop quiesced "
                         + "(the destroyMethod backstop until the 4.2 T3 coordinator's explicit-args quiesce)")
                 .isTrue();
-        // The port is released: the ServerSocket ctor THROWS (BindException) if anything still holds it
-        // (no new binds — AD-22 step 1; the ctor is the assertion).
-        try (ServerSocket reclaimed = new ServerSocket(port)) {
-            // rebound — the ctor is the assertion
-        }
+        // The port is released: a rebind MUST become possible once the full close is done (no new
+        // binds — AD-22 step 1). Netty 4.2 completes the acceptor's close future before the OS
+        // releases the listen socket (the ~ms trailing teardown this suite's probes POLL through —
+        // see stopInvokesCallbackAndReleasesPort), and this row's acceptor also SERVED a connection
+        // (the loopback probe), whose TIME_WAIT the probe's SO_REUSEADDR legitimately bypasses.
+        assertThat(awaitRebindable(port))
+                .as("the full-app close releases the acceptor port (the listener is gone)")
+                .isTrue();
     }
 
     @Test
@@ -196,16 +200,25 @@ class RelayServerLifecycleTest {
                             + "within the per-phase graceful window)")
                     .isTrue();
             assertThat(lifecycle.isRunning()).isFalse();
-            // Port released: the ServerSocket ctor THROWS if anything still holds it (the ctor is the
-            // assertion).
-            try (ServerSocket reclaimed = new ServerSocket(port)) {
-                // rebound — the ctor is the assertion
-            }
+            // Port released: a plain rebind MUST become possible once the acceptor is gone. Netty
+            // 4.2 completes the close FUTURE before the OS releases the listen socket (empirically
+            // probed: 20/30 immediate rebinds refuse, 0/30 after 50ms — the trailing ~ms teardown,
+            // NOT a TIME_WAIT; SO_REUSEADDR cannot help against a live mid-teardown socket), so the
+            // probe POLLS briefly instead of racing the teardown. A port genuinely still held never
+            // becomes bindable and fails here.
+            assertThat(awaitRebindable(port))
+                    .as("stop() releases the acceptor port (the listener is gone)")
+                    .isTrue();
             lifecycle.stop(); // idempotent second stop: a no-op, never a throw
             // 4.2 T2 neuter-guard: stop() is acceptor-close ONLY — the loop must SURVIVE both stops
             // (the deny continuations execute on it; the quiesce is the 4.2 T3 coordinator's). A
-            // re-added shutdownGracefully in stop() goes RED here.
-            assertThat(group.isShutdown())
+            // re-added shutdownGracefully in stop() goes RED here. The FLAG is load-bearing
+            // (empirically probed on Netty 4.2.16): isShuttingDown() flips IMMEDIATELY on the
+            // caller's thread (live or lazy loop alike), while isShutdown()/isTerminated() only
+            // flip at actual termination (~the 2s default quiet period after the quiesce began)
+            // and even accept tasks meanwhile — an isShutdown()-based guard loses the race against
+            // an async quiesce and stays GREEN under exactly the neutering it guards.
+            assertThat(group.isShuttingDown())
                     .as("stop() must NOT quiesce the shared event loop (4.2 T2 — acceptor close only)")
                     .isFalse();
         } finally {
@@ -332,6 +345,44 @@ class RelayServerLifecycleTest {
 
     private static RelayChannelOptions newOptions(int port) {
         return new RelayChannelOptions(RelayTestFixtures.modeBProperties(port, 1), PooledByteBufAllocator.DEFAULT);
+    }
+
+    /**
+     * A listen-socket probe with SO_REUSEADDR armed BEFORE the bind: the port-reclaim pins must
+     * fail on a surviving LISTENER (the acceptor), never on a TIME_WAIT left by a connection the
+     * probed port legitimately served.
+     */
+    private static ServerSocket rebindableProbe(int port) throws IOException {
+        ServerSocket socket = new ServerSocket();
+        socket.setReuseAddress(true);
+        socket.bind(new InetSocketAddress(port));
+        return socket;
+    }
+
+    /**
+     * Polls (25ms interval, 2s cap) until {@code port} is bindable by a LISTENER — the acceptor
+     * port-reclaim probe. Netty 4.2 completes the channel-close FUTURE before the OS releases the
+     * listen socket (empirically probed on 4.2.16: an immediate rebind refuses ~2/3 of the time
+     * and 0/30 after a 50ms settle — the trailing teardown, which SO_REUSEADDR cannot bypass
+     * because the conflicting socket is still live), so a one-shot probe races a ~ms window this
+     * poll rides out instead. A port genuinely still held (a surviving acceptor) never becomes
+     * bindable and this returns {@code false}.
+     */
+    private static boolean awaitRebindable(int port) {
+        long deadline = System.currentTimeMillis() + 2_000;
+        while (System.currentTimeMillis() < deadline) {
+            try (ServerSocket ignored = rebindableProbe(port)) {
+                return true;
+            } catch (IOException e) {
+                try {
+                    Thread.sleep(25);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     /** Mirrors the RelayNettyConfig bean: the Netty 4.2 NIO idiom (NOT the deprecated NioEventLoopGroup). */
