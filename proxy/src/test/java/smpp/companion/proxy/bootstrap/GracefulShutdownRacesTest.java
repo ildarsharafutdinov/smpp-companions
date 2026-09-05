@@ -3,15 +3,11 @@ package smpp.companion.proxy.bootstrap;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -24,8 +20,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 
 import io.netty.buffer.PooledByteBufAllocator;
@@ -56,8 +50,8 @@ import smpp.companion.proxy.security.RequestContext;
 import smpp.companion.proxy.security.RopcBindCredentialVerifier;
 import smpp.companion.proxy.security.Verdict;
 import smpp.companion.proxy.security.VerdictRequest;
-import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
+import smpp.companion.proxy.testsupport.TokenIdpStandIn;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -134,9 +128,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 // read via the SAME pin future the assertions hold), and the listener itself can never throw.
 class GracefulShutdownRacesTest {
 
-    /** The pinned-Keycloak realm token path the stand-in IdP serves (the T3 fixture idiom). */
-    private static final String TOKEN_PATH = "/realms/smpp-companions/protocol/openid-connect/token";
-
     /** The bind_resp wire contract, pinned as LITERALS (the RelayA1SmokeTest discipline). */
     private static final int BIND_TRANSCEIVER = 0x00000009;
     private static final int BIND_TRANSCEIVER_RESP = 0x80000009;
@@ -150,8 +141,6 @@ class GracefulShutdownRacesTest {
      * in this suite fast and its joined-vs-timed-out separation wide (~700ms vs ≥1.6s).
      */
     private static final Duration OIDC_TIMEOUT = Duration.ofMillis(500);
-
-    private static final int OIDC_MAX_IN_FLIGHT = 8;
 
     @Test
     @DisplayName("RELAY-023/OBS-019: the Allow racing the deny resolves fail-closed — non-ROK bind_resp "
@@ -458,15 +447,17 @@ class GracefulShutdownRacesTest {
         MockSmsc smsc = MockSmsc.start();
         CountDownLatch tokenReceived = new CountDownLatch(tokenCount);
         CountDownLatch hold = new CountDownLatch(1);
-        HttpsServer idp = allowIdp(tokenReceived, hold, park);
+        HttpsServer idp = TokenIdpStandIn.allowIdp(tokenReceived, hold, park, "shutdown-race-idp");
         EventLoopGroup group = new MultiThreadIoEventLoopGroup(
                 // daemon: a test that times out wedged inside the uninterruptible walk never runs its
                 // finally — a non-daemon loop thread would then outlive the failure and hang the JVM.
                 1, new DefaultThreadFactory("shutdown-race-relay", true), NioIoHandler.newFactory());
         AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext();
         try {
-            ProxyCompanionProperties properties =
-                    reverseBProperties(dir, realmBase(idp), smsc.port(), oidcTimeout);
+            // concurrent-pairs 8 (>= the row's binds): the F13 acceptor cap shares this number.
+            ProxyCompanionProperties properties = RelayTestFixtures.reverseBProperties(
+                    dir, TokenIdpStandIn.realmBase(idp), RelayTestFixtures.freePort(), 8,
+                    "127.0.0.1", smsc.port(), oidcTimeout);
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
             RecordingVerifier recorder = new RecordingVerifier(adapter);
@@ -557,76 +548,6 @@ class GracefulShutdownRacesTest {
         }
     }
 
-    // ── the stand-in IdP (the ProxyCompanionLifecycleTest pattern + the ARMED ALLOW) ──────────
-
-    /**
-     * A stand-in IdP whose TOKEN handler answers a VALID 200 + three-segment-JWS
-     * {@code access_token} — a genuine {@code Allow}. The PARKED variant ({@code park = true}, the
-     * race rows) holds that response on a latch — the bind is in-flight until the test releases it
-     * (or the walk's deny forces the exchange's own abort), and the late write onto the dead
-     * exchange is the race's deterministic half. The IMMEDIATE variant ({@code park = false}, the
-     * coupled-pairs row) answers without parking, so the exchange yields {@code Allow} and the
-     * bind COUPLES to the mock SMSC. Daemon executor (a parked handler must not strand the JVM).
-     */
-    private static HttpsServer allowIdp(CountDownLatch tokenReceived, CountDownLatch hold, boolean park)
-            throws IOException {
-        HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
-        server.setHttpsConfigurator(new HttpsConfigurator(OidcDiscoveryStandIn.fixtureServerSslContext()));
-        server.setExecutor(Executors.newFixedThreadPool(6, r -> {
-            Thread t = new Thread(r, "shutdown-race-idp");
-            t.setDaemon(true);
-            return t;
-        }));
-        server.createContext(TOKEN_PATH, ex -> {
-            tokenReceived.countDown();
-            drain(ex);
-            try {
-                if (park) {
-                    hold.await(15, TimeUnit.SECONDS); // park: the adjudication is in-flight when the walk begins
-                }
-                respond(ex, 200, "{\"access_token\":\"aa.bb.cc\",\"token_type\":\"Bearer\"}");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (IOException e) {
-                // best-effort late write on the dead exchange — not a verdict signal
-            }
-        });
-        server.start();
-        return server;
-    }
-
-    /** A reverse×B properties record: the SMSC targeted at the mock, the provider at the stand-in. */
-    private static ProxyCompanionProperties reverseBProperties(
-            Path dir, String realmBase, int smscPort, Duration oidcTimeout) throws IOException {
-        Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
-        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
-        return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(
-                        RelayTestFixtures.freePort(), RelayTestFixtures.DEFAULT_BIND_HOST,
-                        RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
-                // concurrent-pairs 8 (>= the row's binds): the F13 acceptor cap shares this number.
-                new ProxyCompanionProperties.Memory(
-                        1, 8, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
-                new ProxyCompanionProperties.Tls(
-                        List.of("TLSv1.3", "TLSv1.2"),
-                        List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"),
-                        List.of("TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256")),
-                null,
-                new ProxyCompanionProperties.Reverse(null, new ProxyCompanionProperties.ReverseModeB(
-                        new ProxyCompanionProperties.Smsc("127.0.0.1", smscPort), true,
-                        new ProxyCompanionProperties.Oidc(
-                                URI.create(realmBase), "smpp-client-confidential", secret.toString(),
-                                new ProxyCompanionProperties.TrustStore(store.toString(),
-                                        RelayTestFixtures.IDP_STORE_PASSWORD),
-                                oidcTimeout, OIDC_MAX_IN_FLIGHT)), null),
-                null);
-    }
-
-    private static String realmBase(HttpsServer server) {
-        return "https://localhost:" + server.getAddress().getPort() + "/realms/smpp-companions";
-    }
-
     // ── probes, stamps, and hand-authored wire bytes (the RelayA1SmokeTest idiom) ────────────
 
     /**
@@ -674,19 +595,11 @@ class GracefulShutdownRacesTest {
      * the probe, while an actual LISTENER (what the pin is about) still refuses.
      */
     private static boolean portFree(int port) {
-        try (ServerSocket ignored = rebindableProbe(port)) {
+        try (ServerSocket ignored = RelayTestFixtures.rebindableProbe(port)) {
             return true;
         } catch (IOException e) {
             return false;
         }
-    }
-
-    /** A listen-socket probe with SO_REUSEADDR armed BEFORE the bind (see {@link #portFree}). */
-    private static ServerSocket rebindableProbe(int port) throws IOException {
-        ServerSocket socket = new ServerSocket();
-        socket.setReuseAddress(true);
-        socket.bind(new InetSocketAddress(port));
-        return socket;
     }
 
     /** {@code true} iff every value octet of the (shared-backing) password {@link AsciiString} is zero. */
@@ -803,18 +716,5 @@ class GracefulShutdownRacesTest {
     /** Nothing further EVER arrives on the closed leg (the late Allow reached no one). */
     private static void assertStillAtEof(Socket socket) throws IOException {
         assertAtEof(socket);
-    }
-
-    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(status, bytes.length);
-        try (OutputStream out = exchange.getResponseBody()) {
-            out.write(bytes);
-        }
-    }
-
-    private static void drain(HttpExchange exchange) throws IOException {
-        exchange.getRequestBody().readAllBytes();
     }
 }
