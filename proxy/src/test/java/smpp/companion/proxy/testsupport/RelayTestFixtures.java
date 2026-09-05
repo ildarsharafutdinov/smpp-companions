@@ -3,6 +3,7 @@ package smpp.companion.proxy.testsupport;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.file.Files;
@@ -100,6 +101,21 @@ public final class RelayTestFixtures {
     }
 
     /**
+     * A listen-socket probe with SO_REUSEADDR armed BEFORE the bind: the port-reclaim pins must
+     * observe the port bindable by a LISTENER (the acceptor REALLY closed), never fail on a
+     * TIME_WAIT left by a connection the probed port legitimately served (SO_REUSEADDR bypasses
+     * only own-dead-TIME_WAIT; a genuinely-held listener still refuses). Formerly duplicated in
+     * {@code GracefulShutdownRacesTest} and {@code RelayServerLifecycleTest} (Story 4.3 T2 ledger
+     * fold).
+     */
+    public static ServerSocket rebindableProbe(int port) throws IOException {
+        ServerSocket socket = new ServerSocket();
+        socket.setReuseAddress(true);
+        socket.bind(new InetSocketAddress(port));
+        return socket;
+    }
+
+    /**
      * A minimal VALID reverse.mode-b properties record (the relay cell): the given acceptor bind port
      * and AD-30 {@code max-inbound-depth}; everything else minimal (concurrent-pairs 1, safety-factor
      * 1.0, budget-check FAIL — the smallest legal AD-30 budget), TLS lists inert (a plaintext slice
@@ -137,6 +153,59 @@ public final class RelayTestFixtures {
      * listener now binds host:port, and every fixture consumer connects via the loopback address).
      */
     public static final String DEFAULT_BIND_HOST = "127.0.0.1";
+
+    /**
+     * A reverse&times;B properties record over a REAL provider URL and OIDC material — the AD-22
+     * shutdown-walk flavor (Story 4.3 T2 ledger fold; formerly the triplicated private
+     * {@code reverseBProperties} fixtures of {@code AdjudicationLifecycleTest},
+     * {@code ProxyCompanionLifecycleTest} and {@code GracefulShutdownRacesTest}): the fixture IdP
+     * trust store materialized into {@code dir} plus a client-secret file, the TLS lists the
+     * TLS-bearing cells need (RSA fixture certs — see {@link #TLS12_SUITES}), and the caller's
+     * {@code oidc.timeout} (the per-REQUEST budget — the real bound the deny/release rows time
+     * against).
+     *
+     * @param providerUrl the stand-in IdP's realm base ({@code TokenIdpStandIn.realmBase}) or any
+     *         never-dialed placeholder for the idle rows
+     * @param bindPort the acceptor bind port (never bound by the adapter-only rows; a free
+     *         ephemeral port by the rig rows that start the real acceptor)
+     * @param concurrentPairs the AD-30 concurrent-pairs budget — which is ALSO the F13 acceptor
+     *         cap (one number); the rig rows pass &ge; the row's binds
+     * @param smscHost the egress SMSC host (the rig rows point at their in-JVM mock)
+     * @param smscPort the egress SMSC port
+     * @param oidcTimeout the {@code companion.reverse.mode-b.oidc.timeout} per-request budget
+     */
+    public static ProxyCompanionProperties reverseBProperties(
+            Path dir, String providerUrl, int bindPort, int concurrentPairs,
+            String smscHost, int smscPort, Duration oidcTimeout) throws IOException {
+        Path store = idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
+        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
+        return new ProxyCompanionProperties(
+                new ProxyCompanionProperties.Bind(bindPort, DEFAULT_BIND_HOST, DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Memory(
+                        1, concurrentPairs, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
+                new ProxyCompanionProperties.Tls(
+                        List.of("TLSv1.3", "TLSv1.2"),
+                        List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"),
+                        List.of("TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256")),
+                null,
+                new ProxyCompanionProperties.Reverse(null, new ProxyCompanionProperties.ReverseModeB(
+                        new ProxyCompanionProperties.Smsc(smscHost, smscPort), true,
+                        new ProxyCompanionProperties.Oidc(
+                                URI.create(providerUrl), "smpp-client-confidential", secret.toString(),
+                                new ProxyCompanionProperties.TrustStore(store.toString(), IDP_STORE_PASSWORD),
+                                oidcTimeout, 8)), null),
+                null);
+    }
+
+    /**
+     * The deny-window flavor (the lifecycle/coordinator suites): fixed bind port 2775, a single
+     * pair, and the unreachable {@code smsc.example} placeholder egress — these rows never dial
+     * the SMSC (the exchange parks at the token endpoint, or the pool is already down).
+     */
+    public static ProxyCompanionProperties reverseBProperties(Path dir, String providerUrl, Duration oidcTimeout)
+            throws IOException {
+        return reverseBProperties(dir, providerUrl, 2775, 1, "smsc.example", 2775, oidcTimeout);
+    }
 
     /**
      * The realistic AD-34 TLS lists the TLS-bearing cells need (the fixture certs are RSA, and the

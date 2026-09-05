@@ -3,7 +3,6 @@ package smpp.companion.proxy.relay.netty;
 import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
@@ -348,30 +347,20 @@ class RelayServerLifecycleTest {
     }
 
     /**
-     * A listen-socket probe with SO_REUSEADDR armed BEFORE the bind: the port-reclaim pins must
-     * fail on a surviving LISTENER (the acceptor), never on a TIME_WAIT left by a connection the
-     * probed port legitimately served.
-     */
-    private static ServerSocket rebindableProbe(int port) throws IOException {
-        ServerSocket socket = new ServerSocket();
-        socket.setReuseAddress(true);
-        socket.bind(new InetSocketAddress(port));
-        return socket;
-    }
-
-    /**
      * Polls (25ms interval, 2s cap) until {@code port} is bindable by a LISTENER — the acceptor
      * port-reclaim probe. Netty 4.2 completes the channel-close FUTURE before the OS releases the
      * listen socket (empirically probed on 4.2.16: an immediate rebind refuses ~2/3 of the time
      * and 0/30 after a 50ms settle — the trailing teardown, which SO_REUSEADDR cannot bypass
      * because the conflicting socket is still live), so a one-shot probe races a ~ms window this
      * poll rides out instead. A port genuinely still held (a surviving acceptor) never becomes
-     * bindable and this returns {@code false}.
+     * bindable and this returns {@code false}. The probe itself is the shared
+     * {@link RelayTestFixtures#rebindableProbe(int)} (SO_REUSEADDR armed BEFORE the bind — a
+     * TIME_WAIT left by a served connection must not fail the pin).
      */
     private static boolean awaitRebindable(int port) {
         long deadline = System.currentTimeMillis() + 2_000;
         while (System.currentTimeMillis() < deadline) {
-            try (ServerSocket ignored = rebindableProbe(port)) {
+            try (ServerSocket ignored = RelayTestFixtures.rebindableProbe(port)) {
                 return true;
             } catch (IOException e) {
                 try {

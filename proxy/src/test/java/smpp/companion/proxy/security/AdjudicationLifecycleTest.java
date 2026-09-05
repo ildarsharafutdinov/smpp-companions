@@ -1,22 +1,12 @@
 package smpp.companion.proxy.security;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 
 import io.netty.channel.DefaultChannelId;
@@ -31,8 +21,8 @@ import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.observability.MetricsEndpointLifecycle;
 import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
-import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
+import smpp.companion.proxy.testsupport.TokenIdpStandIn;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -65,7 +55,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("AC1 — AdjudicationLifecycle: AD-22 phase + idempotent stop + deny-in-flight drain")
 class AdjudicationLifecycleTest {
 
-    private static final String TOKEN_PATH = "/realms/smpp-companions/protocol/openid-connect/token";
     private static final ScopedValue<RequestContext> CTX = ScopedValue.newInstance();
 
     @Test
@@ -108,13 +97,14 @@ class AdjudicationLifecycleTest {
     void stopDeniesInFlightAdjudications(@TempDir Path dir) throws Exception {
         CountDownLatch tokenReceived = new CountDownLatch(1);
         CountDownLatch hold = new CountDownLatch(1);
-        HttpsServer server = parkedTokenIdp(tokenReceived, hold);
+        HttpsServer server = TokenIdpStandIn.parkedTokenIdp(tokenReceived, hold, "lifecycle-idp");
         try {
             // 6s budget (4.2 review, up from 4s): the isDone()==false pin below races the exchange's
             // OWN self-abort budget — a loaded runner stalling the test thread past the budget would
             // settle the pin early and false-fail the no-await boolean. 6s makes that stall window
             // unreachable while the get(10s) backstop still bounds the row.
-            ProxyCompanionProperties props = reverseBProperties(dir, realmBase(server), Duration.ofSeconds(6));
+            ProxyCompanionProperties props = RelayTestFixtures.reverseBProperties(
+                    dir, TokenIdpStandIn.realmBase(server), Duration.ofSeconds(6));
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
             AdjudicationLifecycle lifecycle = new AdjudicationLifecycle(adapter);
@@ -157,12 +147,13 @@ class AdjudicationLifecycleTest {
     void denyReleaseSplitSettlesFailClosedAndReFiresAsNoOps(@TempDir Path dir) throws Exception {
         CountDownLatch tokenReceived = new CountDownLatch(1);
         CountDownLatch hold = new CountDownLatch(1);
-        HttpsServer server = parkedTokenIdp(tokenReceived, hold);
+        HttpsServer server = TokenIdpStandIn.parkedTokenIdp(tokenReceived, hold, "lifecycle-idp");
         try {
             // SHORT per-request budget for this row: the settle lands when the parked exchange
             // aborts at its OWN budget (the forked join ignores the deny interrupt — the fused
             // row's 4s duration proves the timing), so a 500ms budget keeps deny()-alone fast.
-            ProxyCompanionProperties props = reverseBProperties(dir, realmBase(server), Duration.ofMillis(500));
+            ProxyCompanionProperties props = RelayTestFixtures.reverseBProperties(
+                    dir, TokenIdpStandIn.realmBase(server), Duration.ofMillis(500));
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
 
@@ -199,95 +190,15 @@ class AdjudicationLifecycleTest {
         }
     }
 
-    // ── fixtures ────────────────────────────────────────────────────────────────────────────
+    // ── fixtures (the stand-in IdP and the reverse×B record live in testsupport — 4.3 T2) ─────
 
     private static BindCredential credential() {
         return new BindCredential(new SystemId(new AsciiString("testuser")), new Password(new AsciiString("testpass")));
-    }
-
-    /**
-     * A stand-in IdP whose TOKEN handler PARKS on a latch — the bind is in-flight until the test
-     * releases it (or the lifecycle's drain interrupts it). Since Story 3.4 T9 (2026-08-29) the
-     * token endpoint is DERIVED from the provider-url realm base, so this server serves only the
-     * realm's token path — the former discovery context is gone with the startup probe. Daemon
-     * executor (the JDK server's default dispatcher is a single thread — a parked handler must not
-     * starve other handlers or strand the JVM).
-     */
-    private static HttpsServer parkedTokenIdp(CountDownLatch tokenReceived, CountDownLatch hold) throws IOException {
-        HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
-        server.setHttpsConfigurator(new HttpsConfigurator(OidcDiscoveryStandIn.fixtureServerSslContext()));
-        server.setExecutor(Executors.newFixedThreadPool(4, r -> {
-            Thread t = new Thread(r, "lifecycle-idp");
-            t.setDaemon(true);
-            return t;
-        }));
-        server.createContext(TOKEN_PATH, ex -> {
-            tokenReceived.countDown();
-            drain(ex);
-            try {
-                hold.await(10, TimeUnit.SECONDS);   // park: the adjudication is in-flight at stop() time
-                respond(ex, 401, "{}");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (IOException e) {
-                // best-effort late write on the torn connection — not a verdict signal
-            }
-        });
-        server.start();
-        return server;
-    }
-
-    /** A reverse×B properties record over the given provider URL (the T3 direct-construction shape). */
-    private static ProxyCompanionProperties reverseBProperties(Path dir, String providerUrl, Duration timeout)
-            throws IOException {
-        Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
-        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
-        return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
-                new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
-                new ProxyCompanionProperties.Tls(
-                        List.of("TLSv1.3", "TLSv1.2"),
-                        List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"),
-                        List.of("TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256")),
-                null,
-                new ProxyCompanionProperties.Reverse(null, new ProxyCompanionProperties.ReverseModeB(
-                        new ProxyCompanionProperties.Smsc("smsc.example", 2775), true,
-                        new ProxyCompanionProperties.Oidc(
-                                URI.create(providerUrl), "smpp-client-confidential", secret.toString(),
-                                new ProxyCompanionProperties.TrustStore(store.toString(),
-                                        RelayTestFixtures.IDP_STORE_PASSWORD),
-                                timeout, 8)), null),
-                null);
     }
 
     /** The deadline must outlive the test window — the per-REQUEST budget (oidc.timeout) is the real bound. */
     private static RequestContext rc() {
         return new RequestContext(new SystemId(new AsciiString("testuser")),
                 DefaultChannelId.newInstance(), Instant.now().plusSeconds(30));
-    }
-
-    private static String base(HttpsServer server) {
-        return "https://localhost:" + server.getAddress().getPort();
-    }
-
-    /** The provider-url these fixtures use: base + the realm segment (T9 — the derived endpoint lands on TOKEN_PATH). */
-    private static String realmBase(HttpsServer server) {
-        return base(server) + "/realms/smpp-companions";
-    }
-
-    private static void respond(HttpExchange exchange, int status, byte[] body) throws IOException {
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(status, body.length);
-        try (OutputStream out = exchange.getResponseBody()) {
-            out.write(body);
-        }
-    }
-
-    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        respond(exchange, status, body.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static void drain(HttpExchange exchange) throws IOException {
-        exchange.getRequestBody().readAllBytes();
     }
 }

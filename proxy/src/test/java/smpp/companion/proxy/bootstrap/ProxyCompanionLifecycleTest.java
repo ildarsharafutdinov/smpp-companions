@@ -1,22 +1,14 @@
 package smpp.companion.proxy.bootstrap;
 
 import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 
 import io.netty.channel.DefaultChannelId;
@@ -45,8 +37,8 @@ import smpp.companion.proxy.security.RopcBindCredentialVerifier;
 import smpp.companion.proxy.security.SystemId;
 import smpp.companion.proxy.security.Verdict;
 import smpp.companion.proxy.security.VerdictRequest;
-import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
+import smpp.companion.proxy.testsupport.TokenIdpStandIn;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -79,7 +71,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Story 4.2 T3 — ProxyCompanionLifecycle: the AD-22 coordinator skeleton")
 class ProxyCompanionLifecycleTest {
 
-    private static final String TOKEN_PATH = "/realms/smpp-companions/protocol/openid-connect/token";
     private static final ScopedValue<RequestContext> CTX = ScopedValue.newInstance();
 
     @Test
@@ -137,13 +128,14 @@ class ProxyCompanionLifecycleTest {
     void theWalkDeniesReleasesAndQuiescesSynchronouslyWithStop(@TempDir Path dir) throws Exception {
         CountDownLatch tokenReceived = new CountDownLatch(1);
         CountDownLatch hold = new CountDownLatch(1);
-        HttpsServer server = parkedTokenIdp(tokenReceived, hold);
+        HttpsServer server = TokenIdpStandIn.parkedTokenIdp(tokenReceived, hold, "coordinator-idp");
         EventLoopGroup group = newGroup();
         try {
             // SHORT per-request budget (the AdjudicationLifecycleTest split-row timing): the parked
             // exchange aborts at its OWN budget, and the walk's release await (budget + 1s) JOINS
             // that abort — so stop() returns with everything settled, quickly.
-            ProxyCompanionProperties props = reverseBProperties(dir, realmBase(server), Duration.ofMillis(500));
+            ProxyCompanionProperties props = RelayTestFixtures.reverseBProperties(
+                    dir, TokenIdpStandIn.realmBase(server), Duration.ofMillis(500));
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
             ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group);
@@ -187,8 +179,8 @@ class ProxyCompanionLifecycleTest {
     void doubleStopAndTheDestroyBackstopsAreNoOps(@TempDir Path dir) throws Exception {
         // Real adapter, idle (no parked exchange — the provider-url is never dialed: no wire call at
         // construction, and every verify below hits the rejected/closed pool, never the network).
-        ProxyCompanionProperties props =
-                reverseBProperties(dir, "https://idle.invalid/realms/smpp-companions", Duration.ofSeconds(1));
+        ProxyCompanionProperties props = RelayTestFixtures.reverseBProperties(
+                dir, "https://idle.invalid/realms/smpp-companions", Duration.ofSeconds(1));
         IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
         RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
         EventLoopGroup group = newGroup();
@@ -270,85 +262,16 @@ class ProxyCompanionLifecycleTest {
         assertThat(quiesce).as("step 5 (the quiesce) is the last step").isGreaterThan(release);
     }
 
-    // ── fixtures (the AdjudicationLifecycleTest pattern, compact) ────────────────────────────
+    // ── fixtures (the stand-in IdP and the reverse×B record live in testsupport — 4.3 T2) ─────
 
     private static BindCredential credential() {
         return new BindCredential(new SystemId(new AsciiString("testuser")), new Password(new AsciiString("testpass")));
-    }
-
-    /**
-     * A stand-in IdP whose TOKEN handler PARKS on a latch — the bind is in-flight until the test
-     * releases it (or the walk's deny path interrupts it). Daemon executor (a parked handler must
-     * not strand the JVM).
-     */
-    private static HttpsServer parkedTokenIdp(CountDownLatch tokenReceived, CountDownLatch hold) throws IOException {
-        HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
-        server.setHttpsConfigurator(new HttpsConfigurator(OidcDiscoveryStandIn.fixtureServerSslContext()));
-        server.setExecutor(Executors.newFixedThreadPool(4, r -> {
-            Thread t = new Thread(r, "coordinator-idp");
-            t.setDaemon(true);
-            return t;
-        }));
-        server.createContext(TOKEN_PATH, ex -> {
-            tokenReceived.countDown();
-            drain(ex);
-            try {
-                hold.await(10, TimeUnit.SECONDS);   // park: the adjudication is in-flight when the walk begins
-                respond(ex, 401, "{}");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (IOException e) {
-                // best-effort late write on the torn connection — not a verdict signal
-            }
-        });
-        server.start();
-        return server;
-    }
-
-    /** A reverse×B properties record over the given provider URL (the AdjudicationLifecycleTest shape). */
-    private static ProxyCompanionProperties reverseBProperties(Path dir, String providerUrl, Duration timeout)
-            throws IOException {
-        Path store = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
-        Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
-        return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
-                new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
-                new ProxyCompanionProperties.Tls(
-                        List.of("TLSv1.3", "TLSv1.2"),
-                        List.of("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"),
-                        List.of("TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256")),
-                null,
-                new ProxyCompanionProperties.Reverse(null, new ProxyCompanionProperties.ReverseModeB(
-                        new ProxyCompanionProperties.Smsc("smsc.example", 2775), true,
-                        new ProxyCompanionProperties.Oidc(
-                                URI.create(providerUrl), "smpp-client-confidential", secret.toString(),
-                                new ProxyCompanionProperties.TrustStore(store.toString(),
-                                        RelayTestFixtures.IDP_STORE_PASSWORD),
-                                timeout, 8)), null),
-                null);
     }
 
     /** The deadline must outlive the test window — the per-REQUEST budget (oidc.timeout) is the real bound. */
     private static RequestContext rc() {
         return new RequestContext(new SystemId(new AsciiString("testuser")),
                 DefaultChannelId.newInstance(), Instant.now().plusSeconds(30));
-    }
-
-    private static String realmBase(HttpsServer server) {
-        return "https://localhost:" + server.getAddress().getPort() + "/realms/smpp-companions";
-    }
-
-    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(status, bytes.length);
-        try (OutputStream out = exchange.getResponseBody()) {
-            out.write(bytes);
-        }
-    }
-
-    private static void drain(HttpExchange exchange) throws IOException {
-        exchange.getRequestBody().readAllBytes();
     }
 
     /** Mirrors the RelayNettyConfig bean: the Netty 4.2 NIO idiom (NOT the deprecated NioEventLoopGroup). */
