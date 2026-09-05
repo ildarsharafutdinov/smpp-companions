@@ -1,5 +1,6 @@
 package smpp.companion.proxy.relay;
 
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.jspecify.annotations.Nullable;
@@ -32,6 +33,13 @@ import smpp.companion.proxy.security.SystemId;
  * which is the shape AD-8's 2026-08-29 amendment records); the registry remains directly testable and its
  * CAS-once teardown mechanics are the manager's substrate. Holds no other state, so
  * {@code new ConnectionRegistry()} is the test seam.
+ *
+ * <p><b>Enumeration (Story 4.3 T1):</b> {@link #snapshot()} exposes the live pairs to the AD-22 drain body
+ * as read-only {@link LivePair} projections. ALL mutation stays on {@link #register} / {@link #attachEgress} /
+ * {@link #beginTeardown} (with the ENTRY attribute sets/clears they carry — the key is private, so fencing
+ * the three methods fences the attribute writes too), whose only production caller is the
+ * {@code RelayStateManager} — an invariant the {@code ConnectionRegistryMutationFenceArchitectureTest}
+ * ArchUnit fence pins.
  */
 @Component
 public final class ConnectionRegistry {
@@ -128,5 +136,37 @@ public final class ConnectionRegistry {
     /** The number of live coupled pairs (test observation / AD-22 drain enumeration). */
     public int size() {
         return entries.size();
+    }
+
+    /**
+     * The AD-22 drain enumeration (Story 4.3): a point-in-time, read-only snapshot of every live pair, each
+     * row a {@link LivePair} projection &mdash; never the {@link ConnectionEntry} itself, whose package-private
+     * adjudication handles and teardown CAS must not escape {@code relay/}'s mutation paths (the drain body
+     * closes legs through the {@code RelayStateManager}, keeping the mutation fence intact). Weakly consistent
+     * with the underlying map: pairs registered or torn down after the call neither appear in nor vanish from
+     * the returned list, and the list rejects mutation itself. Iteration order is unspecified &mdash; callers
+     * must not depend on it.
+     *
+     * @return an unmodifiable snapshot of the live pairs at call time; empty when the registry is empty.
+     */
+    public List<LivePair> snapshot() {
+        return entries.values().stream()
+                .map(entry -> new LivePair(entry.ingress(), entry.egress(), entry.systemId()))
+                .toList();
+    }
+
+    /**
+     * One row of the {@link #snapshot()} drain enumeration: a read-only projection of a live pair's two legs
+     * and its identity. Deliberately NOT a {@link ConnectionEntry} &mdash; the entry carries the package-private
+     * in-flight adjudication handles ({@code VerdictRequest} / {@code Password}) and the tearing-down CAS, so
+     * handing entries past the registry would widen mutation access the Story 4.3 mutation fence exists to
+     * deny.
+     *
+     * @param ingress  the legacy-client-facing leg; non-null.
+     * @param egress   the SMSC-facing leg, or {@code null} while the egress connect is still pending (the
+     *                 optimistic-entry window, RELAY-006).
+     * @param systemId the identity forwarded end-to-end (AD-14); non-null.
+     */
+    public record LivePair(Channel ingress, @Nullable Channel egress, SystemId systemId) {
     }
 }

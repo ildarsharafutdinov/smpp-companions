@@ -2,7 +2,7 @@
 title: 'Story 4.3 — AD-22 graceful shutdown pt. 2: the connection drain body'
 type: 'feature'
 created: '2026-09-04'
-status: 'ready-for-dev'
+status: 'in-progress'
 review_loop_iteration: 0
 baseline_commit: e614291ae4e4890f92127fcd268602dae1634754
 context:
@@ -79,7 +79,7 @@ context:
 
 **Execution:** *(one task per conversational step, one commit per task — house rule)*
 
-- [ ] **T1 — enumeration + mutation fence** — `ConnectionRegistry`: read-only snapshot projection (ingress+egress channels, systemId — never `ConnectionEntry`); unit rows: empty, N pairs, snapshot isolated from later mutation, the :267 no-orphans pin stays green. ArchUnit: mirror `RelayCoupleSiteArchitectureTest` (forbid + positive control) fencing `register`/`attachEgress`/`beginTeardown`/attribute clears to `RelayStateManager` + tests; widen the couple rule to any-arity (3.4 ledger fold). Mutation: fence commented out → RED.
+- [x] **T1 — enumeration + mutation fence** — `ConnectionRegistry`: read-only snapshot projection (ingress+egress channels, systemId — never `ConnectionEntry`); unit rows: empty, N pairs, snapshot isolated from later mutation, the :267 no-orphans pin stays green. ArchUnit: mirror `RelayCoupleSiteArchitectureTest` (forbid + positive control) fencing `register`/`attachEgress`/`beginTeardown`/attribute clears to `RelayStateManager` + tests; widen the couple rule to any-arity (3.4 ledger fold). Mutation: fence commented out → RED.
 - [ ] **T2 — fixture consolidation (ledger fold)** — fold the parked-IdP / `reverseBProperties` / respond / drain / realmBase fixtures from `AdjudicationLifecycleTest`, `ProxyCompanionLifecycleTest`, `GracefulShutdownRacesTest` (+ `rebindableProbe` ×2) into `testsupport/` BEFORE the gate/body rows add a fourth consumer. Mechanical, GREEN-only.
 - [ ] **T3 — config: drain deadline** — `ProxyCompanionProperties.Shutdown(Duration drainTimeout)` on the Bind precedent (required node, compact-ctor `requireNonNull` + positive guard); `application.yml` `shutdown: drain-timeout: 10s` after `metrics:`; `TestCompanionConfigs.common()` key; both `reverseBProperties` builders gain the component. Matrix rows bind `""`/`0s`/`-5s`/non-duration — the invalid value, never key-removal. Mutation: guard neutered → matrix RED.
 - [ ] **T4 — new-adjudication gate (OBS-017)** — new injectable gate state (house @Bean), armed in `RelayServerLifecycle.stop()` at acceptor close; consumed in `onRequest`'s `entry == null` arm BEFORE `register`: release frame + `writeBindFailureAndClose` (the routing-miss arm's shape); post-couple relaying untouched. Rows: bind on an established socket after stop → non-ROK `bind_resp`, registry size unchanged, verifier never contacted; fresh connect refused. Mutation: gate check neutered → RED.
