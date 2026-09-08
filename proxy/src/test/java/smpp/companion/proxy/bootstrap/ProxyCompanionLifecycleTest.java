@@ -3,19 +3,31 @@ package smpp.companion.proxy.bootstrap;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
 import com.sun.net.httpserver.HttpsServer;
 
+import io.netty.channel.Channel;
 import io.netty.channel.DefaultChannelId;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.util.AsciiString;
+import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.DefaultThreadFactory;
 
 import org.junit.jupiter.api.DisplayName;
@@ -24,12 +36,19 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
+import org.slf4j.LoggerFactory;
+
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.observability.MetricsEndpointLifecycle;
+import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.CoupledRelayHandler;
+import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
 import smpp.companion.proxy.security.AdjudicationLifecycle;
 import smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier;
 import smpp.companion.proxy.security.BindCredential;
+import smpp.companion.proxy.security.BindCredentialVerifier;
 import smpp.companion.proxy.security.IdpSslContextFactory;
 import smpp.companion.proxy.security.Password;
 import smpp.companion.proxy.security.RequestContext;
@@ -46,7 +65,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Story 4.2 T3 — {@link ProxyCompanionLifecycle} is the AD-22 <b>shutdown coordinator</b>: the
  * app-phase bean whose {@code stop()} walks the 5-step spine's remaining steps — deny &rarr; the
- * (still-empty, 4.3) drain seam &rarr; release-await &rarr; the shared loop's quiesce with an
+ * drain body (Story 4.3 T5: snapshot &rarr; poll {@code size()==0} to the Clock deadline &rarr;
+ * force-close the remainder) &rarr; release-await &rarr; the shared loop's quiesce with an
  * EXPLICIT short quiet period (the {@code MetricsEndpointLifecycle} 100ms/2s pattern, never
  * Netty's 2s default). Pinned here: the phase discipline (the coordinator stops LAST — below the
  * acceptor, the deny window, and the metrics scrape-late window, so the walk begins with the port
@@ -55,8 +75,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * JOINED the deny's unwind — the pool denying every new verify, and the loop provably quiesced),
  * the idempotence contract (a second {@code stop()} is a no-op; the bean-destroy backstops — the
  * group bean's {@code shutdownGracefully} and the adapter's fused {@code close()} — re-fire
- * harmlessly), and the source-level shape of the walk itself (the deny &rarr; seam &rarr; release
+ * harmlessly), and the source-level shape of the walk itself (the deny &rarr; drain &rarr; release
  * &rarr; quiesce order + the explicit quiesce args).
+ *
+ * <p><b>Story 4.3 T5 — the drain body's coordinator-level rows:</b> the empty registry's instant
+ * no-op (the deadline is never slept), the deadline force-close over a real
+ * {@code ConnectionRegistry}/{@code RelayStateManager} populated with embedded channels (a MUTABLE
+ * {@link Clock} advances past the budget — the OBS-020 knob, never a wall-clock wait; the channels
+ * are the recording surface: force-closed legs, {@code SHUTDOWN_DRAIN} stashed on each, registry
+ * empty), and the ONE bounded WARN naming the count. The full six-event ordering, RELAY-022
+ * sequence integrity, and the observer-level OBS-020 proof are T6's races rows.
  *
  * <p>The real-adapter rows drive the ROPC adapter over a parked in-process TLS stand-in IdP (the
  * {@code AdjudicationLifecycleTest} pattern, compact): the bind's token exchange parks on a latch,
@@ -68,7 +96,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("bootstrap")
 @Tag("p1")
 @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-@DisplayName("Story 4.2 T3 — ProxyCompanionLifecycle: the AD-22 coordinator skeleton")
+@DisplayName("Story 4.2 T3 + 4.3 T5 — ProxyCompanionLifecycle: the AD-22 coordinator walk and its drain body")
 class ProxyCompanionLifecycleTest {
 
     private static final ScopedValue<RequestContext> CTX = ScopedValue.newInstance();
@@ -78,8 +106,7 @@ class ProxyCompanionLifecycleTest {
             + "scrape-late window); house pattern: flag, callback, idempotence")
     void phaseSitsBelowEveryOtherLifecycleAndFollowsTheHousePattern() {
         EventLoopGroup group = newGroup();
-        ProxyCompanionLifecycle coordinator =
-                new ProxyCompanionLifecycle(new AlwaysAllowBindCredentialVerifier(), group);
+        ProxyCompanionLifecycle coordinator = idleCoordinator(new AlwaysAllowBindCredentialVerifier(), group);
         try {
             assertThat(coordinator.getPhase()).isEqualTo(ProxyCompanionLifecycle.APP_PHASE);
             // The walk runs LAST: everything above has already stopped when it begins — the final
@@ -138,7 +165,7 @@ class ProxyCompanionLifecycleTest {
                     dir, TokenIdpStandIn.realmBase(server), Duration.ofMillis(500));
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
-            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group);
+            ProxyCompanionLifecycle coordinator = idleCoordinator(adapter, group);
             coordinator.start();
 
             VerdictRequest inFlight = ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX));
@@ -185,7 +212,7 @@ class ProxyCompanionLifecycleTest {
         RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
         EventLoopGroup group = newGroup();
         try {
-            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group);
+            ProxyCompanionLifecycle coordinator = idleCoordinator(adapter, group);
             coordinator.start();
             coordinator.stop();   // the walk (idle: the pool joins instantly, the quiesce is ~100ms)
 
@@ -212,8 +239,7 @@ class ProxyCompanionLifecycleTest {
             + "fast exit well under the 30s phase ceiling")
     void idleWalkOverTheStandInVerifierExitsFast() {
         EventLoopGroup group = newGroup();
-        ProxyCompanionLifecycle coordinator =
-                new ProxyCompanionLifecycle(new AlwaysAllowBindCredentialVerifier(), group);
+        ProxyCompanionLifecycle coordinator = idleCoordinator(new AlwaysAllowBindCredentialVerifier(), group);
         try {
             coordinator.start();
             long start = System.nanoTime();
@@ -222,9 +248,11 @@ class ProxyCompanionLifecycleTest {
             // The walk is the flag + three no-op steps + a 100ms-quiet quiesce: this bound sits
             // between that reality and the 2s-default quiet period this bean refuses (an idle walk
             // under Netty's defaults floors at ~2s and goes RED here), and is nowhere near the 30s
-            // per-phase ceiling (application.yml). The meaningful full-boot bound is 4.2 T4's row.
+            // per-phase ceiling (application.yml). The drain body's empty-registry no-op keeps this
+            // true with a REALISTIC 10s deadline armed (the dedicated no-op row below pins that).
+            // The meaningful full-boot bound is 4.2 T4's row.
             assertThat(elapsedMs)
-                    .as("the idle walk completes fast (no drain body yet — 4.3)")
+                    .as("the idle walk completes fast (the drain body's empty-registry no-op)")
                     .isLessThan(1_500L);
             assertThat(group.isTerminated()).as("the quiesce was awaited").isTrue();
         } finally {
@@ -233,7 +261,7 @@ class ProxyCompanionLifecycleTest {
     }
 
     @Test
-    @DisplayName("source pin: the walk's order (deny → drain seam → release → quiesce) and the "
+    @DisplayName("source pin: the walk's order (deny → drain → release → quiesce) and the "
             + "EXPLICIT quiesce args (never Netty's 2s default)")
     void theWalkOrderAndExplicitQuiesceAreSourcePinned() throws IOException {
         // The MetricsEndpointTest scan idiom (test CWD = the proxy module; `clean build` covers the
@@ -250,16 +278,210 @@ class ProxyCompanionLifecycleTest {
         assertThat(code).as("the quiesce call passes the explicit args")
                 .contains("shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS");
         assertThat(code).as("never Netty's 2s-default no-args quiesce").doesNotContain("shutdownGracefully()");
-        // The walk ORDER (the 5-step spine's steps 2-5, in stop() body order): deny < the (empty)
-        // drain seam < release < quiesce. A re-ordered or dropped step goes RED here.
+        // The walk ORDER (the 5-step spine's steps 2-5, in stop() body order): deny < the drain
+        // step < release < quiesce. A re-ordered or dropped step goes RED here.
         int deny = code.indexOf("adapter.deny()");
         int drain = code.indexOf("drainRelayedConnections();");
         int release = code.indexOf("adapter.release()");
         int quiesce = code.indexOf("shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS");
         assertThat(deny).as("step 2 (deny) present").isGreaterThanOrEqualTo(0);
-        assertThat(drain).as("step 3 (the empty drain seam) is walked, after the deny").isGreaterThan(deny);
-        assertThat(release).as("step 4 (release-await) lands after the seam").isGreaterThan(drain);
+        assertThat(drain).as("step 3 (the drain) is walked, after the deny").isGreaterThan(deny);
+        assertThat(release).as("step 4 (release-await) lands after the drain").isGreaterThan(drain);
         assertThat(quiesce).as("step 5 (the quiesce) is the last step").isGreaterThan(release);
+    }
+
+    // ── Story 4.3 T5: the drain body's coordinator-level rows ─────────────────────────────────
+
+    @Test
+    @DisplayName("drain: an empty registry is an INSTANT no-op — the deadline is never slept")
+    void drainOverAnEmptyRegistryIsAnInstantNoOp() {
+        EventLoopGroup group = newGroup();
+        ConnectionRegistry registry = new ConnectionRegistry();   // EMPTY — nothing to drain
+        ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(
+                new AlwaysAllowBindCredentialVerifier(), group, registry,
+                new RelayStateManager(registry),
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT), Clock.systemUTC());
+        try {
+            coordinator.start();
+            long start = System.nanoTime();
+            coordinator.stop();
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+            // The empty-snapshot short-circuit: with a REALISTIC 10s deadline armed, a drain that
+            // unconditionally sleeps the window (or polls before checking emptiness) floors at 10s
+            // and goes RED here; the honest no-op is the flag + three no-op steps + the 100ms-quiet
+            // quiesce (the idle-row bound).
+            assertThat(elapsedMs)
+                    .as("the empty-registry drain is an instant no-op, never a deadline sleep")
+                    .isLessThan(1_500L);
+            assertThat(registry.size()).as("still empty — the drain mutated nothing").isZero();
+        } finally {
+            group.shutdownGracefully().syncUninterruptibly();   // exception-safe (assertions can throw)
+        }
+    }
+
+    @Test
+    @DisplayName("drain: at the Clock deadline the remainder is force-closed — SHUTDOWN_DRAIN stashed "
+            + "on every leg, registry empty, walk completes (OBS-020's coordinator half)")
+    void drainForceClosesTheRemainderAtTheClockDeadline() throws Exception {
+        ConnectionRegistry registry = new ConnectionRegistry();
+        RelayStateManager manager = new RelayStateManager(registry);
+        // Two live pairs that NEVER drain on their own (the OBS-020 premise: peers that never
+        // half-close): one fully coupled (both legs) and one still in the optimistic-entry window
+        // (egress never attached — RELAY-006's shape must force-close too).
+        EmbeddedChannel ingress = channel();
+        EmbeddedChannel egress = channel();
+        EmbeddedChannel ingressPending = channel();
+        manager.register(ingress, systemId("legacyA"));
+        manager.attachEgress(ingress.id(), egress);
+        manager.register(ingressPending, systemId("legacyB"));
+        MutableClock clock = new MutableClock();
+        EventLoopGroup group = newGroup();
+        ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(
+                new AlwaysAllowBindCredentialVerifier(), group, registry, manager,
+                new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(5)), clock);
+        try {
+            coordinator.start();
+            stopAdvancingTheClock(coordinator, clock);
+
+            // The force-close took effect through the manager (the recording surface: the channels):
+            // every leg of every remaining pair is closed and carries the SHUTDOWN_DRAIN stash, the
+            // registry is empty, and the walk completed through the quiesce.
+            assertThat(registry.size()).as("the deadline force-close emptied the registry").isZero();
+            assertThat(ingress.isOpen()).as("the coupled pair's ingress leg was force-closed").isFalse();
+            assertThat(egress.isOpen()).as("the coupled pair's egress leg was force-closed").isFalse();
+            assertThat(ingressPending.isOpen()).as("the pending-egress pair was force-closed").isFalse();
+            assertThat(reasonStashedOn(ingress)).isEqualTo(CloseReason.SHUTDOWN_DRAIN);
+            assertThat(reasonStashedOn(egress)).isEqualTo(CloseReason.SHUTDOWN_DRAIN);
+            assertThat(reasonStashedOn(ingressPending)).isEqualTo(CloseReason.SHUTDOWN_DRAIN);
+            assertThat(group.isTerminated()).as("the walk completed through the quiesce").isTrue();
+        } finally {
+            group.shutdownGracefully().syncUninterruptibly();   // exception-safe (assertions can throw)
+        }
+    }
+
+    @Test
+    @DisplayName("drain WARN shape: the deadline force-close logs ONE bounded WARN naming the count")
+    void theDeadlineForceCloseWarnsOnceNamingTheCount() throws Exception {
+        Logger logger = (Logger) LoggerFactory.getLogger(ProxyCompanionLifecycle.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        EventLoopGroup group = newGroup();
+        try {
+            ConnectionRegistry registry = new ConnectionRegistry();
+            RelayStateManager manager = new RelayStateManager(registry);
+            for (int i = 0; i < 3; i++) {   // THREE stuck pairs — the WARN must name the bulk count
+                manager.register(channel(), systemId("legacy" + i));
+            }
+            MutableClock clock = new MutableClock();
+            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(
+                    new AlwaysAllowBindCredentialVerifier(), group, registry, manager,
+                    new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(5)), clock);
+            coordinator.start();
+            stopAdvancingTheClock(coordinator, clock);
+
+            List<ILoggingEvent> warns = appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN).toList();
+            assertThat(warns).as("exactly ONE bounded WARN for the whole bulk force-close").hasSize(1);
+            assertThat(warns.get(0).getFormattedMessage())
+                    .as("the WARN names the force-closed count and the SHUTDOWN_DRAIN close")
+                    .contains("force-closed 3 live pair(s)")
+                    .contains("SHUTDOWN_DRAIN");
+        } finally {
+            // Exception-safe: detach BEFORE the group release — a failed assertion must not leak the
+            // appender into the next row's capture.
+            logger.detachAppender(appender);
+            appender.stop();
+            group.shutdownGracefully().syncUninterruptibly();
+        }
+    }
+
+    // ── T5 fixtures: the mutable clock, the embedded drain pairs, the stopper ─────────────────
+
+    /**
+     * The 4.2-row construction re-signed for the widened ctor (Story 4.3 T5): an EMPTY registry over
+     * the stand-in/real adapter — those rows never hold live pairs, so the drain is the no-op and
+     * the realistic 10s deadline is inert.
+     */
+    private static ProxyCompanionLifecycle idleCoordinator(BindCredentialVerifier verifier, EventLoopGroup group) {
+        ConnectionRegistry registry = new ConnectionRegistry();
+        return new ProxyCompanionLifecycle(verifier, group, registry, new RelayStateManager(registry),
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT),
+                Clock.systemUTC());
+    }
+
+    /**
+     * Runs {@code stop()} on a helper thread while advancing the mutable clock every 25ms until the
+     * walk completes: whenever the drain computes its deadline, the NEXT advance (a 6s jump over a
+     * 5s budget) pushes the clock past it — the deterministic OBS-020 knob, never a wall-clock wait
+     * for the budget. Bounded at 10s: a walk that never resolves at an advanced clock fails HERE.
+     * The stopper is a DAEMON (the mutation-pass discipline): a neutered deadline check can strand
+     * it mid-drain without hanging the test JVM past the failure.
+     */
+    private static void stopAdvancingTheClock(ProxyCompanionLifecycle coordinator, MutableClock clock)
+            throws InterruptedException {
+        Thread stopper = new Thread(coordinator::stop, "drain-deadline-stopper");
+        stopper.setDaemon(true);
+        stopper.start();
+        long bail = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (stopper.isAlive() && System.nanoTime() < bail) {
+            clock.advance(Duration.ofSeconds(6));
+            TimeUnit.MILLISECONDS.sleep(25);
+        }
+        assertThat(stopper.isAlive())
+                .as("the drain resolved at the advanced clock — never a wall-clock wait for the budget")
+                .isFalse();
+        stopper.join(TimeUnit.SECONDS.toMillis(1));
+    }
+
+    /**
+     * A frozen-by-default, externally advancing {@link Clock} (the OBS-020 injectable-deadline knob):
+     * reads return the last advanced instant, so a test threads the deadline from OUTSIDE the walk —
+     * the drain's {@code isBefore(deadline)} flips only when the test says so.
+     */
+    private static final class MutableClock extends Clock {
+
+        private volatile Instant now = Instant.EPOCH;
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+
+    /**
+     * The {@link CoupledRelayHandler#CLOSE_REASON} stash a teardown path left for the
+     * {@code channelInactive} site — re-resolved by name (the global {@link AttributeKey} registry
+     * hands back the SAME key the relay's protected field holds).
+     */
+    private static final AttributeKey<CloseReason> CLOSE_REASON =
+            AttributeKey.valueOf(CoupledRelayHandler.class, "closeReason");
+
+    private static CloseReason reasonStashedOn(Channel channel) {
+        return channel.attr(CLOSE_REASON).get();
+    }
+
+    /** A unique-id embedded channel (the ConnectionRegistryTest idiom — no singleton-id key collision). */
+    private static EmbeddedChannel channel() {
+        return new EmbeddedChannel(DefaultChannelId.newInstance());
+    }
+
+    private static SystemId systemId(String value) {
+        return new SystemId(new AsciiString(value));
     }
 
     // ── fixtures (the stand-in IdP and the reverse×B record live in testsupport — 4.3 T2) ─────

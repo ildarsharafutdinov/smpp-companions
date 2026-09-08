@@ -9,6 +9,7 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -86,10 +87,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <li><b>The matrix row "SIGTERM, coupled pairs mid-splice" + AC3's coupled arm.</b> The
  * IMMEDIATE-answer IdP variant lets the bind genuinely COUPLE (token Allow &rarr; egress dial
  * &rarr; the mock's ROK — the only row in this suite where the couple flag DOES flip); the walk
- * then fires mid-splice and pins the documented 4.2 seam contract: UNCHANGED from today at the
- * seam — the pair tears down at the QUIESCE (no drain body yet, the empty 4.3 seam), both legs
- * die, the registry empties, and the walk still exits inside the meaningful window (the 5s
- * idiom, well under the 30s ceiling).</li>
+ * then fires mid-splice and pins the drain body's contract (Story 4.3 T5): neither peer
+ * half-closes, so the drain polls the registry to the rig's SHORT drain deadline and
+ * force-closes the pair there ({@code SHUTDOWN_DRAIN} stashed on both legs) — both legs die,
+ * the registry empties, and the walk still exits inside the meaningful window (the 5s idiom,
+ * well under the 30s ceiling). The sequence-integrity and observer-level drain proofs (RELAY-022,
+ * OBS-020) are T6's.</li>
  * <li><b>OBS-021 — zero orphaned adjudication VTs.</b> The catalog's literal "ThreadMXBean
  * snapshot" is unimplementable as written: JEP 444 excludes virtual threads from
  * {@code Thread.getAllStackTraces()}/{@code ThreadMXBean.getAllThreadIds()} (verified empirically
@@ -141,6 +144,15 @@ class GracefulShutdownRacesTest {
      * in this suite fast and its joined-vs-timed-out separation wide (~700ms vs ≥1.6s).
      */
     private static final Duration OIDC_TIMEOUT = Duration.ofMillis(500);
+
+    /**
+     * The rig's drain-deadline rule (Story 4.3 T5): the deny rows' parked exchanges settle at their
+     * OWN oidc budget and only then (via the continuation's teardown) empty the registry — so the
+     * drain must OUTLIVE that settle (oidc + 2s) or the deadline force-close would beat the deny
+     * {@code bind_resp} write. This mirrors production's operator contract (drain-timeout 10s vs the
+     * documented [2s, 5s] oidc window), just scaled to the rig's budgets.
+     */
+    private static final Duration COUPLED_DRAIN_DEADLINE = Duration.ofMillis(300);
 
     @Test
     @DisplayName("RELAY-023/OBS-019: the Allow racing the deny resolves fail-closed — non-ROK bind_resp "
@@ -199,10 +211,10 @@ class GracefulShutdownRacesTest {
     }
 
     @Test
-    @DisplayName("matrix 'SIGTERM, coupled pairs mid-splice' + AC3's coupled arm: the seam UNCHANGED "
-            + "this story — the pair tears down at the quiesce (no drain body yet, 4.3) and the walk "
-            + "exits inside the window")
-    void coupledPairsMidSpliceTearDownAtTheQuiesceAndExitInsideTheWindow(@TempDir Path dir) throws Exception {
+    @DisplayName("matrix 'SIGTERM, coupled pairs mid-splice' + AC3's coupled arm: the drain body "
+            + "(4.3 T5) force-closes the still-live pair at the rig's short drain deadline and the "
+            + "walk exits inside the window")
+    void coupledPairsMidSpliceDrainForceClosesAtTheDeadlineAndExitInsideTheWindow(@TempDir Path dir) throws Exception {
         // The IMMEDIATE-answer IdP variant: the exchange yields Allow, the egress dials, the mock
         // answers ROK — a genuinely COUPLED pair mid-splice when SIGTERM fires.
         Rig rig = rig(dir, 1, false);
@@ -225,19 +237,21 @@ class GracefulShutdownRacesTest {
                     .hasSize(1);
 
             long start = System.nanoTime();
-            rig.ctx.close(); // SIGTERM-equivalent, mid-splice (the drain seam is EMPTY — 4.3 fills it)
+            rig.ctx.close(); // SIGTERM-equivalent, mid-splice — the drain body owns the live pair now
             long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
-            // The documented 4.2 seam contract: UNCHANGED from today at the seam — both legs torn
-            // at the QUIESCE (never a drain, never a mid-write truncation: the legs close cleanly
-            // with the loop), the registry emptied — and the walk still exits fast: an idle-pool
-            // deny + an instantly-joined release + the 100ms-quiet quiesce, the Bootstrap 5s
-            // idiom, well under the 30s per-phase ceiling.
+            // The drain contract (4.3 T5, coordinator level): neither peer half-closes, so the drain
+            // polls to the rig's SHORT deadline (300ms) and force-closes the pair there — both legs
+            // closed (SHUTDOWN_DRAIN stashed; never a mid-write truncation: the legs close cleanly
+            // while the loop is still live), the registry emptied — and the walk still exits fast:
+            // a 300ms drain + an idle-pool deny + an instantly-joined release + the 100ms-quiet
+            // quiesce, the Bootstrap 5s idiom, well under the 30s per-phase ceiling.
             assertThat(elapsedMs)
-                    .as("the mid-splice walk exits inside the window (no drain body yet — 4.3)")
+                    .as("the mid-splice walk exits inside the window (the short rig drain deadline "
+                            + "force-closed the pair)")
                     .isLessThan(5_000L);
-            assertAtEof(legacy); // the ingress leg died at the quiesce
-            awaitTrue("the SMSC session closed by the quiesce", session::closed); // the egress leg with it
+            assertAtEof(legacy); // the ingress leg died at the drain force-close
+            awaitTrue("the SMSC session closed by the drain force-close", session::closed); // the egress leg with it
             assertThat(rig.harness.registry().size())
                     .as("the pair is gone from the registry")
                     .isZero();
@@ -430,7 +444,16 @@ class GracefulShutdownRacesTest {
     }
 
     private static Rig rig(Path dir, int tokenCount, boolean park) throws IOException {
-        return rig(dir, tokenCount, park, OIDC_TIMEOUT);
+        return park ? rig(dir, tokenCount, park, OIDC_TIMEOUT)
+                : rig(dir, tokenCount, park, OIDC_TIMEOUT, COUPLED_DRAIN_DEADLINE);
+    }
+
+    /**
+     * The deny-row default: the drain deadline outlives the parked exchanges' own settle (see
+     * {@link #COUPLED_DRAIN_DEADLINE}) — oidc + 2s.
+     */
+    private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout) throws IOException {
+        return rig(dir, tokenCount, park, oidcTimeout, oidcTimeout.plusSeconds(2));
     }
 
     /**
@@ -442,8 +465,8 @@ class GracefulShutdownRacesTest {
      * + the two destroy backstops as Spring beans so {@code ctx.close()} walks the REAL phase
      * order.
      */
-    private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout)
-            throws IOException {
+    private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout,
+            Duration drainDeadline) throws IOException {
         MockSmsc smsc = MockSmsc.start();
         CountDownLatch tokenReceived = new CountDownLatch(tokenCount);
         CountDownLatch hold = new CountDownLatch(1);
@@ -454,10 +477,13 @@ class GracefulShutdownRacesTest {
                 1, new DefaultThreadFactory("shutdown-race-relay", true), NioIoHandler.newFactory());
         AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext();
         try {
-            // concurrent-pairs 8 (>= the row's binds): the F13 acceptor cap shares this number.
+            // concurrent-pairs 8 (>= the row's binds): the F13 acceptor cap shares this number. The
+            // drain deadline: oidc + 2s for the deny rows (the parked exchanges must settle and
+            // empty the registry BEFORE any force-close), the SHORT 300ms knob for the coupled row
+            // (its pair never drains — the force-close is the point there).
             ProxyCompanionProperties properties = RelayTestFixtures.reverseBProperties(
                     dir, TokenIdpStandIn.realmBase(idp), RelayTestFixtures.freePort(), 8,
-                    "127.0.0.1", smsc.port(), oidcTimeout);
+                    "127.0.0.1", smsc.port(), oidcTimeout, drainDeadline);
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
             RecordingVerifier recorder = new RecordingVerifier(adapter);
@@ -466,7 +492,11 @@ class GracefulShutdownRacesTest {
                     new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                     harness.ingressInitializer(), harness.gate());
             AdjudicationLifecycle adjudication = new AdjudicationLifecycle(adapter);
-            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group);
+            // Story 4.3 T5 re-sign: the coordinator's drain reads the SAME registry/manager the
+            // initializers wired (the harness's shared beans — the wiring Spring guarantees by
+            // component scan) and polls the properties' drain deadline on a system clock.
+            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group,
+                    harness.registry(), harness.manager(), properties.shutdown(), Clock.systemUTC());
 
             // The production bean set the stop order needs — the group bean's destroyMethod backstop
             // (RelayNettyConfig) and the adapter bean's fused close() backstop included, so a full

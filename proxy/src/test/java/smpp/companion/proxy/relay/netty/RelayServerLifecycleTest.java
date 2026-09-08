@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -36,7 +37,9 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.relay.ConnectionRegistry;
 import smpp.companion.proxy.relay.NewAdjudicationGate;
+import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier;
 import smpp.companion.proxy.security.BindCredential;
 import smpp.companion.proxy.security.BindCredentialVerifier;
@@ -260,7 +263,13 @@ class RelayServerLifecycleTest {
                 new NewAdjudicationGate())
                 .getPhase())
                 .isEqualTo(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE);
-        assertThat(new ProxyCompanionLifecycle(new AlwaysAllowBindCredentialVerifier(), newGroup()).getPhase())
+        // 4.3 T5 re-sign: the widened coordinator ctor — an empty scratch registry (never walked, so
+        // the drain deadline/clock are inert) + the stand-in verifier.
+        ConnectionRegistry scratchRegistry = new ConnectionRegistry();
+        assertThat(new ProxyCompanionLifecycle(new AlwaysAllowBindCredentialVerifier(), newGroup(),
+                scratchRegistry, new RelayStateManager(scratchRegistry),
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT),
+                Clock.systemUTC()).getPhase())
                 .isEqualTo(ProxyCompanionLifecycle.APP_PHASE);
         assertThat(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE)
                 .as("AD-22 step 1: the acceptor must stop BEFORE ProxyCompanionLifecycle "

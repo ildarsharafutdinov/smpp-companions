@@ -25,9 +25,10 @@ package smpp.companion.proxy.observability;
  *   <li>Bounded catch-all: {@link #OTHER}.</li>
  * </ul>
  *
- * <p><b>Firing semantics (documented by the Story 4.1 T4 hoist):</b> <b>nine</b> of the sixteen values
- * fire today, stashed by the relay's classification/teardown arms or the deny-path reason hoist
- * ({@code BindInterceptor.denyAndTeardown}):
+ * <p><b>Firing semantics (documented by the Story 4.1 T4 hoist):</b> <b>ten</b> of the sixteen values
+ * fire today, stashed by the relay's classification/teardown arms, the deny-path reason hoist
+ * ({@code BindInterceptor.denyAndTeardown}), or the shutdown drain force-close
+ * ({@code RelayStateManager.forceCloseForDrain}, Story 4.3 T5):
  * <ul>
  *   <li>Via the shared classification/stash arms: {@link #PEER_HALF_CLOSE} (also the unstashed coupled
  *       default), {@link #PEER_RST}, {@link #DECODE_ERROR} (including the framer's over/undersized
@@ -41,17 +42,21 @@ package smpp.companion.proxy.observability;
  *   <li>{@link #EGRESS_CONNECT_FAILED} &mdash; <b>since the T4 hoist</b>: every egress-establishment
  *       failure (a refused/failed connect, SMSC death before the {@code bind_resp}, and the egress-leg
  *       pre-answer violations).</li>
+ *   <li>{@link #SHUTDOWN_DRAIN} &mdash; <b>since Story 4.3 T5</b>: the shutdown coordinator's drain
+ *       deadline force-close stashes it on BOTH legs of every pair still live when the
+ *       {@code companion.shutdown.drain-timeout} budget expires (OBS-020) &mdash; a peer that never
+ *       half-closes still closes with a named reason, never a hang and never the {@link #OTHER}
+ *       catch-all.</li>
  * </ul>
- * The remaining <b>seven are reserved</b> (kept for closed-set stability, never silently removed): the
+ * The remaining <b>six are reserved</b> (kept for closed-set stability, never silently removed): the
  * framer floor/ceiling pair ({@link #OVERSIZED_FRAME}, {@link #UNDERSIZED_FRAME} &mdash; their rejects
  * currently classify as {@link #DECODE_ERROR}); {@link #UNKNOWN_COMMAND_ID} (the codec is structural
  * &mdash; no known-set gate exists pre-couple, so a non-bind PDU closes as
  * {@link #PRE_COUPLE_NON_BIND_PDU}); {@link #CLEAN_UNBIND_HANDSHAKE} (post-couple {@code unbind} relays
- * opaquely; no unbind FSM exists); the TLS pair ({@link #INGRESS_TLS_HANDSHAKE_FAILED},
+ * opaquely; no unbind FSM exists); and the TLS pair ({@link #INGRESS_TLS_HANDSHAKE_FAILED},
  * {@link #EGRESS_TLS_HANDSHAKE_FAILED} &mdash; handshake failures currently classify generically as
- * {@link #PEER_RST}/{@link #DECODE_ERROR}); and {@link #SHUTDOWN_DRAIN} (the AD-22 drain body is story
- * 4.2). A dedicated classification for any reserved value is a taxonomy change, not a contract change
- * &mdash; the value set itself is what the shape test pins.
+ * {@link #PEER_RST}/{@link #DECODE_ERROR}). A dedicated classification for any reserved value is a
+ * taxonomy change, not a contract change &mdash; the value set itself is what the shape test pins.
  */
 public enum CloseReason {
     /** The peer (legacy client or SMSC) half-closed its leg (FIN); teardown propagates post-couple (REL-1). */
@@ -99,7 +104,12 @@ public enum CloseReason {
     INGRESS_TLS_HANDSHAKE_FAILED,
     /** The egress TLS handshake failed (Epic 3; present so the closed set is stable across the boundary). */
     EGRESS_TLS_HANDSHAKE_FAILED,
-    /** The {@code SmartLifecycle} drain on proxy shutdown closed the pair (full AD-22 body is Epic 4). */
+    /**
+     * The shutdown coordinator's drain deadline force-close closed the pair (AD-22 step 3). Fires
+     * since Story 4.3 T5 &mdash; stashed on BOTH legs by {@code RelayStateManager.forceCloseForDrain}
+     * when the {@code companion.shutdown.drain-timeout} budget expires with the pair still live, so
+     * the close observables name the drain, never the catch-all (OBS-020).
+     */
     SHUTDOWN_DRAIN,
     /** A close path not covered by any of the above &mdash; the bounded catch-all (never a silent drop). */
     OTHER

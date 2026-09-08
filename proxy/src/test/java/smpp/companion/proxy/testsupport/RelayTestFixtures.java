@@ -185,6 +185,21 @@ public final class RelayTestFixtures {
     public static ProxyCompanionProperties reverseBProperties(
             Path dir, String providerUrl, int bindPort, int concurrentPairs,
             String smscHost, int smscPort, Duration oidcTimeout) throws IOException {
+        return reverseBProperties(
+                dir, providerUrl, bindPort, concurrentPairs, smscHost, smscPort, oidcTimeout,
+                DEFAULT_DRAIN_TIMEOUT);
+    }
+
+    /**
+     * The drain-deadline variant (Story 4.3 T5): the AD-22 shutdown-walk rigs that hold LIVE coupled
+     * pairs across the walk thread their own {@code companion.shutdown.drain-timeout} here — the
+     * {@code oidcTimeout} knob pattern (a short deadline keeps the mid-splice rows fast; the drain
+     * body polls it on the injectable clock).
+     */
+    public static ProxyCompanionProperties reverseBProperties(
+            Path dir, String providerUrl, int bindPort, int concurrentPairs,
+            String smscHost, int smscPort, Duration oidcTimeout, Duration drainTimeout)
+            throws IOException {
         Path store = idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
         return new ProxyCompanionProperties(
@@ -203,7 +218,7 @@ public final class RelayTestFixtures {
                                 new ProxyCompanionProperties.TrustStore(store.toString(), IDP_STORE_PASSWORD),
                                 oidcTimeout, 8)), null),
                 null,
-                new ProxyCompanionProperties.Shutdown(DEFAULT_DRAIN_TIMEOUT));
+                new ProxyCompanionProperties.Shutdown(drainTimeout));
     }
 
     /**

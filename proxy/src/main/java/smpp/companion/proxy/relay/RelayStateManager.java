@@ -1,11 +1,14 @@
 package smpp.companion.proxy.relay;
 
+import java.util.List;
+
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Component;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelId;
 
+import smpp.companion.proxy.observability.CloseReason;
 import smpp.companion.proxy.security.Password;
 import smpp.companion.proxy.security.SystemId;
 import smpp.companion.proxy.security.VerdictRequest;
@@ -40,9 +43,12 @@ import smpp.companion.proxy.security.VerdictRequest;
  * <li><b>The AD-25 couple is NOT manager-routable (the T3 hard constraint, AC6):</b> this surface has no
  * couple method at all &mdash; {@link ConnectionEntry#couple()} stays entry state with its single production
  * caller {@code RelayEgressHandler} (structural-by-type, pinned by {@code RelayCoupleSiteArchitectureTest}).
- * <li><b>Thread-bounding unchanged:</b> event-loop-confined policy like the handlers; the verdict
- * continuation hop (the interceptor's {@code eventLoop().execute}) is the one off-loop entry, and every
- * manager method it then calls runs on the pair's loop; no executor exists here (AD-28).
+ * <li><b>Thread-bounding:</b> event-loop-confined policy like the handlers, with exactly TWO
+ * off-loop entries &mdash; the verdict continuation hop (the interceptor's
+ * {@code eventLoop().execute}) and, since Story 4.3 T5, the AD-22 drain force-close below
+ * ({@link #forceCloseForDrain()} on the Spring shutdown thread; every storage op it touches is
+ * registry-concurrent and the closes are thread-safe Netty channel ops); no executor exists here
+ * (AD-28).
  * <li><b>The hot path (AC8):</b> a coupled PDU stays flag-read + forward &mdash; {@link #entryFor(Channel)}
  * is the same cached-attribute read the registry always served; no transition method, no policy
  * consultation, no new virtual dispatch sits on the per-PDU path.
@@ -141,6 +147,49 @@ public final class RelayStateManager {
         }
         cancelAndWipe(won); // the absorbed hygiene BEFORE the Won return — the single-sited ordering half
         return new Teardown.Won(won);
+    }
+
+    /**
+     * AD-22 step 3's deadline force-close (Story 4.3 T5, OBS-020): the shutdown coordinator's drain
+     * body calls this when the {@code companion.shutdown.drain-timeout} budget expired with pairs
+     * still live &mdash; a peer that never half-closes can never hang the exit. Per remaining pair
+     * (a fresh {@link ConnectionRegistry#snapshot()} read, so pairs that drained themselves between
+     * the coordinator's poll and this call are simply absent): the sealed {@link #beginTeardown}
+     * race, and on {@code Won} the caller-side tails a Won teardown owes &mdash; stash
+     * {@link CloseReason#SHUTDOWN_DRAIN} on BOTH legs (the value's first firing site; the
+     * {@code channelInactive} observers then read it at the close) and close both legs. A
+     * {@code Lost} pair (its own teardown won the race in the same window) is left ENTIRELY to that
+     * winner &mdash; not stashed, not counted: the loser must not overwrite the winning path's
+     * reason attribution (RELAY-005's no-op contract). Uses the WON entry's legs (the authoritative
+     * post-race view), so an egress attached after the snapshot is stashed and closed too.
+     *
+     * <p><b>Why a manager method (the T5 fence shape):</b> {@code CoupledRelayHandler.stash} is
+     * package-scoped and every registry mutation routes through THIS class &mdash; composing the
+     * force-close here keeps the coordinator in {@code bootstrap/} reading only
+     * {@code snapshot()}/{@code size()} while the stash-and-close still executes relay-side, inside
+     * the {@code ConnectionRegistryMutationFenceArchitectureTest} fence. The SECOND sanctioned
+     * off-loop entry (the Spring shutdown thread) &mdash; see the class javadoc's thread-bounding
+     * bullet.
+     *
+     * @return the number of pairs THIS call force-closed (the coordinator's ONE bounded WARN names it;
+     *         zero when the registry drained clean before the call).
+     */
+    public int forceCloseForDrain() {
+        int forceClosed = 0;
+        for (ConnectionRegistry.LivePair pair : registry.snapshot()) {
+            if (!(beginTeardown(pair.ingress()) instanceof Teardown.Won won)) {
+                continue; // the pair's own teardown won the race window — entirely its business now
+            }
+            CoupledRelayHandler.stash(won.entry().ingress(), CloseReason.SHUTDOWN_DRAIN);
+            Channel egress = won.entry().egress();
+            if (egress != null) {
+                CoupledRelayHandler.stash(egress, CloseReason.SHUTDOWN_DRAIN);
+                egress.close();
+            }
+            won.entry().ingress().close();
+            forceClosed++;
+        }
+        return forceClosed;
     }
 
     /** Teardown hygiene: abort a still-pending ROPC (AD-12/AD-32) and drop the handle. */
