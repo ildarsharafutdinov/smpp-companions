@@ -449,7 +449,7 @@ class TlsModesLoopbackE2eTest {
         RelayServerLifecycle lifecycle = new RelayServerLifecycle(
                 properties, group,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                harness.ingressInitializer());
+                harness.ingressInitializer(), harness.gate());
         lifecycles.add(lifecycle);
         lifecycle.start();
         assertThat(lifecycle.isRunning()).as("precondition: the acceptor is up").isTrue();

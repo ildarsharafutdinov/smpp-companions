@@ -100,7 +100,7 @@ class JsmppA1OracleTest {
         // real PDUs through the acceptor bite on any dropped wiring line.
         relayLoop = newGroup();
         relay = new RelayServerLifecycle(
-                harness.properties(), relayLoop, newOptions(), harness.ingressInitializer());
+                harness.properties(), relayLoop, newOptions(), harness.ingressInitializer(), harness.gate());
         relay.start();
         assertThat(relay.isRunning()).as("precondition: the relay acceptor is up").isTrue();
     }

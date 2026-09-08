@@ -1,13 +1,20 @@
 package smpp.companion.proxy.relay.netty;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.BindException;
+import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -28,7 +35,14 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
+import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.relay.NewAdjudicationGate;
 import smpp.companion.proxy.security.AlwaysAllowBindCredentialVerifier;
+import smpp.companion.proxy.security.BindCredential;
+import smpp.companion.proxy.security.BindCredentialVerifier;
+import smpp.companion.proxy.security.RequestContext;
+import smpp.companion.proxy.security.Verdict;
+import smpp.companion.proxy.security.VerdictRequest;
 import smpp.companion.proxy.testsupport.OidcDiscoveryStandIn;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
@@ -45,6 +59,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * to the shutdown coordinator, asserted at full-app close instead).
  * The full-boot tests drive the REAL component-scan wiring via {@code ProxyCompanionApplication}
  * (no slice runner) so the bean's presence in the scanned context is proven, not assumed.
+ * Story 4.3 T4 adds the new-adjudication gate rows (OBS-017): {@code stop()} arms the SHARED
+ * {@code NewAdjudicationGate} the ingress interceptor consults, a bind on an ESTABLISHED socket
+ * post-stop is denied fail-closed (no registry entry, no verifier contact), and a fresh connect is
+ * refused.
  *
  * <p>Port discipline: every boot uses a freshly-probed ephemeral port as a run-arg (HIGHEST
  * precedence &mdash; it must beat application.yml's shipped {@code bind.port: 2775}; a
@@ -164,7 +182,7 @@ class RelayServerLifecycleTest {
         EventLoopGroup group = newGroup();
         RelayServerLifecycle lifecycle =
                 new RelayServerLifecycle(RelayTestFixtures.modeBProperties(port, 1), group, newOptions(port),
-                        RelayTestFixtures.modeBIngressInitializer(port));
+                        RelayTestFixtures.modeBIngressInitializer(port), new NewAdjudicationGate());
         try (ServerSocket occupied = new ServerSocket(port)) {
             try {
                 assertThatThrownBy(lifecycle::start)
@@ -187,7 +205,7 @@ class RelayServerLifecycleTest {
         EventLoopGroup group = newGroup();
         RelayServerLifecycle lifecycle =
                 new RelayServerLifecycle(RelayTestFixtures.modeBProperties(port, 1), group, newOptions(port),
-                        RelayTestFixtures.modeBIngressInitializer(port));
+                        RelayTestFixtures.modeBIngressInitializer(port), new NewAdjudicationGate());
         try {
             lifecycle.start();
             assertThat(lifecycle.isRunning()).isTrue();
@@ -238,7 +256,8 @@ class RelayServerLifecycleTest {
         // scratch group (never walked): the phase pin needs no live walk.
         assertThat(new RelayServerLifecycle(
                 RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1), newGroup(),
-                newOptions(RelayTestFixtures.freePort()), RelayTestFixtures.modeBIngressInitializer(RelayTestFixtures.freePort()))
+                newOptions(RelayTestFixtures.freePort()), RelayTestFixtures.modeBIngressInitializer(RelayTestFixtures.freePort()),
+                new NewAdjudicationGate())
                 .getPhase())
                 .isEqualTo(RelayServerLifecycle.RELAY_ACCEPTOR_PHASE);
         assertThat(new ProxyCompanionLifecycle(new AlwaysAllowBindCredentialVerifier(), newGroup()).getPhase())
@@ -247,6 +266,108 @@ class RelayServerLifecycleTest {
                 .as("AD-22 step 1: the acceptor must stop BEFORE ProxyCompanionLifecycle "
                         + "(higher phase stops first)")
                 .isGreaterThan(ProxyCompanionLifecycle.APP_PHASE);
+    }
+
+    // --- Story 4.3 T4: the new-adjudication gate (OBS-017) ------------------------------------
+
+    @Test
+    @DisplayName("OBS-017 arming: stop() arms the SHARED new-adjudication gate at the acceptor close — "
+            + "unarmed while running, never armed by a never-started lifecycle's no-op stop")
+    void stopArmsTheSharedNewAdjudicationGate() throws IOException {
+        int port = RelayTestFixtures.freePort();
+        EventLoopGroup group = newGroup();
+        RelayTestFixtures.ModeBRelayHarness harness = RelayTestFixtures.modeBRelayHarness(
+                RelayTestFixtures.modeBProperties(port, 1));
+        RelayServerLifecycle lifecycle = new RelayServerLifecycle(
+                harness.properties(), group, newOptions(port), harness.ingressInitializer(), harness.gate());
+        try {
+            lifecycle.stop(); // a never-started lifecycle: the idempotent no-op must NOT arm anything
+            assertThat(harness.gate().armed())
+                    .as("a never-started acceptor never denied a bind — the gate stays unarmed")
+                    .isFalse();
+            lifecycle.start();
+            assertThat(harness.gate().armed())
+                    .as("a running acceptor admits new binds")
+                    .isFalse();
+            lifecycle.stop();
+            assertThat(harness.gate().armed())
+                    .as("the acceptor stop armed the SAME gate the ingress interceptor consults (OBS-017)")
+                    .isTrue();
+            lifecycle.stop(); // the idempotent re-stop — still armed (one-way by design)
+            assertThat(harness.gate().armed()).isTrue();
+        } finally {
+            // Exception-safety: a failed assertion must not strand the acceptor or the group.
+            lifecycle.stop();
+            group.shutdownGracefully().syncUninterruptibly();
+        }
+    }
+
+    @Test
+    @DisplayName("OBS-017: after the acceptor stops, a bind on an ESTABLISHED socket is denied fail-closed "
+            + "(header-only non-ROK bind_resp, no registry entry, verifier never contacted) and a fresh "
+            + "connect is refused")
+    void lateBindOnAnEstablishedSocketIsDeniedAndFreshConnectsAreRefused() throws IOException {
+        int port = RelayTestFixtures.freePort();
+        // The egress target is a probed-free loopback port: a bind that DOES adjudicate (the probe below)
+        // fails its egress connect instantly and deterministically — never a DNS or timeout dependency.
+        ProxyCompanionProperties properties =
+                RelayTestFixtures.modeBProperties(port, 1, "127.0.0.1", RelayTestFixtures.freePort());
+        CountingAllowVerifier verifier = new CountingAllowVerifier();
+        RelayTestFixtures.RelayHarness harness = RelayTestFixtures.relayHarness(properties, verifier);
+        EventLoopGroup group = newGroup();
+        RelayServerLifecycle lifecycle = new RelayServerLifecycle(
+                properties, group,
+                new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
+                harness.ingressInitializer(), harness.gate());
+        try {
+            lifecycle.start();
+            try (Socket lateBind = new Socket(InetAddress.getLoopbackAddress(), port);
+                    Socket probe = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                lateBind.setSoTimeout(4_000);
+                probe.setSoTimeout(4_000);
+                // Determinize the accept race before the stop: a full bind roundtrip on the probe
+                // socket proves the shared loop drained the accept FIFO PAST the late-bind socket's
+                // accept — its child pipeline (framer → interceptor) is provably live, so the post-stop
+                // deny below is the GATE's doing, not a never-accepted socket's RST.
+                writePdu(probe, bindRequest(76, "probe", "pw123456"));
+                ByteBuffer probeDeny = ByteBuffer.wrap(readPdu(probe));
+                assertThat(probeDeny.getInt(8))
+                        .as("precondition: the probe bind adjudicated (Allow) and its egress dial to "
+                                + "the refused loopback port collapsed to the AD-33 deny")
+                        .isEqualTo(0x0000000D);
+                int verifierContacts = verifier.seen.size();
+                assertThat(verifierContacts).as("precondition: exactly the probe contacted the verifier").isEqualTo(1);
+                assertThat(harness.registry().size()).as("precondition: the probe's failed pair left").isZero();
+
+                lifecycle.stop(); // AD-22 step 1: gate armed + acceptor closed; the loop stays live (4.2 T2)
+                assertThat(harness.gate().armed()).as("precondition: the stop armed the shared gate").isTrue();
+
+                writePdu(lateBind, bindRequest(77, "legacy1", "pw123456"));
+                ByteBuffer deny = ByteBuffer.wrap(readPdu(lateBind));
+                assertThat(deny.getInt(0)).as("header-only synth — the ONE PDU the relay builds").isEqualTo(16);
+                assertThat(deny.getInt(4)).as("bind_transceiver answered by bind_transceiver_resp (literal pin)")
+                        .isEqualTo(0x80000009);
+                assertThat(deny.getInt(8)).as("non-ROK: the AD-33 generic ESME_RBINDFAIL 0x0D (literal pin)")
+                        .isEqualTo(0x0000000D);
+                assertThat(deny.getInt(12)).as("the deny correlates the late bind's sequence_number").isEqualTo(77);
+                assertThat(harness.registry().size())
+                        .as("no registry entry — the gate denies BEFORE register (OBS-017)")
+                        .isZero();
+                assertThat(verifier.seen.size())
+                        .as("fail-closed DENY without verifier contact — still exactly the probe's one")
+                        .isEqualTo(verifierContacts);
+                assertThat(harness.observer().bindRejects())
+                        .as("the gate deny is not a Verdict — no onBindReject (AD-27)")
+                        .isEmpty();
+            }
+            assertThat(awaitRefused(port))
+                    .as("a fresh connect after the stop is refused (the listener is gone)")
+                    .isTrue();
+        } finally {
+            // Exception-safety: a failed assertion must not strand the acceptor or the group.
+            lifecycle.stop();
+            group.shutdownGracefully().syncUninterruptibly();
+        }
     }
 
     // --- fixtures ---------------------------------------------------------------------------
@@ -344,6 +465,109 @@ class RelayServerLifecycleTest {
 
     private static RelayChannelOptions newOptions(int port) {
         return new RelayChannelOptions(RelayTestFixtures.modeBProperties(port, 1), PooledByteBufAllocator.DEFAULT);
+    }
+
+    /**
+     * The OBS-017 row's verifier: records every contact, {@code Allow} pre-completed — the row's
+     * "verifier never contacted" pin must observe the GATE suppressing the contact itself, not the
+     * verdict shape (the {@code CountingAllowVerifier} idiom of {@code BindInterceptorForwardRoleTest}).
+     */
+    private static final class CountingAllowVerifier implements BindCredentialVerifier {
+        final List<BindCredential> seen = new CopyOnWriteArrayList<>();
+
+        @Override
+        public VerdictRequest verify(BindCredential cred, ScopedValue<RequestContext> ctx) {
+            seen.add(cred);
+            CompletableFuture<Verdict> future = CompletableFuture.completedFuture(new Verdict.Allow());
+            return new VerdictRequest() {
+                @Override
+                public CompletableFuture<Verdict> future() {
+                    return future;
+                }
+
+                @Override
+                public void cancelHttp() {
+                    // nothing in flight — the pre-completed verdict
+                }
+            };
+        }
+    }
+
+    // ---------- hand-authored PDU builders + raw-socket I/O (the RelayA1SmokeTest idiom) ----------
+
+    /** The bind_resp wire contract, pinned as LITERALS (independent of the production constants). */
+    private static final int BIND_TRANSCEIVER = 0x00000009;
+
+    /** A hand-authored {@code bind_transceiver} request (raw bytes — independent of the codec). */
+    private static byte[] bindRequest(int sequence, String systemId, String password) {
+        byte[] id = ascii(systemId);
+        byte[] pw = ascii(password);
+        byte[] type = ascii("SMPP");
+        byte[] range = ascii("");
+        int body = (id.length + 1) + (pw.length + 1) + (type.length + 1) + 3 + (range.length + 1);
+        ByteBuffer out = ByteBuffer.allocate(16 + body);
+        out.putInt(16 + body).putInt(BIND_TRANSCEIVER).putInt(0).putInt(sequence);
+        out.put(id).put((byte) 0);
+        out.put(pw).put((byte) 0);
+        out.put(type).put((byte) 0);
+        out.put((byte) 0x34).put((byte) 0).put((byte) 0);
+        out.put(range).put((byte) 0);
+        return out.array();
+    }
+
+    private static byte[] ascii(String s) {
+        return s.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static void writePdu(Socket socket, byte[] pdu) throws IOException {
+        socket.getOutputStream().write(pdu);
+        socket.getOutputStream().flush();
+    }
+
+    /** Reads exactly ONE framed PDU (16-octet header, then {@code command_length - 16} body octets). */
+    private static byte[] readPdu(Socket socket) throws IOException {
+        InputStream in = socket.getInputStream();
+        byte[] header = in.readNBytes(16);
+        if (header.length < 16) {
+            throw new java.io.EOFException("peer closed mid-header (expected a complete framed PDU)");
+        }
+        int commandLength = ByteBuffer.wrap(header).getInt(0);
+        if (commandLength < 16) {
+            throw new IOException("nonsense command_length " + commandLength + " on the wire");
+        }
+        byte[] pdu = java.util.Arrays.copyOf(header, commandLength);
+        int body = in.readNBytes(pdu, 16, commandLength - 16);
+        if (body < commandLength - 16) {
+            throw new java.io.EOFException("peer closed mid-body (partial frame reached the wire!)");
+        }
+        return pdu;
+    }
+
+    /**
+     * Polls (25ms interval, 2s cap) until a fresh CONNECT to {@code port} is REFUSED — the OBS-017
+     * listener-gone probe, the connect-side twin of {@link #awaitRebindable(int)}: Netty 4.2 completes
+     * the acceptor's close future before the OS releases the listen socket (the ~ms trailing teardown
+     * this suite's probes poll through), so an immediate connect may still land on the dying
+     * listener's backlog; a genuinely-held listener never refuses and this returns {@code false}.
+     */
+    private static boolean awaitRefused(int port) {
+        long deadline = System.currentTimeMillis() + 2_000;
+        while (System.currentTimeMillis() < deadline) {
+            try (Socket ignored = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                // still accepted mid-teardown — poll through the trailing window
+            } catch (ConnectException refused) {
+                return true;
+            } catch (IOException e) {
+                return false; // an unexpected failure mode — never mask it as "refused"
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
     }
 
     /**

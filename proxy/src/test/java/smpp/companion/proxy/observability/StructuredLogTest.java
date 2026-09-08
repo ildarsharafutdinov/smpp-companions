@@ -34,6 +34,7 @@ import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.relay.BindInterceptor;
 import smpp.companion.proxy.relay.ConnectionEntry;
 import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.NewAdjudicationGate;
 import smpp.companion.proxy.relay.RelayIngressHandler;
 import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
@@ -318,7 +319,8 @@ class StructuredLogTest extends ObservabilityPairHarness {
                 new BindInterceptor(denyingVerifier(), manager, observer, properties,
                         new RelayEgressInitializer(manager, observer),
                         new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                        new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run)),
+                        new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run),
+                        new NewAdjudicationGate()), // unarmed — this row adjudicates (4.3 T4)
                 new RelayIngressHandler(manager, observer));
         ingress.writeInbound(inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 42, "legacy1", "pw123456")));
         ByteBuf deny = ingress.readOutbound();

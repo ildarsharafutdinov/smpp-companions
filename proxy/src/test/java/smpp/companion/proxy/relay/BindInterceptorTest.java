@@ -92,6 +92,8 @@ class BindInterceptorTest {
     private ConnectionRegistry registry;
     /** The Story 3.4 T6 state manager over the registry — the interceptor's transitions route through it. */
     private RelayStateManager manager;
+    /** Story 4.3 T4: unarmed by default — this suite's rows predate the gate; {@code NewAdjudicationGateTest} arms it. */
+    private NewAdjudicationGate gate;
     private CapturingRelayObserver observer;
     private LatchedBindCredentialVerifier verifier;
     private FakeEgressConnector connector;
@@ -107,6 +109,7 @@ class BindInterceptorTest {
         }
         registry = new ConnectionRegistry();
         manager = new RelayStateManager(registry);
+        gate = new NewAdjudicationGate();
         observer = new CapturingRelayObserver();
         verifier = new LatchedBindCredentialVerifier();
         connector = new FakeEgressConnector();
@@ -117,7 +120,7 @@ class BindInterceptorTest {
         // SAME properties (mode-b: no routing, no TLS — the reverse arm's plaintext dial).
         BindInterceptor interceptor = new BindInterceptor(
                 verifier, manager, observer, properties, egressInitializer, channelOptions,
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
         // The REAL production ingress pipeline (AC4): framer → codec → BindInterceptor →
         // RelayIngressHandler — T8 added the last entry; both legs carry one per-channel relay
         // handler (RelayIngressHandler/RelayEgressHandler, the Story 3.4 T5 split) sharing these beans.
@@ -455,7 +458,7 @@ class BindInterceptorTest {
                 },
                 manager, observer, properties, egressInitializer,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
         // Swap the interceptor into a fresh pipeline (the @BeforeEach channel already has one).
         EmbeddedChannel throwingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), throwing,
@@ -494,7 +497,7 @@ class BindInterceptorTest {
                 },
                 manager, observer, properties, egressInitializer,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
         EmbeddedChannel nullingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), nulling,
                 new RelayIngressHandler(manager, observer));

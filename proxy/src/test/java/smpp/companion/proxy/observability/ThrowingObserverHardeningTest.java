@@ -27,6 +27,7 @@ import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.relay.BindInterceptor;
 import smpp.companion.proxy.relay.ConnectionEntry;
 import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.NewAdjudicationGate;
 import smpp.companion.proxy.relay.RelayIngressHandler;
 import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
@@ -84,6 +85,8 @@ class ThrowingObserverHardeningTest extends ObservabilityPairHarness {
     private RoutingTable routingTable;
     private SmppLegTlsFactory tlsFactory;
     private RelayChannelOptions channelOptions;
+    /** Story 4.3 T4: unarmed — these rows predate the gate; they adjudicate normally. */
+    private NewAdjudicationGate gate;
     private EmbeddedChannel ingress;
     private EmbeddedChannel egress;
 
@@ -95,6 +98,7 @@ class ThrowingObserverHardeningTest extends ObservabilityPairHarness {
         routingTable = new RoutingTable(properties);
         tlsFactory = new SmppLegTlsFactory(properties, Runnable::run);
         channelOptions = new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT);
+        gate = new NewAdjudicationGate();
     }
 
     // ---------- row 1: a throwing onBindAccept leaves the couple + relay plane intact ----------
@@ -182,7 +186,8 @@ class ThrowingObserverHardeningTest extends ObservabilityPairHarness {
         ThrowingRelayObserver observer = new ThrowingRelayObserver(EnumSet.of(ThrowingRelayObserver.Trigger.BIND_REJECT));
         ingress = channel(new SmppFrameDecoder(), new SmppCodec(),
                 new BindInterceptor(denyingVerifier(), manager, observer, properties,
-                        new RelayEgressInitializer(manager, observer), channelOptions, routingTable, tlsFactory),
+                        new RelayEgressInitializer(manager, observer), channelOptions, routingTable, tlsFactory,
+                        gate),
                 new RelayIngressHandler(manager, observer));
 
         ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 42, "legacy1", "pw123456"));

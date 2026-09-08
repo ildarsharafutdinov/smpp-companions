@@ -12,6 +12,7 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 
 import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.relay.NewAdjudicationGate;
 
 /**
  * The relay's SMPP acceptor {@link SmartLifecycle} (AC4; AD-1/AD-2/AD-16) — the 2nd
@@ -20,7 +21,8 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
  * new binds)", and Spring stops higher-phase beans first ({@link #RELAY_ACCEPTOR_PHASE} &gt;
  * {@link ProxyCompanionLifecycle#APP_PHASE} — the deferred-work 2nd-SmartLifecycle ordering item).
  * The AD-22 5-step drain body is Epic 4; this bean owns only step 1's window: start = bind;
- * stop = close the acceptor ONLY — the shared event loop SURVIVES the stop (Story 4.2 T2 re-authored
+ * stop = arm the {@link NewAdjudicationGate} (Story 4.3 T4, OBS-017 — the established sockets the
+ * closed listener cannot reach) + close the acceptor ONLY — the shared event loop SURVIVES the stop (Story 4.2 T2 re-authored
  * the quiesce out: every deny-time continuation executes on that loop, so killing it here would
  * strand the fail-closed {@code bind_resp}s AD-22 step 2 owes the clients). The quiesce — an explicit
  * short quiet period, never Netty's 2s default — is the shutdown coordinator's final step
@@ -80,6 +82,13 @@ public final class RelayServerLifecycle implements SmartLifecycle {
     private final EventLoopGroup eventLoopGroup;
     private final RelayChannelOptions channelOptions;
     private final RelayIngressInitializer ingressInitializer;
+    /**
+     * Story 4.3 T4 (OBS-017): the new-adjudication gate, armed at the acceptor close below — the SAME
+     * bean the ingress initializer's {@code BindInterceptor} consults (component scan wires the
+     * singleton into both), so &ldquo;no adjudication starts after the acceptor stops&rdquo; is a
+     * cross-bean fact, not a lifecycle-local flag.
+     */
+    private final NewAdjudicationGate gate;
 
     private volatile boolean running;
     private volatile @Nullable Channel serverChannel;
@@ -125,6 +134,13 @@ public final class RelayServerLifecycle implements SmartLifecycle {
         running = false;
         Channel acceptor = serverChannel;
         serverChannel = null;
+        // Story 4.3 T4 (OBS-017): arm the new-adjudication gate BEFORE the acceptor close completes —
+        // a bind racing the close window on an already-established socket is then already denied (no
+        // new adjudication may start after step 1; the in-flight ones belong to the deny window,
+        // phase-ordered strictly below this stop). The volatile write happens-before the close the
+        // same stop performs, so a loop thread reading the flag sees it no later than the port going
+        // away. Idempotent like everything in this body.
+        gate.arm();
         // AD-22 step 1 — and the WHOLE stop body (Story 4.2 T2): close the acceptor, no new binds.
         // The shared loop is NOT quiesced here — it must stay live for the deny continuations (the
         // coordinator, Story 4.2 T3, owns the explicit-args quiesce at the app phase; the group bean's

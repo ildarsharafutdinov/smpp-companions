@@ -12,6 +12,7 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.RelayObserver;
 import smpp.companion.proxy.relay.BindInterceptor;
+import smpp.companion.proxy.relay.NewAdjudicationGate;
 import smpp.companion.proxy.relay.RelayIngressHandler;
 import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.security.BindCredentialVerifier;
@@ -55,6 +56,8 @@ public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
     private final RelayChannelOptions channelOptions;
     private final RoutingTable routingTable;
     private final SmppLegTlsFactory tlsFactory;
+    /** Story 4.3 T4 (OBS-017): the gate {@code RelayServerLifecycle} arms at the acceptor close. */
+    private final NewAdjudicationGate gate;
 
     @Override
     protected void initChannel(Channel channel) {
@@ -71,9 +74,11 @@ public final class RelayIngressInitializer extends ChannelInitializer<Channel> {
                 // (AD-7/AD-25/AD-27/AD-33). Per-channel instance; the in-flight adjudication
                 // handles live on the ConnectionEntry via RelayStateManager (Story 3.4 T6).
                 // Story 3.3: role-split — the FORWARD arm routes per system_id (AD-29) and dials TLS.
+                // Story 4.3 T4: the SAME gate bean the acceptor lifecycle arms at its stop — a late
+                // bind on an established socket fail-closed-DENIES (OBS-017).
                 .addLast(new BindInterceptor(
                         verifier, manager, observer, properties, egressInitializer, channelOptions,
-                        routingTable, tlsFactory))
+                        routingTable, tlsFactory, gate))
                 // T8 (landed) / Story 3.4 T5 (split) + T6: the ingress relay leg (the couple itself
                 // fires on the egress leg's RelayEgressHandler, which rides this channel's event
                 // loop, AD-2) + the AD-32 pre-couple bare-close through the state manager + the

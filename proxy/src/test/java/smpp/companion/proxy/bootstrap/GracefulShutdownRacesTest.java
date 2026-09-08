@@ -464,7 +464,7 @@ class GracefulShutdownRacesTest {
             RelayTestFixtures.RelayHarness harness = RelayTestFixtures.relayHarness(properties, recorder);
             RelayServerLifecycle relay = new RelayServerLifecycle(properties, group,
                     new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                    harness.ingressInitializer());
+                    harness.ingressInitializer(), harness.gate());
             AdjudicationLifecycle adjudication = new AdjudicationLifecycle(adapter);
             ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group);
 

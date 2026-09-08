@@ -77,6 +77,11 @@ abstract class CoupledPairHarness {
     protected ConnectionRegistry registry;
     /** The Story 3.4 T6 state manager over the registry — what every handler/interceptor transition routes through. */
     protected RelayStateManager manager;
+    /**
+     * Story 4.3 T4 (OBS-017): the new-adjudication gate the harness pipeline's interceptor consults —
+     * unarmed by default (every pre-4.3 row adjudicates normally); the gate rows arm it directly.
+     */
+    protected NewAdjudicationGate gate;
     protected CapturingRelayObserver observer;
     protected LatchedBindCredentialVerifier verifier;
     protected FakeEgressConnector connector;
@@ -92,6 +97,7 @@ abstract class CoupledPairHarness {
         }
         registry = new ConnectionRegistry();
         manager = new RelayStateManager(registry);
+        gate = new NewAdjudicationGate();
         observer = new CapturingRelayObserver();
         verifier = new LatchedBindCredentialVerifier();
         connector = new FakeEgressConnector();
@@ -102,7 +108,7 @@ abstract class CoupledPairHarness {
         // SAME properties (mode-b: no routing, no TLS — the reverse arm's plaintext dial).
         BindInterceptor interceptor = new BindInterceptor(
                 verifier, manager, observer, properties, egressInitializer, channelOptions,
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
         ingress = new EmbeddedChannel(DefaultChannelId.newInstance(),
                 new SmppFrameDecoder(), new SmppCodec(), interceptor,
                 new RelayIngressHandler(manager, observer));

@@ -19,6 +19,7 @@ import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.observability.CapturingRelayObserver;
 import smpp.companion.proxy.observability.NoopRelayObserver;
 import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.NewAdjudicationGate;
 import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayEgressInitializer;
@@ -419,7 +420,8 @@ public final class RelayTestFixtures {
                 harness.ingressInitializer(),
                 harness.registry(),
                 harness.manager(),
-                harness.observer());
+                harness.observer(),
+                harness.gate());
     }
 
     /**
@@ -453,11 +455,15 @@ public final class RelayTestFixtures {
         CapturingRelayObserver observer = new CapturingRelayObserver();
         SmppLegTlsFactory tlsFactory = new SmppLegTlsFactory(properties, delegatedTaskExecutor);
         RelayEgressInitializer egress = new RelayEgressInitializer(manager, observer);
+        // Story 4.3 T4 (OBS-017): ONE gate shared by the initializer's BindInterceptor and the caller's
+        // RelayServerLifecycle — the sharing Spring's component scan guarantees in production is the
+        // very wiring the gate rows assert (stop() must arm the gate the interceptor consults).
+        NewAdjudicationGate gate = new NewAdjudicationGate();
         RelayIngressInitializer ingress = new RelayIngressInitializer(
                 verifier, manager, observer, properties, egress,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                new RoutingTable(properties), tlsFactory);
-        return new RelayHarness(properties, ingress, egress, registry, manager, observer, tlsFactory);
+                new RoutingTable(properties), tlsFactory, gate);
+        return new RelayHarness(properties, ingress, egress, registry, manager, observer, tlsFactory, gate);
     }
 
     /** The generic harness (see {@link #relayHarness(ProxyCompanionProperties, BindCredentialVerifier)}). */
@@ -468,18 +474,21 @@ public final class RelayTestFixtures {
             ConnectionRegistry registry,
             RelayStateManager manager,
             CapturingRelayObserver observer,
-            SmppLegTlsFactory tlsFactory) { }
+            SmppLegTlsFactory tlsFactory,
+            NewAdjudicationGate gate) { }
 
     /**
      * The socket-smoke harness: the properties record, the real ingress initializer for
-     * {@code RelayServerLifecycle}, and the SHARED registry/manager/observer handles the initializers
-     * were wired with (the same singleton wiring Spring does — the egress-leg couple unit must resolve
-     * the registry the ingress interceptor wrote, through the same manager).
+     * {@code RelayServerLifecycle}, and the SHARED registry/manager/observer/gate handles the
+     * initializers were wired with (the same singleton wiring Spring does — the egress-leg couple unit
+     * must resolve the registry the ingress interceptor wrote, through the same manager; the
+     * acceptor lifecycle must arm the same gate the interceptor consults, Story 4.3 T4).
      */
     public record ModeBRelayHarness(
             ProxyCompanionProperties properties,
             RelayIngressInitializer ingressInitializer,
             ConnectionRegistry registry,
             RelayStateManager manager,
-            CapturingRelayObserver observer) { }
+            CapturingRelayObserver observer,
+            NewAdjudicationGate gate) { }
 }

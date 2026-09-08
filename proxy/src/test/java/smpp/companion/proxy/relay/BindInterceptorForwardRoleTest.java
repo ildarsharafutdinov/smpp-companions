@@ -86,6 +86,7 @@ class BindInterceptorForwardRoleTest {
                 new RelayEgressInitializer(manager, observer),
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run),
+                new NewAdjudicationGate(),
                 (bootstrap, host, port) -> {
                     throw new AssertionError("a routing miss must never dial (AD-11: no default route)");
                 });
@@ -130,7 +131,8 @@ class BindInterceptorForwardRoleTest {
                 verifier, manager, observer, properties,
                 new RelayEgressInitializer(manager, observer),
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run),
+                new NewAdjudicationGate(), connector);
         EmbeddedChannel ingress = pipeline(interceptor, manager, observer);
         try {
             byte[] bind = bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 9, "carrierOne", "pw123456");

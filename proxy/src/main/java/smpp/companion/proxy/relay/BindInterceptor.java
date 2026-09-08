@@ -94,6 +94,15 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * adjudication, teardown of both legs; no second pair, no registry corruption. The "in flight" predicate is
  * the registry entry itself (AD-32: "the entry's state, not a separate boolean") — fully so since T6 put
  * the adjudication handles on the entry.
+ * <li><b>The new-adjudication gate (Story 4.3 T4; OBS-017):</b> once the acceptor's stop armed the
+ * injected {@link NewAdjudicationGate}, this handler's FIRST-BIND arm (an established socket with no
+ * entry) fail-closed-DENIES before anything else — frame release + the AD-33 deny + close, the
+ * routing-miss arm's shape (no pair exists to tear down): no verifier contact, no registry entry —
+ * the check sits BEFORE {@code manager.register}, which is what keeps OBS-017's no-entry observable
+ * true. Not a returned {@link Verdict} → no {@code onBindReject} (AD-27). Post-couple relaying is
+ * untouched — the AD-22 drain body needs established pairs relaying until the deadline; in-flight
+ * adjudications are 4.2's deny window ({@code AdjudicationLifecycle}), phase-ordered after the
+ * acceptor stop that arms the gate.
  * </ul>
  *
  * <p><b>Teardown ordering (AD-32/AC3 discipline):</b> since Story 3.4 T6 the ordering is SINGLE-SITED in
@@ -135,6 +144,8 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
 
     private final BindCredentialVerifier verifier;
     private final RelayStateManager manager;
+    /** Story 4.3 T4 (OBS-017): the shared new-adjudication gate — fail-closed-DENY the first-bind arm once armed. */
+    private final NewAdjudicationGate gate;
     private final RelayObserver observer;
     private final RelayEgressInitializer egressInitializer;
     private final RelayChannelOptions channelOptions;
@@ -161,14 +172,16 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * Production constructor (used by {@code RelayIngressInitializer} per accepted channel): the
      * injected beans + the role resolved structurally from the populated branch (Story 3.3: the
      * reverse arm targets the cell's single {@code smsc}; the forward arm routes per
-     * {@code system_id} and dials TLS per routing entry).
+     * {@code system_id} and dials TLS per routing entry). The {@code gate} is the SAME singleton bean
+     * {@code RelayServerLifecycle} arms at the acceptor close (Story 4.3 T4, OBS-017) — component scan
+     * guarantees the sharing.
      */
     public BindInterceptor(BindCredentialVerifier verifier, RelayStateManager manager, RelayObserver observer,
                            ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
                            RelayChannelOptions channelOptions, RoutingTable routingTable,
-                           SmppLegTlsFactory tlsFactory) {
+                           SmppLegTlsFactory tlsFactory, NewAdjudicationGate gate) {
         this(verifier, manager, observer, properties, egressInitializer, channelOptions, routingTable,
-                tlsFactory, DEFAULT_CONNECTOR);
+                tlsFactory, gate, DEFAULT_CONNECTOR);
     }
 
     /**
@@ -179,9 +192,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     BindInterceptor(BindCredentialVerifier verifier, RelayStateManager manager, RelayObserver observer,
                     ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
                     RelayChannelOptions channelOptions, RoutingTable routingTable,
-                    SmppLegTlsFactory tlsFactory, EgressConnector connector) {
+                    SmppLegTlsFactory tlsFactory, NewAdjudicationGate gate, EgressConnector connector) {
         this.verifier = verifier;
         this.manager = manager;
+        this.gate = gate;
         this.observer = observer;
         this.egressInitializer = egressInitializer;
         this.channelOptions = channelOptions;
@@ -246,6 +260,22 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         Channel channel = ctx.channel();
         ConnectionEntry entry = manager.entryFor(channel);
         if (entry == null) {
+            if (gate.armed()) {
+                // Story 4.3 T4 (OBS-017): the acceptor stopped — a NEW adjudication may not start.
+                // Fail-closed deny in the routing-miss arm's exact shape (no pair exists to tear down,
+                // so no manager beginTeardown): release the frame, the AD-33 generic deny answering
+                // this bind, close. The gate sits BEFORE register — no registry entry ever appears —
+                // and the verifier is never contacted (the bind never becomes an adjudication).
+                // LOG-ONLY beyond the wire deny: not a returned Verdict → no onBindReject (AD-27); the
+                // system_id alone is observed (the RELAY logging rule), bounded by the live-socket
+                // count (each denied socket closes). Post-couple PDUs never reach this arm — the
+                // drain body (4.3 T5) needs established pairs relaying until the deadline.
+                log.warn("bind after acceptor stop — fail-closed deny, no adjudication started (OBS-017): {}",
+                        req.systemId());
+                req.originalFrame().release();
+                writeBindFailureAndClose(channel, req.commandId(), req.sequenceNumber());
+                return;
+            }
             if (forwardRole && routingTable.route(req.systemId().toString()) == null) {
                 // AD-29/AD-11 routing miss on the forward arm: NO pair is ever created (no registry
                 // entry, no adjudication — the miss precedes both), the AD-33 generic deny answers
