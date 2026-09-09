@@ -17,8 +17,9 @@ import smpp.companion.proxy.observability.RelayObserver;
  * {@link RelayEgressHandler} — this class cannot express it (no decoded-{@code bind_resp} branch
  * exists here to carry the {@code ConnectionEntry#couple()} call). A stray decoded
  * {@code bind_resp} on this leg is UNREACHABLE today (the upstream {@code BindInterceptor.channelRead0}
- * releases client-sent bind-responses silently) and fails CLOSED post-split: bare-close via the
- * teardown below — never couples, never a {@code ClassCastException} on the decoded record.
+ * consumes client-sent bind-responses — since Story 4.4 T2 (F1) by bare-closing them pre-couple) and
+ * fails CLOSED post-split: bare-close via the teardown below — never couples, never a
+ * {@code ClassCastException} on the decoded record.
  * <li><b>RELAY-002 — the AD-32 case-3 bare-close, DIRECT to the state manager (Story 3.4 T6):</b> a
  * pre-couple violation on this leg tears down through {@code manager.beginTeardown} — the pre-T6
  * pipeline-lookup delegation to the upstream {@code BindInterceptor} DIED with the T6 absorption (the

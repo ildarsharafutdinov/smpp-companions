@@ -190,6 +190,78 @@ class BindInterceptorTest {
         assertThat(first.refCnt()).as("the abandoned first bind's frame is released by the no-op path").isZero();
     }
 
+    // ---------- F1 (Story 4.4 T2): client-sent bind_resp — the ingress direction violation ----------
+
+    @Test
+    @DisplayName("F1 (Story 4.4 T2): a client-sent bind_resp as the FIRST PDU (no bind ever sent) bare-closes "
+            + "with NO response PDU — no registry entry exists, so close only")
+    void clientBindRespBeforeAnyBindBareClosesWithNoResponse() {
+        // A FORGED ROK (status 0x00000000) is the worst case: nothing may treat it as an answer.
+        ByteBuf forged = inbound(
+                bindResponse(SmppCommandIds.BIND_TRANSCEIVER_RESP, 9, 0x00000000, "legacy1", new byte[0]));
+        ingress.writeInbound(forged);
+
+        assertThat(ingress.<ByteBuf>readOutbound())
+                .as("F1: NO response PDU — the bare close is the whole wire effect (AD-32 uniform close)")
+                .isNull();
+        assertThat(ingress.isOpen()).as("the offending connection is closed").isFalse();
+        assertThat(registry.size()).as("no registry entry ever existed").isZero();
+        assertThat(verifier.capturedCredentials).as("no adjudication ever started").isEmpty();
+        assertThat(verifier.cancelHttpCalls).as("nothing to cancel — no entry, no adjudication").hasValue(0);
+        assertThat(connector.targets).as("no egress was ever opened").isEmpty();
+        assertThat(observer.bindRejects()).as("no Verdict exists — no onBindReject (AD-27)").isEmpty();
+        assertThat(observer.bindAccepts()).as("a client-sent bind_resp never couples").isEmpty();
+        assertThat(observer.framedPdus()).as("nothing is relayed from a violation").isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("the bare close is observed with the uniform pre-couple reason, exactly once")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.PRE_COUPLE_NON_BIND_PDU));
+        assertThat(forged.refCnt()).as("the stray bind_resp's frame is released, not leaked").isZero();
+    }
+
+    @Test
+    @DisplayName("F1 (Story 4.4 T2): a client-sent bind_resp MID-ADJUDICATION bare-closes with NO response PDU "
+            + "and NO forwarding — beginTeardown cancels + zeroizes, the entry is gone, no onBindReject, and "
+            + "the late Allow no-ops (AD-25 re-check)")
+    void clientBindRespMidAdjudicationBareClosesCancelsAndZeroizes() {
+        // Park the bind mid-adjudication (the latch is held) so the pre-couple window is wide open.
+        ByteBuf bind = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 1, "legacy1", "pw123456"));
+        ingress.writeInbound(bind);
+        assertThat(registry.size()).as("precondition: the bind is parked mid-adjudication").isEqualTo(1);
+        assertThat(verifier.capturedCredentials).as("precondition: the bind was adjudicated").hasSize(1);
+
+        ByteBuf forged = inbound(
+                bindResponse(SmppCommandIds.BIND_TRANSCEIVER_RESP, 2, 0x00000000, "legacy1", new byte[0]));
+        ingress.writeInbound(forged);
+
+        assertThat(ingress.<ByteBuf>readOutbound())
+                .as("F1: NO response PDU and NO forwarding — a forwarded pre-flip ROK would couple the "
+                        + "pair without SMSC consent (the forged-ROK window stays sealed)")
+                .isNull();
+        assertThat(ingress.isOpen()).as("the offending connection is closed").isFalse();
+        assertThat(connector.targets).as("no egress was ever opened").isEmpty();
+        assertThat(registry.size()).as("the entry is gone — beginTeardown removed it BEFORE close (AC3)").isZero();
+        assertThat(verifier.cancelHttpCalls).as("the in-flight adjudication is cancelled inside beginTeardown").hasValue(1);
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
+                .as("the pending password is zeroized inside the same teardown").isTrue();
+        assertThat(observer.bindRejects()).as("a bare close is not a Verdict — no onBindReject (AD-27)").isEmpty();
+        assertThat(observer.bindAccepts()).as("the forged ROK never couples the pair").isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("the bare close is observed with the uniform pre-couple reason, exactly once")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.PRE_COUPLE_NON_BIND_PDU));
+        assertThat(forged.refCnt()).as("the stray bind_resp's frame is released exactly once").isZero();
+
+        // The late Allow lands AFTER the bare-close: the continuation's AD-25 re-check no-ops — no
+        // couple, no wire write — and releases the abandoned first bind's frame (runPendingTasks pumps
+        // the embedded loop's queue; the ingress is closed so the eventLoop().execute hop queued it).
+        verifier.completeAllow();
+        ingress.runPendingTasks();
+        assertThat(connector.targets).as("the late Allow after the bare-close opens NO egress (AD-25 re-check)").isEmpty();
+        assertThat(ingress.<ByteBuf>readOutbound()).as("the late verdict emits nothing on the wire").isNull();
+        assertThat(bind.refCnt()).as("the abandoned first bind's frame is released by the no-op path").isZero();
+    }
+
     // ---------- AD-33: verifier denial collapse ----------
 
     @Test

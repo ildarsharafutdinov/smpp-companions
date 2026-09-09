@@ -94,6 +94,15 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * adjudication, teardown of both legs; no second pair, no registry corruption. The "in flight" predicate is
  * the registry entry itself (AD-32: "the entry's state, not a separate boolean") — fully so since T6 put
  * the adjudication handles on the entry.
+ * <li><b>F1 — client-sent {@code bind_*_resp} (Story 4.4 T2):</b> a decoded bind RESPONSE on the ingress
+ * leg is a direction violation (a bind response is SMSC-side; a sane ESME never sends one): in BOTH
+ * pre-couple windows (no bind sent yet, or one in flight/awaiting its answer) the frame is released, an
+ * existing pair tears down through {@code manager.beginTeardown} ({@code cancelHttp()} + zeroize ride
+ * inside), the {@link CloseReason#PRE_COUPLE_NON_BIND_PDU} reason is stashed, and the legs bare-close —
+ * NO response PDU, NEVER a forward (a forwarded pre-flip ROK would couple the pair without SMSC consent —
+ * the forged-ROK window stays sealed). Not a returned {@code Verdict} → no {@code onBindReject} (AD-27).
+ * Post-couple the decoded PDU passes through to T8's opaque relay exactly like a stray re-bind (AD-2's
+ * every-PDU doctrine).
  * <li><b>The new-adjudication gate (Story 4.3 T4; OBS-017):</b> once the acceptor's stop armed the
  * injected {@link NewAdjudicationGate}, this handler's FIRST-BIND arm (an established socket with no
  * entry) fail-closed-DENIES before anything else — frame release + the AD-33 deny + close, the
@@ -250,9 +259,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         if (msg instanceof SmppBindRequest req) {
             onRequest(ctx, req);
         } else {
-            // A bind RESPONSE from the legacy client is a direction violation — release its frame and drop
-            // it silently (fail-closed, no response). Cannot come from a sane ESME.
-            msg.originalFrame().release();
+            // A bind RESPONSE from the legacy client — a direction violation ({@link SmppBindPdu} is
+            // sealed, so this is provably an {@link SmppBindResponse}): F1 (Story 4.4 T2) bare-closes it,
+            // never a silent drop.
+            onResponse(ctx, (SmppBindResponse) msg);
         }
     }
 
@@ -315,6 +325,51 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             return;
         }
         ctx.read(); // keep the pre-couple read armed (the retry-bind must be readable; T8 owns the general gate)
+    }
+
+    /**
+     * The F1 arm (Story 4.4 T2): a decoded {@code bind_*_resp} on the INGRESS leg — a bind response is an
+     * SMSC-side PDU, so one from the legacy client is a direction violation in EVERY pre-couple window.
+     * Fail-closed with the AD-32 uniform bare-close ({@code RelayIngressHandler.readPreCouple}'s exact
+     * shape): release the frame, tear the pair (if one exists) down through
+     * {@code manager.beginTeardown} — the {@code cancelHttp()} + zeroize hygiene rides inside — stash
+     * {@link CloseReason#PRE_COUPLE_NON_BIND_PDU}, close the legs. NO response PDU is synthesized and the
+     * PDU is NEVER forwarded: a forwarded pre-flip ROK would couple the pair without SMSC consent (the
+     * forged-ROK window stays sealed). In the never-bound window no registry entry exists — the stash +
+     * close is the whole effect (nothing to tear down, nothing to cancel). Not a returned
+     * {@code Verdict} → no {@code onBindReject} (AD-27). Post-couple the decoded PDU passes through
+     * untouched to T8's opaque relay exactly like a stray re-bind (AD-2's every-PDU doctrine — the
+     * interceptor is dormant there).
+     */
+    private void onResponse(ChannelHandlerContext ctx, SmppBindResponse resp) {
+        Channel channel = ctx.channel();
+        ConnectionEntry entry = manager.entryFor(channel);
+        if (entry != null && entry.coupled()) {
+            // Post-couple (T8's plane — the request arm's exact idiom): a pure fireChannelRead of the
+            // DECODED record (not refcounted — the auto-release of it is a no-op); the downstream relay
+            // handler forwards resp.originalFrame() as relayed bytes, so the interceptor neither
+            // releases nor forwards anything here.
+            ctx.fireChannelRead(resp);
+            return;
+        }
+        resp.originalFrame().release();
+        if (entry == null) {
+            // The never-bound window (F1 row 1): no bind was ever sent — no pair exists, close only.
+            CoupledRelayHandler.stash(channel, CloseReason.PRE_COUPLE_NON_BIND_PDU);
+            channel.close();
+            return;
+        }
+        // Mid-adjudication / awaiting-bind_resp (F1 row 2): the manager's single-sited ordering
+        // (remove + mark BEFORE close → cancelHttp + zeroize) runs INSIDE beginTeardown; this arm then
+        // owns only its tails — the reason stash + the closes. A losing racer no-ops (RELAY-005).
+        if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
+            CoupledRelayHandler.stash(channel, CloseReason.PRE_COUPLE_NON_BIND_PDU);
+            Channel egress = won.egress();
+            if (egress != null) {
+                egress.close();
+            }
+            channel.close(); // the bare close — the whole wire effect of AD-32 case 3
+        }
     }
 
     /** Runs the verifier inside the {@link ScopedValue}-bound {@link RequestContext} and chains the continuation. */

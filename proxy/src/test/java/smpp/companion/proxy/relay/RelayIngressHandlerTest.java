@@ -98,11 +98,12 @@ class RelayIngressHandlerTest extends CoupledPairHarness {
 
     @Test
     @DisplayName("AC6 structural half: a stray decoded bind_resp on the INGRESS leg (unreachable today — the "
-            + "interceptor releases client-sent bind-responses upstream) fails CLOSED: bare-close, never "
-            + "couples, never a ClassCastException on the decoded record")
+            + "interceptor bare-closes client-sent bind-responses upstream, Story 4.4 T2) fails CLOSED: "
+            + "bare-close, never couples, never a ClassCastException on the decoded record")
     void strayDecodedBindRespOnIngressLegFailsClosedNeverCouples() {
         // Drive the arm DIRECTLY: with the real interceptor in the pipeline a client-sent bind_resp is
-        // released upstream and never reaches this handler, so this row builds the leg without one —
+        // bare-closed upstream (Story 4.4 T2) and never reaches this handler, so this row builds the leg
+        // without one —
         // since Story 3.4 T6 the handler tears down through the state manager DIRECTLY (the pre-T6
         // interceptor delegation is gone), so this interceptor-less leg runs the FULL manager ordering
         // (remove + mark → cancelHttp + zeroize → close), not a defensive half.
