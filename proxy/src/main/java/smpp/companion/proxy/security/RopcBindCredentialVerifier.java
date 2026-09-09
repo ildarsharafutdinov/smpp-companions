@@ -376,9 +376,10 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
 
         Adjudication adj = new Adjudication(rc);
 
-        // The adjudication deadline is the verifier's WHOLE budget (the relay arms no timeout of its own,
-        // F14): clamp the per-round-trip budget to the time actually left, and deny without a wire call
-        // when none is.
+        // The adjudication deadline is the verifier's WHOLE budget — and since Story 4.4 T3 (F14) the
+        // relay arms the SAME deadline as its own per-channel deny timer, so this clamp composes with a
+        // relay-side arm rather than standing alone (either settler converges on the same deny): clamp
+        // the per-round-trip budget to the time actually left, and deny without a wire call when none is.
         Duration remaining = Duration.between(Instant.now(), rc.deadline());
         if (!remaining.isPositive()) {
             adj.pin.complete(new Verdict.DenyIndeterminate());

@@ -3,6 +3,7 @@ package smpp.companion.proxy.relay;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -13,6 +14,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.util.concurrent.ScheduledFuture;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -103,6 +105,20 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * the forged-ROK window stays sealed). Not a returned {@code Verdict} → no {@code onBindReject} (AD-27).
  * Post-couple the decoded PDU passes through to T8's opaque relay exactly like a stray re-bind (AD-2's
  * every-PDU doctrine).
+ * <li><b>F14 — the adjudication-deadline arm (Story 4.4 T3):</b> {@code adjudicate} arms a per-channel
+ * deny timer on the INGRESS event loop at the configured {@code companion.bind.adjudication-deadline}
+ * (the same budget {@code RequestContext.deadline} carries — one number) via the {@link ChannelTimer}
+ * seam. A verifier future that never settles can no longer pin the registry entry, the original bind
+ * frame, and the legacy client's socket past that deadline: at fire the task re-checks the entry
+ * (absent / tearing-down / coupled &rarr; no-op — the AD-25 re-check idiom) and otherwise routes
+ * {@link CloseReason#BIND_REJECTED} through the ONE teardown path ({@code denyAndTeardown} &rarr;
+ * {@code manager.beginTeardown}: the {@code cancelHttp()} + zeroize hygiene rides inside, and the
+ * aborted exchange's pin settles {@code DenyIndeterminate} per the port's no-op-if-done contract —
+ * the relay never authors a second completion). The timer fabricates NO {@link Verdict}, so
+ * {@code onBindReject} NEVER fires for a deadline deny (AD-27: verifier-returned Verdicts only; the
+ * deadline deny is log-distinguishable, enum-identical {@code BIND_REJECTED}). Cancelled at settle
+ * ({@code onVerdict}, both arms) and at every interceptor teardown arm — but convergence, not
+ * cancellation, is the correctness argument: a stale fire re-checks and no-ops.
  * <li><b>The new-adjudication gate (Story 4.3 T4; OBS-017):</b> once the acceptor's stop armed the
  * injected {@link NewAdjudicationGate}, this handler's FIRST-BIND arm (an established socket with no
  * entry) fail-closed-DENIES before anything else — frame release + the AD-33 deny + close, the
@@ -151,6 +167,16 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     /** The production egress connect: the assembled {@link Bootstrap} against the configured target. */
     private static final EgressConnector DEFAULT_CONNECTOR = (bootstrap, host, port) -> bootstrap.connect(host, port);
 
+    /**
+     * The production per-channel timer (Story 4.4 T3, F14): the ingress event loop's own scheduler —
+     * AD-2's mechanism for every relay-side timeout (a per-channel scheduled task on the loop that owns
+     * the handshake, never an {@code IdleStateHandler} install). Package-private so the same-package
+     * test fixtures that do not drive the deadline inject the REAL production arm rather than a
+     * hand-copied lambda.
+     */
+    static final ChannelTimer DEFAULT_TIMER =
+            (channel, delayMillis, task) -> channel.eventLoop().schedule(task, delayMillis, TimeUnit.MILLISECONDS);
+
     private final BindCredentialVerifier verifier;
     private final RelayStateManager manager;
     /** Story 4.3 T4 (OBS-017): the shared new-adjudication gate — fail-closed-DENY the first-bind arm once armed. */
@@ -168,14 +194,28 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     /**
      * The configured adjudication budget ({@code companion.bind.adjudication-deadline}, default {@code 4s}
      * in application.yml — owner FIXME 2026-08-15, formerly the hardcoded 30s constant): each bind's
-     * {@code RequestContext.deadline} is {@code now + this}. Positive by the {@code Bind} record's
-     * fail-fast guard (AD-17).
+     * {@code RequestContext.deadline} is {@code now + this}, and since Story 4.4 T3 (F14) the SAME
+     * budget arms the per-channel deadline timer below — one number for the whole pre-couple auth
+     * window. Positive by the {@code Bind} record's fail-fast guard (AD-17).
      */
     private final Duration adjudicationDeadline;
+    /** Story 4.4 T3 (F14): the per-channel schedule seam — production arms on the ingress event loop. */
+    private final ChannelTimer timer;
+    /**
+     * The in-flight adjudication's deadline timer handle (Story 4.4 T3, F14) — channel-scoped instance
+     * state (this handler is per-channel, and every arm/cancel site below runs on the ingress event
+     * loop — the same confinement the handlers follow). NOT entry state by design: the T6-absorption
+     * doctrine keeps the VERDICT handles on the {@link ConnectionEntry} because the manager's hygiene
+     * must reach them from any teardown caller, while the timer is this interceptor's own arm and only
+     * this interceptor can cancel it. Null when no adjudication is pending; cleared at fire, settle,
+     * and every teardown arm (a stale fire re-checks the entry and no-ops regardless).
+     */
+    private @Nullable ScheduledFuture<?> pendingDeadlineTimer;
 
     // The in-flight adjudication handles (cancelHttp target + wipe target) moved ONTO the ConnectionEntry
     // by the Story 3.4 T6 absorption — this class's own pendingVerdict/pendingPassword fields died with it;
-    // see RelayStateManager.beginAdjudication / settleAdjudication / beginTeardown.
+    // see RelayStateManager.beginAdjudication / settleAdjudication / beginTeardown. The deadline TIMER
+    // handle (Story 4.4 T3) is the one deliberate exception: channel-scoped interceptor state (above).
 
     /**
      * Production constructor (used by {@code RelayIngressInitializer} per accepted channel): the
@@ -190,7 +230,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
                            RelayChannelOptions channelOptions, RoutingTable routingTable,
                            SmppLegTlsFactory tlsFactory, NewAdjudicationGate gate) {
         this(verifier, manager, observer, properties, egressInitializer, channelOptions, routingTable,
-                tlsFactory, gate, DEFAULT_CONNECTOR);
+                tlsFactory, gate, DEFAULT_CONNECTOR, DEFAULT_TIMER);
     }
 
     /**
@@ -202,6 +242,21 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
                     ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
                     RelayChannelOptions channelOptions, RoutingTable routingTable,
                     SmppLegTlsFactory tlsFactory, NewAdjudicationGate gate, EgressConnector connector) {
+        this(verifier, manager, observer, properties, egressInitializer, channelOptions, routingTable,
+                tlsFactory, gate, connector, DEFAULT_TIMER);
+    }
+
+    /**
+     * Test constructor (package-private): adds the {@link ChannelTimer} seam (Story 4.4 T3, F14) on top of
+     * the {@link EgressConnector} one — the deadline rows capture the scheduled task and fire it manually
+     * (the deterministic-seam idiom: no real wall-clock waits, no {@code Clock} injection into
+     * {@code RequestContext}/verifier surfaces — 4.3's standing reservation).
+     */
+    BindInterceptor(BindCredentialVerifier verifier, RelayStateManager manager, RelayObserver observer,
+                    ProxyCompanionProperties properties, RelayEgressInitializer egressInitializer,
+                    RelayChannelOptions channelOptions, RoutingTable routingTable,
+                    SmppLegTlsFactory tlsFactory, NewAdjudicationGate gate, EgressConnector connector,
+                    ChannelTimer timer) {
         this.verifier = verifier;
         this.manager = manager;
         this.gate = gate;
@@ -211,6 +266,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         this.routingTable = routingTable;
         this.tlsFactory = tlsFactory;
         this.connector = connector;
+        this.timer = timer;
         ProxyCompanionProperties.@Nullable Forward forward = properties.forward();
         ProxyCompanionProperties.@Nullable Reverse reverse = properties.reverse();
         if (forward != null) {
@@ -244,6 +300,20 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     /** The per-bind egress connect seam ({@link Bootstrap} → {@link ChannelFuture}); see the package ctor. */
     interface EgressConnector {
         ChannelFuture connect(Bootstrap bootstrap, String host, int port);
+    }
+
+    /**
+     * The per-channel scheduled-task seam (Story 4.4 T3, F14): one {@code schedule} of a task on the
+     * channel's owning event loop after a delay, returning the cancellable handle. Production is
+     * {@link #DEFAULT_TIMER} — {@code channel.eventLoop().schedule(...)}, the AD-2 mechanism (a
+     * per-channel scheduled task on the loop that owns the handshake; NEVER an {@code IdleStateHandler}
+     * install, never live pipeline surgery). Tests capture the task and fire it manually — the
+     * deterministic-seam idiom, no real wall-clock waits. Package-private like {@link EgressConnector}:
+     * the only injection point is the test constructor; the surface never leaves {@code relay/}.
+     */
+    @FunctionalInterface
+    interface ChannelTimer {
+        ScheduledFuture<?> schedule(Channel channel, long delayMillis, Runnable task);
     }
 
     // ---------------------------------------------------------------- ingress leg
@@ -362,6 +432,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // Mid-adjudication / awaiting-bind_resp (F1 row 2): the manager's single-sited ordering
         // (remove + mark BEFORE close → cancelHttp + zeroize) runs INSIDE beginTeardown; this arm then
         // owns only its tails — the reason stash + the closes. A losing racer no-ops (RELAY-005).
+        cancelPendingDeadlineTimer(); // the in-flight adjudication's F14 arm dies with the pair (4.4 T3)
         if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
             CoupledRelayHandler.stash(channel, CloseReason.PRE_COUPLE_NON_BIND_PDU);
             Channel egress = won.egress();
@@ -425,6 +496,16 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // The in-flight handles are ENTRY state now (T6 absorption (a)): the store goes through the manager,
         // where the teardown hygiene and the settle wipe below find them.
         manager.beginAdjudication(entry, verdictRequest, cred.password());
+        // Story 4.4 T3 (F14): arm the adjudication deadline on the ingress event loop — the SAME budget
+        // the RequestContext above carried (one number, {@code companion.bind.adjudication-deadline}). A
+        // verifier future that never settles can no longer pin the entry, the original bind frame, and
+        // the legacy socket past it: the task below re-checks and routes the fail-closed deny through
+        // the ONE teardown path. Cancelled at settle and at every interceptor teardown arm — but a
+        // missed cancellation is converged away by the task's own re-check, never corrupted by it.
+        // Arming AFTER beginAdjudication: the timer belongs to the in-flight-verdict window exactly (the
+        // synchronous-blow-up and null-return arms above denied without ever pending).
+        pendingDeadlineTimer = timer.schedule(channel, adjudicationDeadline.toMillis(),
+                () -> onAdjudicationDeadline(channel, entry, req.commandId(), req.sequenceNumber()));
         verdictRequest.future().whenComplete((verdict, error) ->
                 // Hop the continuation onto the ingress event loop — it touches registry/pipeline state the
                 // loop owns. (EmbeddedChannel runs this inline; a real loop schedules it.)
@@ -435,13 +516,16 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * The verdict continuation (on the ingress event loop). Settles the entry's adjudication first —
      * {@code manager.settleAdjudication} drops the cancellation handle and performs the caller-owned
      * zeroize on EVERY completion path (Allow/Deny/exceptional, and the losing-race no-op alike;
-     * idempotent per RELAY-005); every path releases or transfers the original frame.
+     * idempotent per RELAY-005) — and cancels the pending deadline timer (both arms below: the verdict
+     * landed inside the budget, the arm is spent); every path releases or transfers the original frame.
      */
     private void onVerdict(Channel channel, ConnectionEntry entry, SmppBindRequest req,
                            @Nullable Verdict verdict, @Nullable Throwable error) {
         manager.settleAdjudication(entry);
-        // AD-25 race-free re-check: a concurrent teardown (retry-bind, leg death, AD-32 case 3) owns the
-        // close — this callback must no-op (no egress, no deny, no observer trigger).
+        cancelPendingDeadlineTimer();
+        // AD-25 race-free re-check: a concurrent teardown (retry-bind, leg death, AD-32 case 3, the F14
+        // deadline arm below) owns the close — this callback must no-op (no egress, no deny, no observer
+        // trigger).
         if (manager.entryFor(channel) != entry || entry.tearingDown()) {
             req.originalFrame().release();
             return;
@@ -467,6 +551,48 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         }
     }
 
+    // ---------------------------------------------------------------- F14: the adjudication-deadline arm
+
+    /**
+     * The F14 deadline task (Story 4.4 T3), fired on the ingress event loop at
+     * {@code companion.bind.adjudication-deadline} after the arm in {@code adjudicate}. Re-checks FIRST
+     * — the entry may since have settled (the verdict landed: {@code onVerdict} cancelled the timer, but
+     * a fire racing that cancellation on the loop is serialized after it, and a missed cancellation must
+     * still converge), begun tearing down (retry-bind, leg death, F1, the shutdown drain), or coupled
+     * (the SMSC's ROK answered) — a stale fire MUST no-op (the AD-25 re-check idiom; the sealed
+     * {@code Won/Lost} race picks exactly one teardown winner). Otherwise the fail-closed deny:
+     * {@link CloseReason#BIND_REJECTED} through the one shared path, whose {@code manager.beginTeardown}
+     * hygiene cancels the still-pending verdict ({@code cancelHttp()} settles the pin
+     * {@code DenyIndeterminate} per the port's no-op-if-done contract — the relay never authors a second
+     * completion of the verifier's future) and zeroizes the password. NO {@link Verdict} is fabricated:
+     * {@code onBindReject} NEVER fires for a timer deny (AD-27 — observer contract; the deadline deny is
+     * log-distinguishable, enum-identical).
+     */
+    private void onAdjudicationDeadline(Channel channel, ConnectionEntry entry,
+                                        int requestCommandId, int sequenceNumber) {
+        pendingDeadlineTimer = null; // fired — there is no handle left to cancel
+        if (manager.entryFor(channel) != entry || entry.tearingDown() || entry.coupled()) {
+            return; // settled / tearing-down / coupled — a stale fire no-ops (convergence, not cancellation)
+        }
+        log.warn("adjudication deadline elapsed without a verdict — fail-closed deny (F14): {}",
+                entry.systemId());
+        denyAndTeardown(channel, requestCommandId, sequenceNumber, CloseReason.BIND_REJECTED);
+    }
+
+    /**
+     * Deadline-arm hygiene (Story 4.4 T3): drop the pending timer's handle and cancel the task. Called
+     * at settle ({@code onVerdict}) and at every interceptor teardown arm — a pair that is going down
+     * must not have the deadline fire into it. Best-effort by design: a racing fire re-checks the entry
+     * and no-ops, and cancelling an already-fired/completed future is a harmless no-op.
+     */
+    private void cancelPendingDeadlineTimer() {
+        ScheduledFuture<?> pending = pendingDeadlineTimer;
+        pendingDeadlineTimer = null;
+        if (pending != null) {
+            pending.cancel(false);
+        }
+    }
+
     // ---------------------------------------------------------------- the AD-33 collapse + teardown
 
     /**
@@ -486,6 +612,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      *               Observability-only: both arms collapse to the SAME wire deny by design (AD-33).
      */
     private void denyAndTeardown(Channel ingress, int requestCommandId, int sequenceNumber, CloseReason reason) {
+        cancelPendingDeadlineTimer(); // the pair is going down — the F14 arm must not fire into it (4.4 T3)
         RelayStateManager.Teardown outcome = manager.beginTeardown(ingress);
         if (!(outcome instanceof RelayStateManager.Teardown.Won(ConnectionEntry won))) {
             return; // a concurrent teardown owns the close
@@ -615,7 +742,9 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         }
         // The legacy client vanished mid-handshake: teardown with NO deny (nobody left to answer — AD-32's
         // no-bind_resp-on-a-torn-down-connection invariant), the manager's cancel + wipe hygiene, close the
-        // egress leg.
+        // egress leg. The pending deadline timer dies with the pair (4.4 T3): nobody is left to answer its
+        // deny either — and a racing fire would only find the entry absent and no-op.
+        cancelPendingDeadlineTimer();
         if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
             Channel egress = won.egress();
             if (egress != null) {
@@ -639,6 +768,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
             return;
         }
         if (entry != null) {
+            cancelPendingDeadlineTimer(); // containment kills the F14 arm with the pair (4.4 T3)
             if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
                 Channel egress = won.egress();
                 if (egress != null) {

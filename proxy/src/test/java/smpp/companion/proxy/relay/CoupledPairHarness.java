@@ -108,7 +108,8 @@ abstract class CoupledPairHarness {
         // SAME properties (mode-b: no routing, no TLS — the reverse arm's plaintext dial).
         BindInterceptor interceptor = new BindInterceptor(
                 verifier, manager, observer, properties, egressInitializer, channelOptions,
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector,
+                BindInterceptor.DEFAULT_TIMER);
         ingress = new EmbeddedChannel(DefaultChannelId.newInstance(),
                 new SmppFrameDecoder(), new SmppCodec(), interceptor,
                 new RelayIngressHandler(manager, observer));

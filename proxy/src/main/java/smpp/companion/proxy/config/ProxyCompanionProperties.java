@@ -368,8 +368,9 @@ public record ProxyCompanionProperties(
      *         armed — {@code RelayChannelOptions.applyToEgress} derives the per-bind dial's
      *         {@code CONNECT_TIMEOUT_MILLIS} from this value (F10: a blackholed SMSC target fails the
      *         dial at the deadline, not on Netty's ~30s default; the same number, not a second knob —
-     *         the F13 precedent); the INGRESS deadline timer (deny at deadline when the verifier never
-     *         settles) remains the deferred RELAY-020 slice. Positive — zero and
+     *         the F13 precedent) — and so is the INGRESS half: {@code BindInterceptor} arms the
+     *         per-channel deny timer at this budget (F14: a verifier future that never settles is
+     *         denied and torn down at the deadline, never pinned). Positive — zero and
      *         negative refuse startup (compact-ctor guard, AD-17).
      */
     public record Bind(

@@ -41,8 +41,8 @@ companion:
     # budget; zero/negative refuses startup (compact-ctor guard). Also the EGRESS DIAL BOUND (Story 4.4
     # T1, F10): the per-bind SMSC connect carries CONNECT_TIMEOUT_MILLIS = this value, so a blackholed
     # target fails the dial at the deadline, not on Netty's ~30s default — the same number, no second
-    # knob (the F13 one-number precedent). The ingress deadline timer (deny at deadline) is the
-    # remaining RELAY-020 slice.
+    # knob (the F13 one-number precedent). And the INGRESS DEADLINE TIMER (Story 4.4 T3, F14): a
+    # verifier future that never settles is denied and torn down at this budget, never pinned.
     adjudication-deadline: 4s
 
   # AD-30 direct-memory budget. PROBLEM IT SOLVES: Netty allocates SMPP PDU buffers off-heap (direct

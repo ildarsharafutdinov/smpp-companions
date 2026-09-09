@@ -226,10 +226,24 @@ public final class RelayTestFixtures {
             Path dir, String providerUrl, int bindPort, int concurrentPairs,
             String smscHost, int smscPort, Duration oidcTimeout, Duration drainTimeout)
             throws IOException {
+        return reverseBProperties(
+                dir, providerUrl, bindPort, concurrentPairs, smscHost, smscPort, oidcTimeout, drainTimeout,
+                DEFAULT_ADJUDICATION_DEADLINE);
+    }
+
+    /**
+     * The adjudication-deadline variant (Story 4.4 T3): the shutdown-race rows that pin the relay-side
+     * deadline arm (F14) need a SHORT {@code companion.bind.adjudication-deadline} — the timer (and the
+     * adapter clamp composing with it) fires at the row's chosen budget instead of the 4s yml default.
+     */
+    public static ProxyCompanionProperties reverseBProperties(
+            Path dir, String providerUrl, int bindPort, int concurrentPairs,
+            String smscHost, int smscPort, Duration oidcTimeout, Duration drainTimeout,
+            Duration adjudicationDeadline) throws IOException {
         Path store = idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(bindPort, DEFAULT_BIND_HOST, DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(bindPort, DEFAULT_BIND_HOST, adjudicationDeadline),
                 new ProxyCompanionProperties.Memory(
                         1, concurrentPairs, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(

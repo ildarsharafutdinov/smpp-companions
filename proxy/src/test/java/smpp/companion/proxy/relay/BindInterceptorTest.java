@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +20,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ConnectTimeoutException;
@@ -26,6 +28,7 @@ import io.netty.channel.DefaultChannelId;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.AsciiString;
+import io.netty.util.concurrent.ScheduledFuture;
 
 import smpp.companion.codec.bind.SmppCodec;
 import smpp.companion.codec.command.SmppCommandIds;
@@ -98,6 +101,8 @@ class BindInterceptorTest {
     private CapturingRelayObserver observer;
     private LatchedBindCredentialVerifier verifier;
     private FakeEgressConnector connector;
+    /** Story 4.4 T3 (F14): the captured deadline tasks — the rows fire them manually, no wall clock. */
+    private CapturingChannelTimer timer;
     private RelayEgressInitializer egressInitializer;
     private EmbeddedChannel ingress;
     private EmbeddedChannel egress;
@@ -114,6 +119,7 @@ class BindInterceptorTest {
         observer = new CapturingRelayObserver();
         verifier = new LatchedBindCredentialVerifier();
         connector = new FakeEgressConnector();
+        timer = new CapturingChannelTimer();
         egressInitializer = new RelayEgressInitializer(manager, observer); // T8: constructor-carrying (shared beans)
         ProxyCompanionProperties properties = RelayTestFixtures.modeBProperties(RelayTestFixtures.freePort(), 1);
         RelayChannelOptions channelOptions = new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT);
@@ -121,7 +127,8 @@ class BindInterceptorTest {
         // SAME properties (mode-b: no routing, no TLS — the reverse arm's plaintext dial).
         BindInterceptor interceptor = new BindInterceptor(
                 verifier, manager, observer, properties, egressInitializer, channelOptions,
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector,
+                timer);
         // The REAL production ingress pipeline (AC4): framer → codec → BindInterceptor →
         // RelayIngressHandler — T8 added the last entry; both legs carry one per-channel relay
         // handler (RelayIngressHandler/RelayEgressHandler, the Story 3.4 T5 split) sharing these beans.
@@ -260,6 +267,112 @@ class BindInterceptorTest {
         assertThat(connector.targets).as("the late Allow after the bare-close opens NO egress (AD-25 re-check)").isEmpty();
         assertThat(ingress.<ByteBuf>readOutbound()).as("the late verdict emits nothing on the wire").isNull();
         assertThat(bind.refCnt()).as("the abandoned first bind's frame is released by the no-op path").isZero();
+    }
+
+    // ---------- F14 (Story 4.4 T3): the adjudication-deadline arm ----------
+
+    @Test
+    @DisplayName("F14 (Story 4.4 T3): a never-settling verifier is denied AT the deadline — the generic "
+            + "non-ROK bind_resp, entry released, cancelHttp + zeroize, no onBindReject; the timer is "
+            + "armed at the CONFIGURED adjudication-deadline millis")
+    void neverSettlingVerifierIsDeniedAtTheConfiguredDeadline() {
+        ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 1, "legacy1", "pw123456"));
+        ingress.writeInbound(frame);
+        assertThat(registry.size()).as("precondition: the bind is parked mid-adjudication").isEqualTo(1);
+        assertThat(timer.tasks).as("the deadline timer is armed for the in-flight adjudication").hasSize(1);
+        assertThat(timer.delays.get(0))
+                .as("the timer is armed at the CONFIGURED adjudication-deadline millis (F14)")
+                .isEqualTo(RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE.toMillis());
+
+        timer.tasks.get(0).run(); // fire the captured deadline task — the deterministic seam, no wall clock
+
+        ByteBuf deny = ingress.readOutbound();
+        assertThat(deny).as("the deadline deny answers the parked bind on the wire (never pinned past it)").isNotNull();
+        assertThat(deny.readableBytes()).as("header-only synth — the ONE place the relay builds a PDU").isEqualTo(HEADER);
+        assertThat(deny.getInt(4)).isEqualTo(SmppCommandIds.BIND_TRANSCEIVER_RESP);
+        assertThat(deny.getInt(8)).as("the AD-33 generic collapse — the SAME code as a verifier deny").isEqualTo(ESME_RBINDFAIL);
+        assertThat(deny.getInt(12)).as("the deny correlates the still-pending bind's sequence").isEqualTo(1);
+        assertThat(ingress.isOpen()).as("deny → then close").isFalse();
+        assertThat(registry.size()).as("the pinned entry is released at the deadline (F14 core)").isZero();
+        assertThat(verifier.cancelHttpCalls)
+                .as("beginTeardown's hygiene aborted the dead exchange (PERF-032, SEC-009 relay arm)")
+                .hasValue(1);
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
+                .as("the pending password is zeroized inside the same teardown").isTrue();
+        assertThat(observer.bindRejects())
+                .as("a timer deny fabricates no Verdict — NEVER onBindReject (AD-27 observer contract)")
+                .isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("the deadline deny's close carries BIND_REJECTED, exactly once")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.BIND_REJECTED));
+
+        // The settle that follows in production (the cancelHttp'd pin completing) lands on the torn-down
+        // pair: the AD-25 re-check no-ops — no couple, no further wire write — and releases the abandoned
+        // frame (runPendingTasks pumps the embedded loop's queued hop).
+        verifier.completeAllow();
+        ingress.runPendingTasks();
+        assertThat(connector.targets).as("the late Allow opens NO egress — never a late couple").isEmpty();
+        assertThat(observer.bindAccepts()).isEmpty();
+        assertThat(ingress.<ByteBuf>readOutbound()).as("nothing follows the deadline deny on the wire").isNull();
+        assertThat(frame.refCnt()).as("the abandoned bind's frame is released by the no-op continuation").isZero();
+    }
+
+    @Test
+    @DisplayName("F14 (Story 4.4 T3): a late ALLOW after the deadline fired is a pure no-op — the AD-25 "
+            + "re-check carries it: frame released, no couple, exactly one wire write (the deny)")
+    void lateAllowAfterTheDeadlineFiredIsANoOpThatNeverCouples() {
+        ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 2, "legacy1", "pw123456"));
+        ingress.writeInbound(frame);
+        assertThat(timer.tasks).as("precondition: the deadline timer is armed").hasSize(1);
+
+        timer.tasks.get(0).run(); // the deadline elapses first
+        ByteBuf deny = ingress.readOutbound();
+        assertThat(deny).as("the deadline deny is the wire answer").isNotNull();
+        assertThat(deny.getInt(8)).isEqualTo(ESME_RBINDFAIL);
+
+        verifier.completeAllow(); // ... THEN the verifier settles Allow (the race's late arm)
+        ingress.runPendingTasks(); // pump the queued continuation hop so the no-op actually runs
+
+        assertThat(connector.targets).as("the late Allow after the deadline deny opens NO egress").isEmpty();
+        assertThat(observer.bindAccepts()).as("the couple flag never flips after a deadline deny").isEmpty();
+        assertThat(observer.bindRejects()).as("the late Allow is not a NEW deny either — a pure no-op").isEmpty();
+        assertThat(frame.refCnt()).as("the abandoned frame is released by the no-op continuation").isZero();
+        assertThat(ingress.<ByteBuf>readOutbound())
+                .as("exactly ONE wire write — the deny; the late settle adds nothing")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("F14 (Story 4.4 T3): client-close-then-timer — the channelInactive teardown already ran, "
+            + "the stale fire no-ops: single teardown, single cancelHttp, timer cancelled at teardown")
+    void clientCloseThenTimerFireIsASingleTeardown() {
+        ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 4, "legacy1", "pw123456"));
+        ingress.writeInbound(frame);
+        assertThat(registry.size()).isEqualTo(1);
+        assertThat(timer.tasks).hasSize(1);
+
+        ingress.close(); // the legacy client vanished mid-adjudication — the AD-32 teardown runs NOW
+
+        assertThat(verifier.cancelHttpCalls).as("precondition: the channelInactive teardown cancelled the exchange").hasValue(1);
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
+                .as("precondition: the pending password zeroized once")
+                .isTrue();
+        assertThat(timer.futures.get(0).isCancelled())
+                .as("the teardown arm cancelled the pending deadline timer (hygiene — no stale armed task)")
+                .isTrue();
+
+        timer.tasks.get(0).run(); // the stale fire (a missed cancellation would land here too)
+
+        assertThat(observer.connectionCloses())
+                .as("exactly ONE close — the stale fire adds no second teardown")
+                .hasSize(1);
+        assertThat(verifier.cancelHttpCalls).as("no double cancelHttp (RELAY-005 idempotence)").hasValue(1);
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
+                .as("no double-zeroize harm (idempotent wipe)")
+                .isTrue();
+        assertThat(registry.size()).as("still zero — nothing resurrected").isZero();
+        assertThat(ingress.<ByteBuf>readOutbound()).as("the stale fire writes nothing").isNull();
     }
 
     // ---------- AD-33: verifier denial collapse ----------
@@ -571,7 +684,8 @@ class BindInterceptorTest {
                 },
                 manager, observer, properties, egressInitializer,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector,
+                timer);
         // Swap the interceptor into a fresh pipeline (the @BeforeEach channel already has one).
         EmbeddedChannel throwingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), throwing,
@@ -610,7 +724,8 @@ class BindInterceptorTest {
                 },
                 manager, observer, properties, egressInitializer,
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
-                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector);
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector,
+                timer);
         EmbeddedChannel nullingIngress = new EmbeddedChannel(
                 DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), nulling,
                 new RelayIngressHandler(manager, observer));
@@ -662,6 +777,28 @@ class BindInterceptorTest {
             bootstraps.add(bootstrap);
             targets.add(host + ":" + port);
             return result;
+        }
+    }
+
+    /**
+     * Story 4.4 T3's deterministic timer seam (F14): captures every scheduled deadline task (delay +
+     * body + handle) for the rows to FIRE MANUALLY — no real wall-clock waits. The returned handle is a
+     * REAL cancellable scheduled task on the embedded loop (a no-op due at the captured delay — never
+     * reached in a test's lifetime), so the production cancel path has a genuine future to cancel and
+     * the rows can pin the cancellation.
+     */
+    static final class CapturingChannelTimer implements BindInterceptor.ChannelTimer {
+        final List<Long> delays = new CopyOnWriteArrayList<>();
+        final List<Runnable> tasks = new CopyOnWriteArrayList<>();
+        final List<ScheduledFuture<?>> futures = new CopyOnWriteArrayList<>();
+
+        @Override
+        public ScheduledFuture<?> schedule(Channel channel, long delayMillis, Runnable task) {
+            delays.add(delayMillis);
+            tasks.add(task);
+            ScheduledFuture<?> handle = channel.eventLoop().schedule(() -> { }, delayMillis, TimeUnit.MILLISECONDS);
+            futures.add(handle);
+            return handle;
         }
     }
 

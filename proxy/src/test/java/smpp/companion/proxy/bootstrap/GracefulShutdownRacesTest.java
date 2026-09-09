@@ -241,6 +241,70 @@ class GracefulShutdownRacesTest {
     }
 
     @Test
+    @DisplayName("F14 (Story 4.4 T3): the adjudication-deadline timer racing SIGTERM converges on deny — "
+            + "exactly one non-ROK bind_resp on the live loop, never a couple, one teardown; the walk "
+            + "then settles onto the already-torn-down pair and exits bounded")
+    void deadlineTimerRacingSigtermConvergesOnDenyNeverCouples(@TempDir Path dir) throws Exception {
+        // The row's deadline knob: a SHORT adjudication deadline (1s — the timer fires well after the
+        // exchange parks at the stand-in, well inside the 3s oidc budget, never a human-scale wait).
+        // Attribution is DELIBERATELY un-pinned: at the deadline the relay timer, the adapter's own
+        // deadline clamp (RopcBindCredentialVerifier composes with the relay arm — same budget, one
+        // number), and — once the walk fires — the deny window's pool shutdownNow() are all settlers
+        // of the SAME future, and the sealed Won/Lost teardown race picks exactly one winner. Every
+        // assertion below is order-robust: the row pins the CONVERGENCE, not which settler fired first
+        // (the RELAY-023 discipline — the deterministic half is what this row stages: the deadline
+        // resolves while the exchange is parked, then the walk races the already-settled pair).
+        Rig rig = rig(dir, 1, true, Duration.ofSeconds(3), Duration.ofSeconds(3).plusSeconds(2),
+                Clock.systemUTC(), Duration.ofSeconds(1));
+        try (Socket legacy = rig.connectLegacy()) {
+            RelayTestFixtures.writePdu(legacy, RelayTestFixtures.bindRequest(41, "legacy1", "pw123456"));
+            assertTrue(rig.awaitTokens(),
+                    "the adjudication must be parked (never settling) when the deadline fires");
+
+            // The deadline deny reached the client BEFORE the walk ever fired: exactly ONE bind_resp
+            // was written (whichever settler won, the loser no-ops — a second write is impossible by
+            // the sealed teardown race), and the close followed it ("bind_resp error, then close").
+            assertDenyBindResp(RelayTestFixtures.readPdu(legacy), 41);
+            assertAtEof(legacy);
+
+            // Never a couple, whatever raced: no accept trigger, no SMSC session, no registry entry,
+            // and the settle is fail-closed (AD-11) — never a late Allow.
+            assertThat(rig.harness.observer().bindAccepts())
+                    .as("the deadline deny never couples")
+                    .isEmpty();
+            assertThat(rig.smsc.sessions())
+                    .as("no egress pair ever dialed the SMSC")
+                    .isEmpty();
+            assertThat(rig.harness.registry().size())
+                    .as("the deadline teardown removed the pair — the pinned window is bounded (F14)")
+                    .isZero();
+            assertThat(rig.recorder.requests.get(0).future().getNow(null))
+                    .as("the deadline settle is DenyIndeterminate — the fail-closed collapse")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+            assertThat(zeroized(rig.recorder.credentials.get(0).password().value()))
+                    .as("the bind password zeroized on the deadline-deny path")
+                    .isTrue();
+
+            // THE SIGTERM HALF of the race: the walk fires onto the already-torn-down pair — the deny
+            // window's settle is no-op-if-done, the drain finds an empty registry, and the exit is
+            // bounded having written nothing further to the client (exactly one teardown won).
+            long start = System.nanoTime();
+            rig.ctx.close();
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+            assertThat(elapsedMs)
+                    .as("the walk converges onto the deadline-torn pair without hanging")
+                    .isLessThan(5_000L);
+            awaitTrue("the shared relay loop terminated", rig.group::isTerminated);
+            assertThat(rig.adapter.activeAdjudications())
+                    .as("no adjudication VT survived the walk (the cancelled exchange drained)")
+                    .isZero();
+            assertStillAtEof(legacy);
+        } finally {
+            rig.close();
+        }
+    }
+
+    @Test
     @DisplayName("matrix 'SIGTERM, coupled pairs mid-splice' + AC3's coupled arm: the drain body "
             + "(4.3 T5) force-closes the still-live pair at the rig's short drain deadline and the "
             + "walk exits inside the window")
@@ -681,6 +745,18 @@ class GracefulShutdownRacesTest {
 
     private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout,
             Duration drainDeadline, Clock clock, SmartLifecycle... extraLifecycles) throws IOException {
+        return rig(dir, tokenCount, park, oidcTimeout, drainDeadline, clock,
+                RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE, extraLifecycles);
+    }
+
+    /**
+     * The adjudication-deadline variant (Story 4.4 T3, F14): the deadline-race row threads its OWN
+     * {@code companion.bind.adjudication-deadline} here — the relay-side deny timer (and the adapter's
+     * deadline clamp composing with it) fires at the row's chosen budget, not the 4s yml default.
+     */
+    private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout,
+            Duration drainDeadline, Clock clock, Duration adjudicationDeadline,
+            SmartLifecycle... extraLifecycles) throws IOException {
         MockSmsc smsc = MockSmsc.start();
         CountDownLatch tokenReceived = new CountDownLatch(tokenCount);
         CountDownLatch hold = new CountDownLatch(1);
@@ -697,7 +773,7 @@ class GracefulShutdownRacesTest {
             // (their pairs never drain — the force-close is the point there).
             ProxyCompanionProperties properties = RelayTestFixtures.reverseBProperties(
                     dir, TokenIdpStandIn.realmBase(idp), RelayTestFixtures.freePort(), 8,
-                    "127.0.0.1", smsc.port(), oidcTimeout, drainDeadline);
+                    "127.0.0.1", smsc.port(), oidcTimeout, drainDeadline, adjudicationDeadline);
             IdpSslContextFactory tlsFactory = new IdpSslContextFactory(properties);
             RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
             RecordingVerifier recorder = new RecordingVerifier(adapter);

@@ -89,7 +89,7 @@ class BindInterceptorForwardRoleTest {
                 new NewAdjudicationGate(),
                 (bootstrap, host, port) -> {
                     throw new AssertionError("a routing miss must never dial (AD-11: no default route)");
-                });
+                }, BindInterceptor.DEFAULT_TIMER);
         EmbeddedChannel ingress = pipeline(interceptor, manager, observer);
         try {
             // system_id "intruder" is NOT in the table (only carrierOne is).
@@ -132,7 +132,7 @@ class BindInterceptorForwardRoleTest {
                 new RelayEgressInitializer(manager, observer),
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run),
-                new NewAdjudicationGate(), connector);
+                new NewAdjudicationGate(), connector, BindInterceptor.DEFAULT_TIMER);
         EmbeddedChannel ingress = pipeline(interceptor, manager, observer);
         try {
             byte[] bind = bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 9, "carrierOne", "pw123456");
