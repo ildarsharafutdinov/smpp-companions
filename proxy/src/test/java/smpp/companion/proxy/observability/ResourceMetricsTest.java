@@ -172,7 +172,7 @@ class ResourceMetricsTest {
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "stand-in-client-secret\n");
         Path idpStore = RelayTestFixtures.idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0,
                         ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(

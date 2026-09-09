@@ -167,7 +167,8 @@ class SmppLegTlsFactoryTest {
         Path garbageCert = dir.resolve("garbage.crt");
         Files.write(garbageCert, "not a pem".getBytes());
         ProxyCompanionProperties reverseA = new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(0, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(0, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE,
+                        RelayTestFixtures.DEFAULT_PRE_COUPLE_IDLE_TIMEOUT),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         RelayTestFixtures.TLS_PROTOCOLS, RelayTestFixtures.TLS12_SUITES,

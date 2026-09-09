@@ -279,12 +279,15 @@ class BindInterceptorTest {
         ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 1, "legacy1", "pw123456"));
         ingress.writeInbound(frame);
         assertThat(registry.size()).as("precondition: the bind is parked mid-adjudication").isEqualTo(1);
-        assertThat(timer.tasks).as("the deadline timer is armed for the in-flight adjudication").hasSize(1);
-        assertThat(timer.delays.get(0))
-                .as("the timer is armed at the CONFIGURED adjudication-deadline millis (F14)")
+        // Story 4.4 T4 re-index: channelActive (EmbeddedChannel construction) arms the idle watchdog
+        // FIRST (task 0, the 30s window), so the adjudication-deadline timer is now the SECOND capture.
+        assertThat(timer.tasks).as("both arms are live: the idle watchdog (channelActive) + the deadline (adjudicate)")
+                .hasSize(2);
+        assertThat(timer.delays.get(1))
+                .as("the deadline timer is armed at the CONFIGURED adjudication-deadline millis (F14)")
                 .isEqualTo(RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE.toMillis());
 
-        timer.tasks.get(0).run(); // fire the captured deadline task — the deterministic seam, no wall clock
+        timer.tasks.get(1).run(); // fire the captured deadline task — the deterministic seam, no wall clock
 
         ByteBuf deny = ingress.readOutbound();
         assertThat(deny).as("the deadline deny answers the parked bind on the wire (never pinned past it)").isNotNull();
@@ -324,9 +327,10 @@ class BindInterceptorTest {
     void lateAllowAfterTheDeadlineFiredIsANoOpThatNeverCouples() {
         ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 2, "legacy1", "pw123456"));
         ingress.writeInbound(frame);
-        assertThat(timer.tasks).as("precondition: the deadline timer is armed").hasSize(1);
+        assertThat(timer.tasks).as("precondition: the deadline timer is armed (after the T4 watchdog)")
+                .hasSize(2);
 
-        timer.tasks.get(0).run(); // the deadline elapses first
+        timer.tasks.get(1).run(); // the deadline elapses first (task 0 is the idle watchdog — 4.4 T4)
         ByteBuf deny = ingress.readOutbound();
         assertThat(deny).as("the deadline deny is the wire answer").isNotNull();
         assertThat(deny.getInt(8)).isEqualTo(ESME_RBINDFAIL);
@@ -350,7 +354,7 @@ class BindInterceptorTest {
         ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 4, "legacy1", "pw123456"));
         ingress.writeInbound(frame);
         assertThat(registry.size()).isEqualTo(1);
-        assertThat(timer.tasks).hasSize(1);
+        assertThat(timer.tasks).hasSize(2); // the T4 idle watchdog (0) + the F14 deadline (1)
 
         ingress.close(); // the legacy client vanished mid-adjudication — the AD-32 teardown runs NOW
 
@@ -359,10 +363,13 @@ class BindInterceptorTest {
                 .as("precondition: the pending password zeroized once")
                 .isTrue();
         assertThat(timer.futures.get(0).isCancelled())
+                .as("the teardown arm cancelled the idle watchdog too (4.4 T4 — the socket it would close is gone)")
+                .isTrue();
+        assertThat(timer.futures.get(1).isCancelled())
                 .as("the teardown arm cancelled the pending deadline timer (hygiene — no stale armed task)")
                 .isTrue();
 
-        timer.tasks.get(0).run(); // the stale fire (a missed cancellation would land here too)
+        timer.tasks.get(1).run(); // the stale fire (a missed cancellation would land here too)
 
         assertThat(observer.connectionCloses())
                 .as("exactly ONE close — the stale fire adds no second teardown")
@@ -373,6 +380,152 @@ class BindInterceptorTest {
                 .isTrue();
         assertThat(registry.size()).as("still zero — nothing resurrected").isZero();
         assertThat(ingress.<ByteBuf>readOutbound()).as("the stale fire writes nothing").isNull();
+    }
+
+    // ---------- F13 residue (Story 4.4 T4): the pre-couple idle watchdog ----------
+
+    @Test
+    @DisplayName("T4 arm: the pre-couple idle watchdog is armed AT channelActive at the CONFIGURED "
+            + "idle-window millis — the FIRST capture, before any bind exists")
+    void idleWatchdogArmsAtChannelActiveAtTheConfiguredWindow() {
+        // A NON-default window (7s, not the 30s yml default): the pin cannot mistake a hardcoded
+        // constant for the configured value (the derivation-pin rule of the T1 deadline row).
+        ProxyCompanionProperties properties = RelayTestFixtures.modeBProperties(
+                RelayTestFixtures.freePort(), 1, RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE,
+                java.time.Duration.ofSeconds(7));
+        CapturingChannelTimer customTimer = new CapturingChannelTimer(); // the @BeforeEach timer already has its own capture
+        BindInterceptor interceptor = new BindInterceptor(
+                verifier, manager, observer, properties, egressInitializer,
+                new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
+                new RoutingTable(properties), new SmppLegTlsFactory(properties, Runnable::run), gate, connector,
+                customTimer);
+        EmbeddedChannel idle = new EmbeddedChannel(
+                DefaultChannelId.newInstance(), new SmppFrameDecoder(), new SmppCodec(), interceptor,
+                new RelayIngressHandler(manager, observer));
+        try {
+            // channelActive fires at EmbeddedChannel construction — the watchdog is captured with
+            // NOTHING else having happened on the channel: no bind, no adjudication, no registry entry.
+            assertThat(customTimer.tasks).as("armed at channelActive, before any bind").hasSize(1);
+            assertThat(customTimer.delays.get(0))
+                    .as("armed at the CONFIGURED companion.bind.pre-couple-idle-timeout millis (T4)")
+                    .isEqualTo(7_000L);
+        } finally {
+            idle.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    @DisplayName("F13 residue (Story 4.4 T4): an accepted socket that never binds is bare-closed by the idle "
+            + "watchdog — no response PDU, no registry entry ever, no verifier contact (close only)")
+    void idleWatchdogBareClosesTheNeverBindingSocket() {
+        assertThat(timer.tasks).as("precondition: the watchdog is armed at channelActive").hasSize(1);
+
+        timer.tasks.get(0).run(); // the idle window elapses with ZERO PDUs from the client
+
+        assertThat(ingress.<ByteBuf>readOutbound())
+                .as("NO response PDU — the bare close is the whole wire effect (nothing was ever sent to answer)")
+                .isNull();
+        assertThat(ingress.isOpen()).as("the never-binding socket is closed").isFalse();
+        assertThat(registry.size()).as("no registry entry ever existed").isZero();
+        assertThat(verifier.capturedCredentials).as("no adjudication ever started").isEmpty();
+        assertThat(connector.targets).as("no egress was ever opened").isEmpty();
+        assertThat(observer.bindRejects()).as("no Verdict exists — no onBindReject (AD-27)").isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("the close is observed with the uniform pre-couple reason, exactly once — the cap "
+                        + "slot's release rides exactly this closeFuture")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.PRE_COUPLE_NON_BIND_PDU));
+    }
+
+    @Test
+    @DisplayName("F13 residue (Story 4.4 T4): the idle watchdog firing MID-ADJUDICATION bare-closes with NO "
+            + "response PDU — beginTeardown cancels + zeroizes, the entry is gone, no onBindReject, and "
+            + "the late Allow no-ops (AD-25 re-check)")
+    void idleWatchdogMidAdjudicationBareClosesCancelsAndZeroizes() {
+        ByteBuf bind = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 3, "legacy1", "pw123456"));
+        ingress.writeInbound(bind);
+        assertThat(registry.size()).as("precondition: the bind is parked mid-adjudication").isEqualTo(1);
+        assertThat(timer.tasks).hasSize(2); // the idle watchdog (0) + the F14 deadline (1)
+
+        timer.tasks.get(0).run(); // the idle window elapses while the verifier future hangs
+
+        assertThat(ingress.<ByteBuf>readOutbound())
+                .as("NO response PDU — the watchdog is a bare close, never a deny synth")
+                .isNull();
+        assertThat(ingress.isOpen()).as("the idled-out connection is closed").isFalse();
+        assertThat(registry.size()).as("the entry is gone — beginTeardown removed it BEFORE close (AC3)").isZero();
+        assertThat(verifier.cancelHttpCalls).as("the in-flight adjudication is cancelled inside beginTeardown").hasValue(1);
+        assertThat(CoupledPairHarness.zeroized(verifier.capturedCredentials.get(0).password().value()))
+                .as("the pending password is zeroized inside the same teardown").isTrue();
+        assertThat(observer.bindRejects()).as("a bare close is not a Verdict — no onBindReject (AD-27)").isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("the bare close is observed with the uniform pre-couple reason, exactly once")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.PRE_COUPLE_NON_BIND_PDU));
+        assertThat(timer.futures.get(1).isCancelled())
+                .as("the watchdog's fire cancelled the still-armed F14 deadline timer (the pair is closing NOW)")
+                .isTrue();
+
+        // The late Allow lands AFTER the bare-close: the continuation's AD-25 re-check no-ops — no
+        // couple, no wire write — and releases the abandoned bind's frame (the queued-hop pump).
+        verifier.completeAllow();
+        ingress.runPendingTasks();
+        assertThat(connector.targets).as("the late Allow after the idle close opens NO egress (AD-25 re-check)").isEmpty();
+        assertThat(ingress.<ByteBuf>readOutbound()).as("the late verdict emits nothing on the wire").isNull();
+        assertThat(bind.refCnt()).as("the abandoned bind's frame is released by the no-op path").isZero();
+    }
+
+    @Test
+    @DisplayName("F13 residue (Story 4.4 T4): the watchdog also bounds the SILENT-SMSC await after the "
+            + "forward — bare-close both legs, no deny, no couple (the R32 sub-window RELAY-021 does not cover)")
+    void idleWatchdogBoundsTheSilentSmscAwaitAfterTheForward() {
+        coupledEgress(); // Allow settled, egress attached, bind forwarded — and the SMSC never answers
+        assertThat(registry.size()).as("precondition: the pair is awaiting bind_resp").isEqualTo(1);
+        assertThat(timer.futures.get(0).isCancelled())
+                .as("the watchdog SURVIVES the verdict settle — the egress dial + the SMSC await are still pre-couple")
+                .isFalse();
+
+        timer.tasks.get(0).run(); // the idle window elapses with the bind unanswered
+
+        assertThat(ingress.<ByteBuf>readOutbound())
+                .as("NO deny for the legacy client to retry on — the watchdog is a bare close")
+                .isNull();
+        assertThat(ingress.isOpen()).as("the ingress leg is closed").isFalse();
+        assertThat(egress.isOpen()).as("the silent egress leg is closed too").isFalse();
+        assertThat(registry.size()).as("the pair leaves the registry").isZero();
+        assertThat(observer.bindAccepts()).as("nothing coupled — the SMSC never consented").isEmpty();
+        assertThat(observer.bindRejects()).as("no Verdict — no onBindReject (AD-27)").isEmpty();
+        assertThat(observer.connectionCloses())
+                .as("the INGRESS close carries the uniform pre-couple reason (the egress leg's own close "
+                        + "fires unstashed — the pre-couple OTHER default, the F1-arm shape)")
+                .contains(
+                        new CapturingRelayObserver.ConnectionClose(Direction.INGRESS, CloseReason.PRE_COUPLE_NON_BIND_PDU),
+                        new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.OTHER));
+    }
+
+    @Test
+    @DisplayName("PERF-2 negative (Story 4.4 T4): a COUPLED pair idling indefinitely is NEVER reaped — the "
+            + "watchdog was cancelled at the couple and a stale fire no-ops")
+    void coupledIdlePairIsNeverReapedByTheIdleWatchdog() {
+        coupledEgress();
+        egress.writeInbound(inbound(
+                bindResponse(SmppCommandIds.BIND_TRANSCEIVER_RESP, 5, 0x00000000, "SMSC01", new byte[0])));
+        assertThat(observer.bindAccepts()).as("precondition: the pair coupled on the SMSC's ROK").hasSize(1);
+        ByteBuf rokAtLegacy = ingress.readOutbound();
+        assertThat(rokAtLegacy).as("precondition: the ROK reached the legacy client").isNotNull();
+        rokAtLegacy.release(); // readOutbound hands the reader ownership (the T7 trap)
+        assertThat(timer.futures.get(0).isCancelled())
+                .as("the watchdog was CANCELLED at the couple (the egress answer arm) — connect→couple "
+                        + "is the ONLY window it bounds")
+                .isTrue();
+
+        timer.tasks.get(0).run(); // a stale fire (the missed-cancellation convergence arm)
+
+        assertThat(ingress.isOpen()).as("PERF-2: the idle COUPLED pair stays up — never reaped").isTrue();
+        assertThat(egress.isOpen()).as("... on both legs").isTrue();
+        assertThat(registry.size()).as("the coupled pair keeps its registry entry").isEqualTo(1);
+        assertThat(ingress.<ByteBuf>readOutbound()).as("the stale fire writes nothing").isNull();
+        assertThat(observer.connectionCloses()).as("no close observed — the couple won the race").isEmpty();
     }
 
     // ---------- AD-33: verifier denial collapse ----------

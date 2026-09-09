@@ -372,6 +372,19 @@ public record ProxyCompanionProperties(
      *         per-channel deny timer at this budget (F14: a verifier future that never settles is
      *         denied and torn down at the deadline, never pinned). Positive — zero and
      *         negative refuse startup (compact-ctor guard, AD-17).
+     * @param preCoupleIdleTimeout the PRE-COUPLE idle watchdog window (Story 4.4 T4, the F13 residue):
+     *         {@code BindInterceptor} arms a per-channel watchdog at {@code channelActive} that closes
+     *         the connection fail-closed when it still has not reached COUPLE when the window elapses
+     *         — so an accepted-but-never-binding socket can no longer hold its
+     *         {@code companion.memory.concurrent-pairs} cap slot forever (and, for free, the
+     *         silent-SMSC post-forward await is bounded too). Bounds connect→couple ONLY: the
+     *         watchdog is cancelled at the couple and no-ops on a coupled entry, so COUPLED idle
+     *         pairs are NEVER reaped (PERF-2's 10K-idle-pairs population must stay untouched).
+     *         Default {@code 30s} in {@code application.yml} — well above the legitimate cold path
+     *         (≤2s) + deadline (4s), well below "forever"; operator-tunable because slot-reclaim
+     *         cadence is an ops concern DISTINCT from the PERF-3 auth budget (hence a second knob is
+     *         warranted here, unlike the F10/F14 reuse of the one deadline). Positive — zero and
+     *         negative refuse startup (compact-ctor guard, AD-17).
      */
     public record Bind(
             @Min(value = 1, message = "companion.bind.port must be in [1,65535] — refusing to start (SEC-055).")
@@ -381,14 +394,17 @@ public record ProxyCompanionProperties(
             @NotBlank(message = "companion.bind.host must not be blank (F13 listener hardening) — refusing to start.")
             String host,
             @NotNull(message = "companion.bind.adjudication-deadline is required — refusing to start.")
-            Duration adjudicationDeadline
+            Duration adjudicationDeadline,
+            @NotNull(message = "companion.bind.pre-couple-idle-timeout is required — refusing to start.")
+            Duration preCoupleIdleTimeout
     ) {
 
         /**
          * Fail-fast construction guard: the adjudication deadline must be a POSITIVE duration (zero and
          * negative are misconfigurations, not degenerate-but-usable budgets — a zero deadline would have
-         * the verifier treat every bind as already-expired). Fires at construction (direct) and at refresh
-         * (yml/args), so an invalid value refuses startup (AD-17).
+         * the verifier treat every bind as already-expired), and so must the pre-couple idle window (a
+         * zero window would reap every accept before it could ever bind). Fires at construction
+         * (direct) and at refresh (yml/args), so an invalid value refuses startup (AD-17).
          */
         public Bind {
             Objects.requireNonNull(adjudicationDeadline, "adjudicationDeadline");
@@ -396,6 +412,12 @@ public record ProxyCompanionProperties(
                 throw new IllegalArgumentException(
                         "companion.bind.adjudication-deadline must be positive — refusing to start (got "
                                 + adjudicationDeadline + ")");
+            }
+            Objects.requireNonNull(preCoupleIdleTimeout, "preCoupleIdleTimeout");
+            if (preCoupleIdleTimeout.isZero() || preCoupleIdleTimeout.isNegative()) {
+                throw new IllegalArgumentException(
+                        "companion.bind.pre-couple-idle-timeout must be positive — refusing to start (got "
+                                + preCoupleIdleTimeout + ")");
             }
         }
     }

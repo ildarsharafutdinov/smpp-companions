@@ -44,6 +44,16 @@ companion:
     # knob (the F13 one-number precedent). And the INGRESS DEADLINE TIMER (Story 4.4 T3, F14): a
     # verifier future that never settles is denied and torn down at this budget, never pinned.
     adjudication-deadline: 4s
+    # Pre-couple idle watchdog (Story 4.4 T4, the F13 residue): BindInterceptor arms a per-channel
+    # watchdog at channelActive; a connection that still has not reached COUPLE when this window
+    # elapses is closed fail-closed (PRE_COUPLE_NON_BIND_PDU, no response PDU) — so an
+    # accepted-but-never-binding socket can no longer hold its concurrent-pairs cap slot forever.
+    # Bounds connect→couple ONLY (cancelled at the couple; a coupled entry no-ops at fire), so idle
+    # COUPLED pairs are never reaped (PERF-2). 30s: well above the legitimate cold path (≤2s) + the
+    # 4s deadline above, well below "forever" — a SEPARATE knob from the deadline because slot-reclaim
+    # cadence is an ops concern, not part of the PERF-3 auth budget. Zero/negative refuses startup
+    # (compact-ctor guard).
+    pre-couple-idle-timeout: 30s
 
   # AD-30 direct-memory budget. PROBLEM IT SOLVES: Netty allocates SMPP PDU buffers off-heap (direct
   # memory); without a deliberate -XX:MaxDirectMemorySize cap the process OOMs at scale rather than

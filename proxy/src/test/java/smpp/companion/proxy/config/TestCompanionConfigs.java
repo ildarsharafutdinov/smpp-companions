@@ -169,6 +169,12 @@ public final class TestCompanionConfigs {
         // supply it — every base carries the documented 4s default explicitly, the T5b no-@DefaultValue
         // pattern: the default lives in yml for real boots; test configs state it).
         props.put("companion.bind.adjudication-deadline", "4s");
+        // Story 4.4 T4 (the F13 residue): companion.bind.pre-couple-idle-timeout is likewise a
+        // required key (the pre-couple idle watchdog's window — the connect→couple outer bound; the
+        // Bind compact-ctor guard refuses zero/negative). Same rule as the two keys around it: these
+        // runner contexts do NOT load application.yml, so the documented 30s default is stated
+        // explicitly (no @DefaultValue — the default lives in yml for real boots; test configs state it).
+        props.put("companion.bind.pre-couple-idle-timeout", "30s");
         // max-frame + max-command-length are deliberately unset: they default to SmppFrame.MAX_COMMAND_LENGTH
         // in Java (RELAY-026), not a YAML literal.
         // Story 2.2 T5b: the AD-30 live direct-memory self-check (DirectMemoryBudgetStartupCheck) is

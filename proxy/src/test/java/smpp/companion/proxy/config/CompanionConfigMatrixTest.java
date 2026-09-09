@@ -292,6 +292,31 @@ class CompanionConfigMatrixTest {
                 Arguments.of("not-a-duration", "not-a-duration")); // conversion refusal names the value
     }
 
+    // --- Story 4.4 T4 (F13 residue): the pre-couple idle watchdog window's fail-fast guard -----------
+
+    @ParameterizedTest(name = "AD-17: pre-couple-idle-timeout \"{0}\" -> refuse")
+    @MethodSource("invalidIdleTimeouts")
+    @DisplayName("Story 4.4: an invalid companion.bind.pre-couple-idle-timeout -> refuse "
+            + "(the Bind compact-ctor guard — the connect→couple window bound)")
+    void invalidPreCoupleIdleTimeoutRefuses(String bad, String token) {
+        // The exact INVALID value is BOUND over the base's valid 30s (never the key removed — the
+        // null-vs-blank trap; the Bind node has other non-null leaves, so "" lands as a null LEAF the
+        // compact-ctor requireNonNull refuses, not the whole-record null collapse); 0s/-5s bite the
+        // positive guard (a zero window would reap every accept before it could ever bind);
+        // a non-duration token refuses at conversion. Per-case tokens keep each parametrized branch
+        // independently falsifiable (the invalidDrainTimeouts pattern).
+        assertRefused(TestCompanionConfigs.forwardA(dir).put("companion.bind.pre-couple-idle-timeout", bad),
+                "pre-couple-idle-timeout " + bad, token);
+    }
+
+    static Stream<Arguments> invalidIdleTimeouts() {
+        return Stream.of(
+                Arguments.of("", "preCoupleIdleTimeout"), // "" converts to null -> the compact-ctor requireNonNull
+                Arguments.of("0s", "must be positive"),   // zero: a degenerate reap window is a misconfiguration
+                Arguments.of("-5s", "must be positive"),
+                Arguments.of("not-a-duration", "not-a-duration")); // conversion refusal names the value
+    }
+
     // --- AC3 secrets (SEC-060) + trust store 5-state (SEC-050) -------------------------------
 
     @ParameterizedTest(name = "SEC-060: missing {0} -> refuse")
@@ -547,7 +572,7 @@ class CompanionConfigMatrixTest {
         // an empty list PASSES @NotNull (non-null) and would be silently accepted without this guard.
         var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
         var props = new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -797,7 +822,7 @@ class CompanionConfigMatrixTest {
     private static ProxyCompanionProperties forwardAProps(String certPath,
                                                           List<ProxyCompanionProperties.RoutingEntry> routing) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),
@@ -816,7 +841,7 @@ class CompanionConfigMatrixTest {
     /** Minimal valid reverse-A props for the pure-HV path. */
     private static ProxyCompanionProperties reverseAProps(String trustStorePath) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new ProxyCompanionProperties.Memory(64, 1024, 1.5, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
                         List.of("TLSv1.3", "TLSv1.2"),

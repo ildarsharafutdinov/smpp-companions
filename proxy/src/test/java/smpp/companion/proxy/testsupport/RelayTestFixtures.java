@@ -50,6 +50,13 @@ public final class RelayTestFixtures {
     public static final Duration DEFAULT_ADJUDICATION_DEADLINE = Duration.ofSeconds(4);
 
     /**
+     * The documented application.yml default for {@code companion.bind.pre-couple-idle-timeout} (Story
+     * 4.4 T4, the F13 residue — the connect→couple window's outer bound) — same uniformity rule as
+     * {@link #DEFAULT_ADJUDICATION_DEADLINE}.
+     */
+    public static final Duration DEFAULT_PRE_COUPLE_IDLE_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
      * The documented application.yml default for {@code companion.shutdown.drain-timeout} (Story 4.3
      * T3, the AD-22 drain deadline) — same uniformity rule as {@link #DEFAULT_ADJUDICATION_DEADLINE}.
      */
@@ -159,15 +166,39 @@ public final class RelayTestFixtures {
     }
 
     /**
+     * The pre-couple-idle-timeout variant (Story 4.4 T4): the watchdog rows that pin the arm's
+     * CONFIGURED window ({@code companion.bind.pre-couple-idle-timeout} millis) need a fixture whose
+     * idle window differs from the 30s yml default — the derivation-pin rule of the
+     * adjudication-deadline overload above.
+     */
+    public static ProxyCompanionProperties modeBProperties(
+            int bindPort, int maxInboundDepth, Duration adjudicationDeadline, Duration preCoupleIdleTimeout) {
+        return modeBProperties(bindPort, maxInboundDepth, "smsc.example", 2775, adjudicationDeadline,
+                preCoupleIdleTimeout);
+    }
+
+    /**
      * The egress-targeted + adjudication-deadline variant: the full-fidelity builder every overload
      * above funnels into (one home — a {@code ProxyCompanionProperties} field addition breaks ONE
      * fixture).
      */
     public static ProxyCompanionProperties modeBProperties(
             int bindPort, int maxInboundDepth, String smscHost, int smscPort, Duration adjudicationDeadline) {
+        return modeBProperties(bindPort, maxInboundDepth, smscHost, smscPort, adjudicationDeadline,
+                DEFAULT_PRE_COUPLE_IDLE_TIMEOUT);
+    }
+
+    /**
+     * The egress-targeted + adjudication-deadline + pre-couple-idle variant (Story 4.4 T4): the
+     * full-fidelity builder every overload above funnels into (one home — a
+     * {@code ProxyCompanionProperties} field addition breaks ONE fixture).
+     */
+    public static ProxyCompanionProperties modeBProperties(
+            int bindPort, int maxInboundDepth, String smscHost, int smscPort, Duration adjudicationDeadline,
+            Duration preCoupleIdleTimeout) {
         return new ProxyCompanionProperties(
                 new ProxyCompanionProperties.Bind(
-                        bindPort, DEFAULT_BIND_HOST, adjudicationDeadline),
+                        bindPort, DEFAULT_BIND_HOST, adjudicationDeadline, preCoupleIdleTimeout),
                 new ProxyCompanionProperties.Memory(
                         maxInboundDepth, DEFAULT_CONCURRENT_PAIRS, 1.0,
                         ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
@@ -240,10 +271,24 @@ public final class RelayTestFixtures {
             Path dir, String providerUrl, int bindPort, int concurrentPairs,
             String smscHost, int smscPort, Duration oidcTimeout, Duration drainTimeout,
             Duration adjudicationDeadline) throws IOException {
+        return reverseBProperties(dir, providerUrl, bindPort, concurrentPairs, smscHost, smscPort,
+                oidcTimeout, drainTimeout, adjudicationDeadline, DEFAULT_PRE_COUPLE_IDLE_TIMEOUT);
+    }
+
+    /**
+     * The pre-couple-idle variant (Story 4.4 T4): the full-fidelity builder every overload above
+     * funnels into (one home — a {@code ProxyCompanionProperties} field addition breaks ONE fixture);
+     * the idle-window knob follows the {@code adjudicationDeadline} one above it.
+     */
+    public static ProxyCompanionProperties reverseBProperties(
+            Path dir, String providerUrl, int bindPort, int concurrentPairs,
+            String smscHost, int smscPort, Duration oidcTimeout, Duration drainTimeout,
+            Duration adjudicationDeadline, Duration preCoupleIdleTimeout) throws IOException {
         Path store = idpTrustStoreFixture(dir.resolve("idp-truststore.p12"));
         Path secret = Files.writeString(dir.resolve("oidc-client-secret"), "smpp-confidential-secret");
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(bindPort, DEFAULT_BIND_HOST, adjudicationDeadline),
+                new ProxyCompanionProperties.Bind(bindPort, DEFAULT_BIND_HOST, adjudicationDeadline,
+                        preCoupleIdleTimeout),
                 new ProxyCompanionProperties.Memory(
                         1, concurrentPairs, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(
@@ -419,7 +464,7 @@ public final class RelayTestFixtures {
 
     private static ProxyCompanionProperties.Bind baseBind(int bindPort) {
         return new ProxyCompanionProperties.Bind(
-                bindPort, DEFAULT_BIND_HOST, DEFAULT_ADJUDICATION_DEADLINE);
+                bindPort, DEFAULT_BIND_HOST, DEFAULT_ADJUDICATION_DEADLINE, DEFAULT_PRE_COUPLE_IDLE_TIMEOUT);
     }
 
     private static ProxyCompanionProperties.Memory baseMemory() {

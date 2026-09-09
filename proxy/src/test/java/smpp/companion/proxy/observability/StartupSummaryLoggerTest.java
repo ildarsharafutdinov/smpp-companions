@@ -115,7 +115,7 @@ class StartupSummaryLoggerTest extends ObservabilityPairHarness {
     }
 
     private static ProxyCompanionProperties.Bind bind() {
-        return new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4));
+        return new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30));
     }
 
     private static ProxyCompanionProperties.Memory memory() {

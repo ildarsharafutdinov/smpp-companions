@@ -148,7 +148,7 @@ class MeteredRelayObserverTest {
      */
     private static ProxyCompanionProperties alphaBetaTable() {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0,
                         ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(List.of("TLSv1.3"), List.of(), List.of()),

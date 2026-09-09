@@ -195,7 +195,7 @@ class DirectMemoryBudgetStartupCheckTest {
         // over-ceiling budget (64 × 1_000_000 × 1.5 ≈ 6.29 TB ≫ any ceiling) + null MUST throw.
         // RED under the `!= FAIL` mutation (null != FAIL would banner+boot instead of refusing).
         ProxyCompanionProperties props = new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new ProxyCompanionProperties.Memory(64, 1_000_000, 1.5, null),
                 new ProxyCompanionProperties.Tls(List.of("TLSv1.3"), List.of(), List.of()),
                 null,

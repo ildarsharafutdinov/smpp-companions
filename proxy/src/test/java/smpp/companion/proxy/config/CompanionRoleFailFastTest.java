@@ -54,7 +54,7 @@ class CompanionRoleFailFastTest {
         // forward branch and a reverse branch without throwing. (Matrix validation is exercised
         // end-to-end in CompanionConfigMatrixTest.)
         new ProxyCompanionProperties(
-                new Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 new Forward(
@@ -66,7 +66,7 @@ class CompanionRoleFailFastTest {
                 null,
                 new Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
         new ProxyCompanionProperties(
-                new Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
+                new Bind(2775, "127.0.0.1", Duration.ofSeconds(4), Duration.ofSeconds(30)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
                 TLS,
                 null,

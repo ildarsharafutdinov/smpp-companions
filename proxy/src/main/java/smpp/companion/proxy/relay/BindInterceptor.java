@@ -119,6 +119,18 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * deadline deny is log-distinguishable, enum-identical {@code BIND_REJECTED}). Cancelled at settle
  * ({@code onVerdict}, both arms) and at every interceptor teardown arm — but convergence, not
  * cancellation, is the correctness argument: a stale fire re-checks and no-ops.
+ * <li><b>F13 residue — the pre-couple idle watchdog (Story 4.4 T4):</b> {@code channelActive} arms a
+ * second per-channel task at {@code companion.bind.pre-couple-idle-timeout} (default {@code 30s}) on
+ * the SAME {@link ChannelTimer} seam. An accepted socket that never reaches COUPLE — never binds,
+ * or a silent SMSC after the forward — is bare-closed at the window's end ({@code beginTeardown} +
+ * the {@link CloseReason#PRE_COUPLE_NON_BIND_PDU} stash, NO response PDU: {@code onPreCoupleIdle}
+ * is the F1 arm's exact shape), which is what makes the
+ * {@code ConnectionCapHandler}'s closeFuture-riding slot release REACHABLE for never-binding
+ * sockets. Bounds connect→couple ONLY: cancelled at the couple (the egress answer arm) and at every
+ * teardown arm, and a fire that finds the entry coupled NO-OPS — a COUPLED pair idling indefinitely
+ * is NEVER reaped (PERF-2's headline population). Like the deadline arm it fabricates no
+ * {@link Verdict} → no {@code onBindReject}; the WARN log distinguishes the idle cause, the enum
+ * value does not.
  * <li><b>The new-adjudication gate (Story 4.3 T4; OBS-017):</b> once the acceptor's stop armed the
  * injected {@link NewAdjudicationGate}, this handler's FIRST-BIND arm (an established socket with no
  * entry) fail-closed-DENIES before anything else — frame release + the AD-33 deny + close, the
@@ -199,6 +211,14 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * window. Positive by the {@code Bind} record's fail-fast guard (AD-17).
      */
     private final Duration adjudicationDeadline;
+    /**
+     * The pre-couple idle window ({@code companion.bind.pre-couple-idle-timeout}, default {@code 30s}
+     * in application.yml — Story 4.4 T4, the F13 residue): bounds connect→couple ONLY. Deliberately a
+     * SECOND knob beside {@link #adjudicationDeadline} (the F10/F14 one-number reuse does not apply):
+     * slot-reclaim cadence is an ops concern distinct from the PERF-3 auth budget. Positive by the
+     * {@code Bind} record's fail-fast guard (AD-17).
+     */
+    private final Duration preCoupleIdleTimeout;
     /** Story 4.4 T3 (F14): the per-channel schedule seam — production arms on the ingress event loop. */
     private final ChannelTimer timer;
     /**
@@ -211,6 +231,14 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * and every teardown arm (a stale fire re-checks the entry and no-ops regardless).
      */
     private @Nullable ScheduledFuture<?> pendingDeadlineTimer;
+    /**
+     * The pre-couple idle watchdog's handle (Story 4.4 T4, F13 residue) — same channel-scoped
+     * confinement rationale as {@link #pendingDeadlineTimer} above. Unlike the deadline handle it
+     * spans the WHOLE connect→couple window (armed at {@code channelActive}, NOT at adjudicate): it
+     * is cancelled at the couple (the egress answer arm — a coupled idle pair is NEVER reaped,
+     * PERF-2) and at every teardown arm; a fire on an absent/tearing-down/coupled entry no-ops.
+     */
+    private @Nullable ScheduledFuture<?> pendingIdleWatchdog;
 
     // The in-flight adjudication handles (cancelHttp target + wipe target) moved ONTO the ConnectionEntry
     // by the Story 3.4 T6 absorption — this class's own pendingVerdict/pendingPassword fields died with it;
@@ -281,6 +309,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
                     "BindInterceptor requires a companion.<role> branch (AD-17 single-cell selection)");
         }
         this.adjudicationDeadline = properties.bind().adjudicationDeadline();
+        this.preCoupleIdleTimeout = properties.bind().preCoupleIdleTimeout();
     }
 
     /** The reverse cells' single SMSC target (every mode leaf carries one, @NotNull-validated). */
@@ -322,6 +351,14 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
     public void channelActive(ChannelHandlerContext ctx) {
         ctx.fireChannelActive();
         ctx.read(); // arm the initial read — under AUTO_READ=false nothing arrives until demanded (AC4)
+        // Story 4.4 T4 (F13 residue): arm the pre-couple idle watchdog — the connect→couple window's
+        // outer bound. Armed at ACTIVE (not at the first bind) so the never-binding socket — zero
+        // PDUs, no registry entry — is inside the window too: that socket holds a concurrent-pairs
+        // cap slot until this task closes it (the ConnectionCapHandler's release rides the closeFuture
+        // exactly once). Cancelled at the couple and at every teardown arm; a fire re-checks and
+        // no-ops on anything already coupled (PERF-2: coupled idle pairs are never reaped).
+        pendingIdleWatchdog = timer.schedule(ctx.channel(), preCoupleIdleTimeout.toMillis(),
+                () -> onPreCoupleIdle(ctx.channel()));
     }
 
     @Override
@@ -433,6 +470,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // (remove + mark BEFORE close → cancelHttp + zeroize) runs INSIDE beginTeardown; this arm then
         // owns only its tails — the reason stash + the closes. A losing racer no-ops (RELAY-005).
         cancelPendingDeadlineTimer(); // the in-flight adjudication's F14 arm dies with the pair (4.4 T3)
+        cancelPendingIdleWatchdog(); // ... and so does the T4 window bound — the pair is closing NOW
         if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
             CoupledRelayHandler.stash(channel, CloseReason.PRE_COUPLE_NON_BIND_PDU);
             Channel egress = won.egress();
@@ -593,6 +631,69 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         }
     }
 
+    // ---------------------------------------------------------------- F13 residue: the pre-couple idle watchdog
+
+    /**
+     * The pre-couple idle watchdog task (Story 4.4 T4), fired on the ingress event loop at
+     * {@code companion.bind.pre-couple-idle-timeout} after the arm in {@code channelActive}. The
+     * connection did not reach couple inside the window — either extreme: a socket that never sent
+     * its bind (no registry entry exists), or a pair still walking the handshake (mid-adjudication,
+     * dialing, or awaiting a silent SMSC's {@code bind_resp} — the R32 sub-window RELAY-021 does not
+     * bound). Re-checks FIRST exactly like the F14 arm: a coupled entry NO-OPS (PERF-2 — a coupled
+     * pair idling indefinitely is the legitimate steady state and is NEVER reaped; the couple also
+     * cancelled the task, so this is only the missed-cancellation convergence), a tearing-down entry
+     * no-ops (a teardown owns the close), and a fire racing the socket's own close finds the entry
+     * absent and the channel inactive — nobody left to close. Otherwise the fail-closed bare close in
+     * the F1 arm's exact shape ({@code manager.beginTeardown} — the {@code cancelHttp()} + zeroize
+     * hygiene rides inside — then the reason stash + the closes): NO response PDU is synthesized and
+     * no {@link Verdict} is fabricated → never {@code onBindReject} (AD-27; the idle close is
+     * log-distinguishable, enum-identical {@link CloseReason#PRE_COUPLE_NON_BIND_PDU}).
+     */
+    private void onPreCoupleIdle(Channel channel) {
+        pendingIdleWatchdog = null; // fired — there is no handle left to cancel
+        ConnectionEntry entry = manager.entryFor(channel);
+        if (entry != null && (entry.tearingDown() || entry.coupled())) {
+            return; // tearing-down: a teardown owns the close; coupled: NEVER reaped (PERF-2)
+        }
+        if (entry == null) {
+            if (!channel.isActive()) {
+                return; // a stale fire racing the socket's own close — nobody left to close
+            }
+            log.warn("pre-couple idle timeout elapsed with no bind — closing the never-binding socket "
+                    + "(companion.bind.pre-couple-idle-timeout): {}", channel);
+            CoupledRelayHandler.stash(channel, CloseReason.PRE_COUPLE_NON_BIND_PDU);
+            channel.close();
+            return;
+        }
+        log.warn("pre-couple idle timeout elapsed before couple — closing the pair "
+                + "(companion.bind.pre-couple-idle-timeout): {}", entry.systemId());
+        cancelPendingDeadlineTimer(); // the in-flight adjudication's F14 arm dies with the pair (4.4 T3)
+        if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
+            CoupledRelayHandler.stash(channel, CloseReason.PRE_COUPLE_NON_BIND_PDU);
+            Channel egress = won.egress();
+            if (egress != null) {
+                egress.close();
+            }
+            channel.close(); // the bare close — the whole wire effect, no response PDU
+        }
+    }
+
+    /**
+     * Watchdog hygiene (Story 4.4 T4): drop the pending watchdog's handle and cancel the task.
+     * Called at the COUPLE (the egress answer arm — the pre-couple window is over; a coupled pair
+     * idling for hours must NEVER be reaped, PERF-2) and at every interceptor teardown arm. NOT at
+     * verdict settle: the Allow verdict only moves the pair into the egress dial, which is still
+     * pre-couple (the watchdog must bound the silent-SMSC await). Best-effort like the deadline arm:
+     * a racing fire re-checks and no-ops.
+     */
+    private void cancelPendingIdleWatchdog() {
+        ScheduledFuture<?> pending = pendingIdleWatchdog;
+        pendingIdleWatchdog = null;
+        if (pending != null) {
+            pending.cancel(false);
+        }
+    }
+
     // ---------------------------------------------------------------- the AD-33 collapse + teardown
 
     /**
@@ -613,6 +714,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      */
     private void denyAndTeardown(Channel ingress, int requestCommandId, int sequenceNumber, CloseReason reason) {
         cancelPendingDeadlineTimer(); // the pair is going down — the F14 arm must not fire into it (4.4 T3)
+        cancelPendingIdleWatchdog(); // ... and neither may the T4 window bound (4.4 T4)
         RelayStateManager.Teardown outcome = manager.beginTeardown(ingress);
         if (!(outcome instanceof RelayStateManager.Teardown.Won(ConnectionEntry won))) {
             return; // a concurrent teardown owns the close
@@ -743,8 +845,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // The legacy client vanished mid-handshake: teardown with NO deny (nobody left to answer — AD-32's
         // no-bind_resp-on-a-torn-down-connection invariant), the manager's cancel + wipe hygiene, close the
         // egress leg. The pending deadline timer dies with the pair (4.4 T3): nobody is left to answer its
-        // deny either — and a racing fire would only find the entry absent and no-op.
+        // deny either — and a racing fire would only find the entry absent and no-op. The idle watchdog
+        // dies with it (4.4 T4): the socket it would have closed IS the socket that just went away.
         cancelPendingDeadlineTimer();
+        cancelPendingIdleWatchdog();
         if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
             Channel egress = won.egress();
             if (egress != null) {
@@ -769,6 +873,7 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         }
         if (entry != null) {
             cancelPendingDeadlineTimer(); // containment kills the F14 arm with the pair (4.4 T3)
+            cancelPendingIdleWatchdog(); // ... and the T4 window bound (4.4 T4)
             if (manager.beginTeardown(channel) instanceof RelayStateManager.Teardown.Won(ConnectionEntry won)) {
                 Channel egress = won.egress();
                 if (egress != null) {
@@ -819,6 +924,13 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
                 // frame transfers to the ingress write (that transfer is the release). No answered bit to
                 // set: the upstream RelayEgressHandler already transitioned the entry (couple on ROK,
                 // teardown on anything else) before this forwarder ran.
+                //
+                // The bind is ANSWERED — the pre-couple window is over (coupled on the ROK arm, or the
+                // non-ROK teardown is imminent): the idle watchdog dies HERE (Story 4.4 T4). Cancelling
+                // at the couple is the PERF-2 contract's active half — a coupled pair idling for hours
+                // is the legitimate steady state and must NEVER be reaped (the fire-time coupled
+                // re-check is the missed-cancellation backstop).
+                cancelPendingIdleWatchdog();
                 ingress.writeAndFlush(response.originalFrame());
             } else {
                 // A bind REQUEST from the SMSC is a direction violation mid-handshake: no response PDU will

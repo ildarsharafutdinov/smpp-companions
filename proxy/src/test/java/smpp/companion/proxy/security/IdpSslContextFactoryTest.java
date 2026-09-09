@@ -252,7 +252,8 @@ class IdpSslContextFactoryTest {
                                                        ProxyCompanionProperties.@Nullable Forward forward,
                                                        ProxyCompanionProperties.@Nullable Reverse reverse) {
         return new ProxyCompanionProperties(
-                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE),
+                new ProxyCompanionProperties.Bind(2775, "127.0.0.1", RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE,
+                        RelayTestFixtures.DEFAULT_PRE_COUPLE_IDLE_TIMEOUT),
                 new ProxyCompanionProperties.Memory(1, 1, 1.0, ProxyCompanionProperties.Memory.BudgetCheck.FAIL),
                 new ProxyCompanionProperties.Tls(protocols, tls12, tls13),
                 forward,
