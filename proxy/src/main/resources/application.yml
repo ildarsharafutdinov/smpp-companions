@@ -150,7 +150,8 @@ companion:
   #       trust-store: { path: /run/secrets/idp-truststore.p12, password: changeit }   # never cacerts (AD-13)
   #       # The two adapter budgets (required keys; values below are the documented defaults):
   #       timeout: 4s               # OIDC_TIMEOUT: per provider call, keep within 2s..5s (PERF-3) and
-  #                                  # <= companion.bind.adjudication-deadline — not validated, an operator contract
+  #                                  # <= companion.bind.adjudication-deadline — validated at startup since
+  #                                  # Story 4.4 T5 (out-of-window or over-deadline refuses the boot)
   #       max-in-flight: 64         # concurrent-adjudication admission cap (AD-28(4)); saturated -> fail-closed
   #                                  # DenyIndeterminate WITHOUT a wire call; a rejection threshold, not a queue
   #       # JWT-only adjudication (Story 3.4 T1, 2026-08-27): the token endpoint must issue JWT access

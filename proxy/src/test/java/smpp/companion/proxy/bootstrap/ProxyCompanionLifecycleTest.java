@@ -266,13 +266,14 @@ class ProxyCompanionLifecycleTest {
     }
 
     @Test
-    @DisplayName("source pin: the walk's order (deny → drain → release → quiesce) and the "
-            + "EXPLICIT quiesce args (never Netty's 2s default)")
+    @DisplayName("source pin: the walk's order (deny → drain → release → quiesce), the "
+            + "EXPLICIT quiesce args (never Netty's 2s default), and the 4.4 T5 bounded await")
     void theWalkOrderAndExplicitQuiesceAreSourcePinned() throws IOException {
         // The MetricsEndpointTest scan idiom (test CWD = the proxy module; `clean build` covers the
         // incremental UP-TO-DATE trap for source scans). BELT ONLY since Story 4.3 T6: the order
         // and the throw-path are pinned BEHAVIORALLY — the OBS-016 six-event chain and the
-        // throw-path quiesce rows (this suite + GracefulShutdownRacesTest).
+        // throw-path quiesce rows (this suite + GracefulShutdownRacesTest) — and since 4.4 T5 so
+        // is the quiesce bound (the wedged-loop row above).
         Path src = Path.of("src/main/java/smpp/companion/proxy/bootstrap/ProxyCompanionLifecycle.java");
         assertThat(Files.exists(src)).as("coordinator source present (test CWD = proxy module)").isTrue();
         String code = Files.readString(src);
@@ -285,6 +286,15 @@ class ProxyCompanionLifecycleTest {
         assertThat(code).as("the quiesce call passes the explicit args")
                 .contains("shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS");
         assertThat(code).as("never Netty's 2s-default no-args quiesce").doesNotContain("shutdownGracefully()");
+        // Story 4.4 T5: the termination await is BOUNDED by the named constant, and the
+        // uninterruptible wait on the graceful future is gone (the wedged-loop row is the
+        // behavioral pin; this is the belt).
+        assertThat(code).as("the quiesce termination await is bounded by the named constant")
+                .contains("QUIESCE_AWAIT_BOUND_MS = 3_000");
+        assertThat(code).as("the bounded termination await joins the quiesce")
+                .contains("awaitTermination(QUIESCE_AWAIT_BOUND_MS");
+        assertThat(code).as("never the uninterruptible wait on the graceful future (4.4 T5)")
+                .doesNotContain("syncUninterruptibly");
         // The walk ORDER (the 5-step spine's steps 2-5, in stop() body order): deny < the drain
         // step < release < quiesce. A re-ordered or dropped step goes RED here.
         int deny = code.indexOf("adapter.deny()");
@@ -640,6 +650,81 @@ class ProxyCompanionLifecycleTest {
             hold.countDown();   // exception-safe: never strand the parked stand-in handler
             server.stop(0);
             group.shutdownGracefully().syncUninterruptibly();   // no-op re-fire if the quiesce ran
+        }
+    }
+
+    // ── Story 4.4 T5 (satellite a): the quiesce outer bound — a wedged loop task cannot stall shutdown ──
+
+    @Test
+    @DisplayName("Story 4.4 T5 quiesce outer bound: a loop task wedged on the shared loop cannot stall "
+            + "shutdown — stop() RETURNS inside the bound (ONE WARN-and-proceed naming it), never an "
+            + "uninterruptible stall")
+    void aWedgedLoopTaskCannotStallShutdownPastTheQuiesceBound() throws Exception {
+        Logger logger = (Logger) LoggerFactory.getLogger(ProxyCompanionLifecycle.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        EventLoopGroup group = newGroup();
+        ProxyCompanionLifecycle coordinator = idleCoordinator(new AlwaysAllowBindCredentialVerifier(), group);
+        CountDownLatch taskRunning = new CountDownLatch(1);
+        CountDownLatch wedge = new CountDownLatch(1);
+        // The walk runs on its own thread (the stopAdvancingTheClock discipline): the RED-on-neuter
+        // mutation (reverting to the uninterruptible wait on the graceful future) must fail this row
+        // as a BOUNDED join timeout, never hang the test JVM on stop() itself.
+        Thread stopper = new Thread(coordinator::stop, "quiesce-bound-stopper");
+        stopper.setDaemon(true);
+        try {
+            appender.start();
+            logger.addAppender(appender);
+            coordinator.start();
+            // THE WEDGE: one task blocking the ONE loop thread on a latch only the finally counts
+            // down — the wedged-handler shape. Netty's graceful future caps the GRACEFUL period
+            // (the 2s constant), never this thread's death, so only the quiesce outer bound
+            // (3s = 2s graceful cap + 1s thread-death slack) can return the walk.
+            group.execute(() -> {
+                taskRunning.countDown();
+                try {
+                    wedge.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(taskRunning.await(5, TimeUnit.SECONDS),
+                    "the wedge task must own the loop thread before the walk begins");
+
+            long start = System.nanoTime();
+            stopper.start();
+            stopper.join(TimeUnit.SECONDS.toMillis(8));
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+            assertThat(stopper.isAlive())
+                    .as("stop() RETURNED inside the quiesce outer bound — the old uninterruptible "
+                            + "wait on the graceful future hangs here and this row goes RED")
+                    .isFalse();
+            assertThat(elapsedMs)
+                    .as("the walk returned inside the bound (3s) plus CI slack")
+                    .isLessThan(6_000L);
+            assertThat(group.isShuttingDown())
+                    .as("the graceful shutdown was issued before the bounded await")
+                    .isTrue();
+            assertThat(group.isTerminated())
+                    .as("fail-closed in OUTCOME, not in loop death — the wedged thread provably "
+                            + "OUTLIVES the walk it could not stall")
+                    .isFalse();
+
+            List<ILoggingEvent> warns = appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN).toList();
+            assertThat(warns).as("exactly ONE WARN — the bounded WARN-and-proceed").hasSize(1);
+            assertThat(warns.get(0).getFormattedMessage())
+                    .as("the WARN names the bound and the destroy-backstop guarantee")
+                    .contains("did not terminate within 3000ms")
+                    .contains("proceeding with the shutdown");
+        } finally {
+            // Exception-safe teardown (the house rule): the wedge latch MUST release whatever the
+            // assertions did, the stopper join stays bounded even on RED, and the group release
+            // completes only after the wedge freed the loop thread.
+            wedge.countDown();
+            stopper.join(TimeUnit.SECONDS.toMillis(10));
+            logger.detachAppender(appender);
+            appender.stop();
+            group.shutdownGracefully().syncUninterruptibly();   // no-op re-fire once the wedge released
         }
     }
 

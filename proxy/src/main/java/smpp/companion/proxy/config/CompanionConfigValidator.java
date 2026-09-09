@@ -16,6 +16,7 @@ import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -42,9 +43,11 @@ import org.jspecify.annotations.Nullable;
  * existence/readability for {@code client-secret-path} and the IdP {@code trust-store.path}.
  * Structural conformance of the oidc node (requiredness, ranges) is carried by annotations; deeper
  * material checks (the trust-store PKIX load) happen when the Epic-3 adapter builds its SSLContext
- * &mdash; a bad store refuses startup at bean init, fail-closed. The {@code oidc.timeout} window
- * (2s&ndash;5s, PERF-3) is deliberately NOT validated here &mdash; it is an operator contract
- * documented in application.yml.
+ * &mdash; a bad store refuses startup at bean init, fail-closed. Since Story 4.4 T5 (the 4.2-ledger
+ * oidc-window item) the {@code oidc.timeout} PERF-3 window (inclusive 2s&ndash;5s) and its relation
+ * to {@code companion.bind.adjudication-deadline} ARE validated here, reverse-cell-scoped (the only
+ * cells with an oidc node, AD-12 amended): an out-of-window or over-deadline value refuses startup;
+ * until then they were an unvalidated operator contract documented in application.yml.
  *
  * <p><b>Pre-pass and why most defensive null guards were deleted.</b> {@link #isValid} first validates
  * each non-null nested record (bind/forward/memory/reverse/tls) with a cached {@link Validator}, which
@@ -103,6 +106,17 @@ public final class CompanionConfigValidator
      * Protocols below the AD-34 TLS 1.2 floor (SEC-061), upper-cased for case-insensitive matching.
      */
     private static final Set<String> BELOW_TLS_1_2 = Set.of("SSLV3", "TLSV1", "TLSV1.0", "TLSV1.1");
+
+    /**
+     * The PERF-3 per-call provider-budget floor (INCLUSIVE — 2s is a legal value; Story 4.4 T5).
+     * The window's lower edge: below it a provider stall cannot even consume its own budget; above
+     * the ceiling the release await ({@code oidc.timeout + 1s}) would push the AD-22 shutdown walk
+     * past the 30s per-phase ceiling — the 4.2-ledger bounded-exit gap this guard closes.
+     */
+    private static final Duration OIDC_TIMEOUT_FLOOR = Duration.ofSeconds(2);
+
+    /** The PERF-3 per-call provider-budget ceiling (INCLUSIVE — 5s is a legal value; Story 4.4 T5). */
+    private static final Duration OIDC_TIMEOUT_CEILING = Duration.ofSeconds(5);
 
     /**
      * Cached, thread-safe {@link Validator} used by the pre-pass. Built once per class-loader: the BV
@@ -184,13 +198,13 @@ public final class CompanionConfigValidator
             validateForwardModeC(fmc, contextIds, v);
         }
         if (rma != null) {
-            validateReverseModeA(rma, v);
+            validateReverseModeA(rma, p.bind(), v);
         }
         if (rmb != null) {
-            validateReverseModeB(rmb, v);
+            validateReverseModeB(rmb, p.bind(), v);
         }
         if (rmc != null) {
-            validateReverseModeC(rmc, v);
+            validateReverseModeC(rmc, p.bind(), v);
         }
     }
 
@@ -214,16 +228,18 @@ public final class CompanionConfigValidator
         requireRouting(mc.routing(), contextIds, prefix + ".routing", v);
     }
 
-    private void validateReverseModeA(ProxyCompanionProperties.ReverseModeA ma, List<String> v) {
+    private void validateReverseModeA(ProxyCompanionProperties.ReverseModeA ma,
+                                      ProxyCompanionProperties.@Nullable Bind bind, List<String> v) {
         String prefix = "companion.reverse.mode-a";
         requireSmsc(ma.smsc(), prefix + ".smsc", v);         // SEC-059: reverse requires the SMSC endpoint.
         requireServerCert(ma.serverCert(), prefix + ".server-cert", v); // SEC-056: internet-leg listener material.
-        requireOidc(ma.oidc(), prefix + ".oidc", v);         // AD-12 amended: the reverse adjudicates.
+        requireOidc(ma.oidc(), bind, prefix + ".oidc", v);   // AD-12 amended: the reverse adjudicates.
         // NO trust store on reverse+A: one-way TLS PRESENTS a cert, it does not validate peers. The
         // [B] Mode A accepted-risk entry (spine register) owns that posture.
     }
 
-    private void validateReverseModeB(ProxyCompanionProperties.ReverseModeB mb, List<String> v) {
+    private void validateReverseModeB(ProxyCompanionProperties.ReverseModeB mb,
+                                      ProxyCompanionProperties.@Nullable Bind bind, List<String> v) {
         String prefix = "companion.reverse.mode-b";
         requireSmsc(mb.smsc(), prefix + ".smsc", v);
         // SEC-052: Mode B reverse requires opt-in ack; without it refuse. With it the loud plaintext
@@ -232,15 +248,16 @@ public final class CompanionConfigValidator
             v.add("companion.reverse.mode-b (plaintext) requires explicit opt-in ("
                     + prefix + ".acknowledged=true) — refusing to start (SEC-052/AD-17).");
         }
-        requireOidc(mb.oidc(), prefix + ".oidc", v);         // "plaintext + ROPC": Mode B still adjudicates.
+        requireOidc(mb.oidc(), bind, prefix + ".oidc", v);   // "plaintext + ROPC": Mode B still adjudicates.
     }
 
-    private void validateReverseModeC(ProxyCompanionProperties.ReverseModeC mc, List<String> v) {
+    private void validateReverseModeC(ProxyCompanionProperties.ReverseModeC mc,
+                                      ProxyCompanionProperties.@Nullable Bind bind, List<String> v) {
         String prefix = "companion.reverse.mode-c";
         requireSmsc(mc.smsc(), prefix + ".smsc", v);
         requireServerCert(mc.serverCert(), prefix + ".server-cert", v); // SEC-056: internet-leg listener material.
         requireTrustStore(mc.trustStore(), prefix + ".trust-store", v); // SEC-050: the REQUIRE-side anchor.
-        requireOidc(mc.oidc(), prefix + ".oidc", v);         // AD-12 amended: the reverse adjudicates.
+        requireOidc(mc.oidc(), bind, prefix + ".oidc", v);   // AD-12 amended: the reverse adjudicates.
     }
 
     /**
@@ -306,8 +323,11 @@ public final class CompanionConfigValidator
     /**
      * {@code oidc} is {@code @NotNull} on reverse A/B/C → guaranteed non-null by the pre-pass; its
      * own {@code @NotNull}/{@code @NotBlank}/{@code @Min}/{@code @DurationMin} components are
-     * surfaced by the pre-pass the same way. This check owns the provider-url URI shape plus FILE
-     * EXISTENCE only — every configured path must point at a real readable file (AD-18). Since the
+     * surfaced by the pre-pass the same way. This check owns the provider-url URI shape, FILE
+     * EXISTENCE (every configured path must point at a real readable file, AD-18), and — since
+     * Story 4.4 T5 — the two PERF-3 budget guards: the INCLUSIVE [2s, 5s] window and the
+     * &le; {@code companion.bind.adjudication-deadline} relation (reverse-scoped for free: the only
+     * callers are the three reverse arms, the sole oidc carriers per the AD-12 amendment). Since the
      * 2026-08-19 T2 FIXME pass the component is {@link URI}-typed: a non-URI string refuses at BIND
      * time (conversion failure), and the HOST + scheme checks live HERE ({@code https://:8443},
      * {@code http://...}) — the config layer is the deferred 2.1-era scheme-only gap's final home
@@ -316,8 +336,13 @@ public final class CompanionConfigValidator
      * component {@code @NotNull} (empty strings convert to null for non-String targets). Deeper
      * material validation is the T2+
      * adapter's job (its SSLContext build refuses startup on a bad store, fail-closed).
+     *
+     * @param bind the root {@code companion.bind.*} record, read ONLY by the deadline relation; may
+     *        be null via the root-level {@code @NotNull} blind spot (an entirely omitted bind node)
+     *        — see the relation guard below for why that skips rather than NPEs
      */
-    private void requireOidc(ProxyCompanionProperties.Oidc oidc, String prefix, List<String> v) {
+    private void requireOidc(ProxyCompanionProperties.Oidc oidc,
+                             ProxyCompanionProperties.@Nullable Bind bind, String prefix, List<String> v) {
         URI providerUrl = oidc.providerUrl();
         // Absent AND blank both bind to null (empty strings convert to null for non-String targets)
         // and are refused by the component @NotNull in the pre-pass — blank and absent are ONE arm
@@ -330,6 +355,25 @@ public final class CompanionConfigValidator
         }
         requireReadableFile(oidc.clientSecretPath(), "OIDC client secret", prefix + ".client-secret-path", v);
         requireReadableFile(oidc.trustStore().path(), "IdP trust store", prefix + ".trust-store.path", v);
+        // Story 4.4 T5 (the 4.2-ledger oidc-window item): the PERF-3 window, INCLUSIVE — both edges
+        // are legal and the defaults (4s, matching adjudication-deadline) sit mid-window. An
+        // out-of-window value both starves real adjudications (< 2s) and stretches release's
+        // awaitTermination budget (oidc.timeout + 1s) past the 30s shutdown-phase ceiling (> 5s).
+        Duration timeout = oidc.timeout();
+        if (timeout.compareTo(OIDC_TIMEOUT_FLOOR) < 0 || timeout.compareTo(OIDC_TIMEOUT_CEILING) > 0) {
+            v.add(prefix + ".timeout=" + timeout + " must be within 2s..5s (PERF-3) — refusing to start.");
+        }
+        // ROOT-LEVEL @NotNull blind spot (the validateTls/validateMemoryInputs commentary): the
+        // pre-pass validated the nested records in isolation, so an entirely omitted
+        // companion.bind.* node reaches here as null — that boot already refuses through Spring's
+        // outer root-cascade, so the RELATION is skipped (never an NPE); the window check above
+        // needs no bind and still fires.
+        if (bind != null && timeout.compareTo(bind.adjudicationDeadline()) > 0) {
+            v.add(prefix + ".timeout=" + timeout + " exceeds companion.bind.adjudication-deadline="
+                    + bind.adjudicationDeadline()
+                    + " (the per-call provider budget must fit inside the whole-adjudication budget,"
+                    + " PERF-3) — refusing to start.");
+        }
     }
 
     /**

@@ -47,18 +47,25 @@ import smpp.companion.proxy.security.RopcBindCredentialVerifier;
  * <li><b>quiesce</b> — the shared relay loop dies HERE, last, with an EXPLICIT short quiet period
  * ({@link #SHUTDOWN_QUIET_PERIOD_MS}/{@link #SHUTDOWN_TIMEOUT_MS}, the
  * {@code MetricsEndpointLifecycle} pattern — never Netty's 2s default, whose per-close cost the
- * deferred-work ledger carried until this bean), awaited so the app phase completes with the loop
- * threads provably gone.</li>
+ * deferred-work ledger carried until this bean), then — since Story 4.4 T5 — a BOUNDED termination
+ * await ({@link #QUIESCE_AWAIT_BOUND_MS}): the graceful future caps the GRACEFUL period, never
+ * thread death, so a loop task wedged in a handler would stall the old uninterruptible wait on it
+ * past every ceiling. The bound trades the loop-thread join away, never the exit — ONE
+ * WARN-and-proceed, fail-closed in OUTCOME (shutdown proceeds); the group bean's
+ * {@code destroyMethod="shutdownGracefully"} backstop still guarantees loop death at full-app
+ * close.</li>
  * </ol>
  *
  * <p><b>Bounded exit.</b> The walk's worst case is the drain deadline
  * ({@code companion.shutdown.drain-timeout}, default 10s — STRICTLY below the per-phase ceiling by
  * the documented operator contract, not a validated relation) plus release's await
- * ({@code oidc.timeout + 1s} over the DOCUMENTED [2s, 5s] operator window, PERF-3 — a contract the
- * config layer deliberately does NOT validate, so the bound holds for in-window values only) plus
- * the 2s quiesce cap — at the defaults that is 10s + 6s + 2s, inside the per-phase ceiling
+ * ({@code oidc.timeout + 1s} over the [2s, 5s] PERF-3 window — a window the config layer VALIDATES
+ * since Story 4.4 T5, so an out-of-window value refuses startup instead of stretching this bound)
+ * plus the 3s quiesce outer bound ({@link #QUIESCE_AWAIT_BOUND_MS} — the 2s graceful cap plus 1s
+ * thread-death slack) — at the defaults that is 10s + 6s + 3s, inside the per-phase ceiling
  * {@code spring.lifecycle.timeout-per-shutdown-phase: 30s} (application.yml); a peer that never
- * half-closes is force-closed AT the deadline, so nothing can hang the walk past it (OBS-020).
+ * half-closes is force-closed AT the deadline (OBS-020), and a wedged loop task is bounded past
+ * the same way (WARN-and-proceed at the quiesce bound) — nothing can hang the walk.
  *
  * <p><b>Idempotent end-to-end.</b> The running flag makes a second {@code stop()} a no-op (the
  * house pattern), the adapter's deny/release halves are independently once-guarded, and Netty's
@@ -96,6 +103,20 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
 
     /** The quiesce cap — the per-phase ceiling is 30s; 2s bounds this step's worst case. */
     private static final long SHUTDOWN_TIMEOUT_MS = 2_000;
+
+    /**
+     * The quiesce termination-await outer bound (Story 4.4 T5, the 4.2-ledger quiesce-bound item):
+     * {@code shutdownGracefully}'s returned future caps the GRACEFUL period
+     * ({@link #SHUTDOWN_TIMEOUT_MS}) only, never THREAD death — the old uninterruptible wait on it
+     * could stall the shutdown thread past every ceiling on a loop task wedged inside a handler.
+     * The bound is the graceful cap (2s) plus ~1s thread-death slack — release()'s budget-plus-1s
+     * precedent ({@code RopcBindCredentialVerifier.release()}'s defensive await arm) — and on expiry
+     * the walk WARNs once and PROCEEDS (fail-closed in outcome, not fail-fast): the group bean's
+     * {@code destroyMethod="shutdownGracefully"} backstop still guarantees loop death at full-app
+     * close. A named constant, not a config key — shutdown physics like the two it composes with
+     * (the story adds no new keys beyond T4's pre-couple-idle-timeout).
+     */
+    private static final long QUIESCE_AWAIT_BOUND_MS = 3_000;
 
     /**
      * The drain-poll cadence (Story 4.3 T5): the registry has no completion hook, so the drain body
@@ -173,9 +194,10 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
         }
         running = false;
         // The AD-22 walk (steps 2-5; step 1, the acceptor close, ran at RELAY_ACCEPTOR_PHASE before
-        // this phase began). The quiesce sits in FINALLY: a throwing step must never strand the
-        // shared loop's non-daemon threads past the phase window (the MetricsEndpointLifecycle
-        // stop discipline) — and the adapter's destroy backstop picks up whatever half was skipped.
+        // this phase began). The quiesce sits in FINALLY: a throwing step must still terminate the
+        // shared loop (the MetricsEndpointLifecycle stop discipline) — and since 4.4 T5 the await is
+        // BOUNDED, so neither a throwing step nor a wedged loop task can stall the walk past the
+        // outer bound; the adapter's destroy backstop picks up whatever half was skipped.
         try {
             if (adapter != null) {
                 adapter.deny();   // step 2: deny in-flight — idempotent re-fire (normally a no-op: the adjudication phase above already denied); the fail-closed backstop that the pool can never be released undenied
@@ -185,9 +207,35 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
                 adapter.release();   // step 4: release-await — bounded VT await, provider client close, secret zeroize
             }
         } finally {
+            // Step 5: quiesce the shared loop — explicit short quiet period, then the BOUNDED
+            // termination await (4.4 T5). The graceful future is issued but NEVER waited on
+            // uninterruptibly: it caps the graceful period, not thread death, so a loop task
+            // wedged in a handler would stall that wait indefinitely. On expiry ONE WARN and
+            // PROCEED (fail-closed in outcome — the walk returns; the group bean's destroyMethod
+            // backstop still guarantees loop death at full-app close). A PRE-SET interrupt (the
+            // drain's fail-closed break restores Spring's flag mid-walk) must not degrade this
+            // join the way it does release()'s — the 4.3 interrupted-walk row pins the group
+            // terminated at stop() return — so the flag is saved/cleared around the await and
+            // restored after; a FRESH interrupt during the await takes the second WARN arm.
             relayEventLoopGroup.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS,
-                    TimeUnit.MILLISECONDS)
-                    .syncUninterruptibly();   // step 5: quiesce the shared loop — explicit short quiet period, awaited
+                    TimeUnit.MILLISECONDS);
+            boolean presetInterrupt = Thread.interrupted();
+            try {
+                if (!relayEventLoopGroup.awaitTermination(QUIESCE_AWAIT_BOUND_MS, TimeUnit.MILLISECONDS)) {
+                    log.warn("the shared relay loop did not terminate within {}ms — proceeding with the "
+                            + "shutdown (a wedged loop task cannot stall it past this bound; the group "
+                            + "bean's destroyMethod shutdownGracefully backstop still guarantees loop "
+                            + "death at full-app close; AD-22 fail-closed in outcome)", QUIESCE_AWAIT_BOUND_MS);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("the relay loop quiesce await was interrupted — proceeding with the shutdown "
+                        + "(the destroy backstop still guarantees loop death; AD-22 fail-closed in outcome)");
+            } finally {
+                if (presetInterrupt) {
+                    Thread.currentThread().interrupt();   // preserve Spring's flag across the walk's tail
+                }
+            }
         }
     }
 

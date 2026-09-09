@@ -75,6 +75,7 @@ class CompanionConfigMatrixTest {
             case "forwardA" -> TestCompanionConfigs.forwardA(dir);
             case "forwardC" -> TestCompanionConfigs.forwardC(dir);
             case "reverseA" -> TestCompanionConfigs.reverseA(dir);
+            case "reverseB" -> TestCompanionConfigs.reverseB(dir);   // Story 4.4 T5: the oidc-budget rows
             case "reverseC" -> TestCompanionConfigs.reverseC(dir);
             default -> throw new IllegalArgumentException("unknown base " + kind);
         };
@@ -317,6 +318,64 @@ class CompanionConfigMatrixTest {
                 Arguments.of("not-a-duration", "not-a-duration")); // conversion refusal names the value
     }
 
+    // --- Story 4.4 T5 (satellite b — the 4.2-ledger oidc-window item): the PERF-3 budget guards -------
+
+    @ParameterizedTest(name = "PERF-3: {0} oidc.timeout \"{1}\" -> refuse")
+    @MethodSource("outOfWindowOidcTimeouts")
+    @DisplayName("Story 4.4 T5: an oidc.timeout outside the inclusive 2s..5s window -> refuse "
+            + "(the validator's PERF-3 window guard)")
+    void outOfWindowOidcTimeoutRefuses(String kind, String bad) throws IOException {
+        // The exact INVALID value is BOUND over the base's valid 4s (never the key removed — the
+        // null-vs-blank trap). The guard is reverse-scoped FOR FREE: requireOidc's only callers are
+        // the three reverse arms (the forward cells carry no oidc node, AD-12 amended), so the
+        // spread below exercises all three reverse cells against the one refusal message family.
+        assertRefused(base(kind).put(oidcTimeoutKey(kind), bad),
+                "oidc.timeout " + bad + " on " + kind, "must be within 2s..5s (PERF-3)");
+    }
+
+    static Stream<Arguments> outOfWindowOidcTimeouts() {
+        return Stream.of(
+                Arguments.of("reverseA", "1s"),      // below the floor
+                Arguments.of("reverseA", "1999ms"),  // one millisecond under the inclusive edge
+                Arguments.of("reverseB", "6s"),      // above the ceiling, the Mode B site
+                Arguments.of("reverseC", "6s"));     // above the ceiling, the mTLS-listener site
+    }
+
+    @Test
+    @DisplayName("Story 4.4 T5: oidc.timeout above companion.bind.adjudication-deadline -> refuse "
+            + "(the PERF-3 budget relation — the refusal names BOTH keys with BOTH values)")
+    void oidcTimeoutAboveTheAdjudicationDeadlineRefuses() {
+        // IN-window timeout (the base's 4s), so ONLY the relation is under test: the per-call
+        // provider budget must fit inside the whole-adjudication budget the relay arms (F14). Both
+        // values are BOUND (never key-removal): the deadline drops to 2s under the unchanged 4s.
+        assertRefused(TestCompanionConfigs.reverseA(dir)
+                        .put("companion.reverse.mode-a.oidc.timeout", "4s")
+                        .put("companion.bind.adjudication-deadline", "2s"),
+                "oidc.timeout > adjudication-deadline", "exceeds companion.bind.adjudication-deadline");
+    }
+
+    @ParameterizedTest(name = "PERF-3 edge: oidc.timeout={0} (the inclusive window edge) boots")
+    @ValueSource(strings = {"2s", "5s"})
+    @DisplayName("Story 4.4 T5: oidc.timeout at the 2s/5s window edges boots — the window is INCLUSIVE")
+    void oidcTimeoutAtTheInclusiveWindowEdgesBoots(String edge) {
+        // A guard written with a strict inequality on either edge would refuse the DOCUMENTED
+        // boundaries — this row keeps [2s, 5s] inclusive (the 4s default sits mid-window). The
+        // deadline rises to the ceiling with the 5s edge, so the RELATION sits exactly AT its own
+        // <= boundary there (equal is legal) while staying satisfiable — never refusing the edge it
+        // exists to admit.
+        runner(TestCompanionConfigs.reverseB(dir)
+                        .put("companion.reverse.mode-b.oidc.timeout", edge)
+                        .put("companion.bind.adjudication-deadline", "5s"))
+                .run(ctx -> assertThat(ctx)
+                        .as("oidc.timeout=" + edge + " is the inclusive window edge, not a refusal")
+                        .hasNotFailed());
+    }
+
+    /** The reverse cell's oidc.timeout key for a base() kind ("reverseA" -> companion.reverse.mode-a.oidc.timeout). */
+    private static String oidcTimeoutKey(String kind) {
+        return "companion.reverse.mode-" + Character.toLowerCase(kind.charAt("reverse".length())) + ".oidc.timeout";
+    }
+
     // --- AC3 secrets (SEC-060) + trust store 5-state (SEC-050) -------------------------------
 
     @ParameterizedTest(name = "SEC-060: missing {0} -> refuse")
@@ -413,11 +472,10 @@ class CompanionConfigMatrixTest {
     //     surface. Structural conformance is annotation-level (@NotNull requiredness — the two
     //     budget keys are required, their defaults live in the application.yml reverse template;
     //     @Min(1) on max-in-flight, @NotBlank on client-id); the
-    //     validator adds FILE EXISTENCE for every configured path. The
-    //     timeout window (2s..5s, PERF-3) and the deeper material checks (trust-store PKIX load) are
-    //     deliberately NOT validated here — they are an operator contract (yml comment) and the
-    //     T2+ adapter's SSLContext build
-    //     (fail-closed bean-init refusal) respectively.
+    //     validator adds FILE EXISTENCE for every configured path — and since Story 4.4 T5 the
+    //     timeout window (2s..5s, PERF-3) and its <= adjudication-deadline relation (the rows in
+    //     the 4.4 T5 section above). The deeper material checks (trust-store PKIX load) stay with
+    //     the T2+ adapter's SSLContext build (fail-closed bean-init refusal).
     //     (2026-08-27, Story 3.4 T2: the third former budget key — the key-cache TTL — was REMOVED
     //     with local JWT verification; its @DurationMin row and requiredness value retired with it,
     //     and the stale-key refusal row below pins the loud retirement.) ---

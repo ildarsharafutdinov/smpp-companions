@@ -281,12 +281,13 @@ public record ProxyCompanionProperties(
      *        file existence/readability at bind time &mdash; the full 5-state PKIX load is the T2+
      *        adapter's SSLContext build (fail-closed bean-init refusal), not the config validator.
      * @param timeout the per-call HTTP budget for one provider round trip (the token endpoint).
-     *        NOT validator-enforced: the inclusive window [2s, 5s] (PERF-3) and the
-     *        {@code <= companion.bind.adjudication-deadline} relation are an OPERATOR CONTRACT
-     *        documented in application.yml (the OIDC_TIMEOUT comment) &mdash; the per-call budget
-     *        must fit inside the whole-adjudication budget the relay hands the verifier. Required
-     *        key; the yml reverse template documents {@code 4s} (matching the adjudication-deadline
-     *        default) &mdash; there is no in-record default.
+     *        Validator-enforced since Story 4.4 T5: the inclusive window [2s, 5s] (PERF-3) and the
+     *        {@code <= companion.bind.adjudication-deadline} relation refuse startup at bind time
+     *        ({@code CompanionConfigValidator}, reverse cells) &mdash; until then they were an
+     *        operator contract documented in application.yml (the OIDC_TIMEOUT comment); the
+     *        per-call budget must fit inside the whole-adjudication budget the relay hands the
+     *        verifier. Required key; the yml reverse template documents {@code 4s} (matching the
+     *        adjudication-deadline default) &mdash; there is no in-record default.
      * @param maxInFlight the admission cap on CONCURRENT bind adjudications (AD-28(4)). The adapter
      *        owns a single bounded virtual-thread executor of exactly this capacity, guarded by an
      *        admission semaphore: each adjudication holds one permit for its whole lifetime, and a
@@ -308,7 +309,7 @@ public record ProxyCompanionProperties(
             @NotNull(message = "OIDC trust-store is required (IdP trust never falls back to cacerts, AD-13/AD-26) — refusing to start.")
             @Valid TrustStore trustStore,         // .trust-store (file-existence at bind; 5-state PKIX load at the T2+ adapter bean init)
             @NotNull(message = "OIDC timeout is required (reverse, PERF-3) — refusing to start.")
-            Duration timeout,                     // .timeout (2s..5s window + <= adjudication-deadline = documented operator contract, NOT validated; yml documents 4s)
+            Duration timeout,                     // .timeout (2s..5s window + <= adjudication-deadline — validator-enforced since Story 4.4 T5; yml documents 4s)
             @NotNull(message = "OIDC max-in-flight is required (reverse, AD-28(4)) — refusing to start.")
             @Min(value = 1, message = "oidc.max-in-flight must be >= 1 — refusing to start (AD-28(4)).")
             Integer maxInFlight                   // .max-in-flight (admission cap; yml documents 64 — no in-record default)
@@ -460,8 +461,9 @@ public record ProxyCompanionProperties(
      *         registry against (a Clock-injectable deadline &mdash; the drain body, Story 4.3 T5).
      *         Default {@code 10s} in {@code application.yml}; keeping it STRICTLY below the 30s
      *         {@code spring.lifecycle.timeout-per-shutdown-phase} ceiling is an OPERATOR CONTRACT
-     *         documented there (the oidc.timeout pattern: the relation is not validated, but a
-     *         deadline at/above the phase window would let Spring cut the walk mid-drain). Positive
+     *         documented there (unlike the oidc.timeout window &mdash; validated since Story 4.4
+     *         T5 &mdash; this relation to the phase ceiling is not validated: a deadline at/above
+     *         the phase window would let Spring cut the walk mid-drain). Positive
      *         &mdash; zero and negative refuse startup (compact-ctor guard, AD-17).
      */
     public record Shutdown(
