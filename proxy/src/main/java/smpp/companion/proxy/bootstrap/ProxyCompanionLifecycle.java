@@ -34,8 +34,8 @@ import smpp.companion.proxy.security.RopcBindCredentialVerifier;
  * above already denied); it stands as the walk's own fail-closed backstop so the coordinator can
  * never release an undenied pool, whatever happened above it.</li>
  * <li><b>drain</b> — the step-3 BODY ({@link #drainRelayedConnections()}, since Story 4.3 T5):
- * snapshot the registry (the read-only {@link ConnectionRegistry#snapshot()} enumeration — an empty
- * registry is the instant no-op, never a deadline sleep); otherwise poll {@code registry.size() == 0}
+ * check the registry (an empty registry is the instant no-op, never a deadline sleep); otherwise
+ * poll {@code registry.size() == 0}
  * against the {@code companion.shutdown.drain-timeout} deadline on the injectable {@link Clock}
  * (in-flight writes flush, peers half-close — post-couple relaying kept running through step 1's
  * gate); at the deadline the remainder is force-closed through the manager's drain teardown
@@ -100,8 +100,9 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
     /**
      * The drain-poll cadence (Story 4.3 T5): the registry has no completion hook, so the drain body
      * polls {@code size() == 0} — 50ms is fine-grained enough that the force-close lands within one
-     * interval of the configured deadline and cheap enough for a shutdown thread (one volatile map
-     * {@code size()} read per tick).
+     * interval of the configured deadline and cheap enough for a shutdown thread (a single
+     * {@code ConcurrentHashMap#size()} summation per tick — baseCount plus CounterCells, never a
+     * volatile read, but uncontended on the shutdown thread).
      */
     private static final long DRAIN_POLL_INTERVAL_MS = 50;
 
@@ -122,8 +123,9 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
      * @param relayEventLoopGroup the ONE shared relay event loop bean (AD-1/AD-2) — the loop whose
      *                            quiesce is the walk's final step
      * @param registry            the pair-storage bean — the drain body's READ surface only
-     *                            ({@code snapshot()}/{@code size()}; every mutation stays behind the
-     *                            manager, the Story 4.3 mutation fence)
+     *                            ({@code size()} here; the deadline force-close's {@code snapshot()}
+     *                            enumeration runs manager-side, and every mutation stays behind the
+     *                            manager — the Story 4.3 mutation fence)
      * @param manager             the pair-lifecycle state manager — the drain deadline's force-close
      *                            runs through it ({@code forceCloseForDrain()}, Story 4.3 T5)
      * @param shutdown            the {@code companion.shutdown.*} drain inputs (the Clock-injectable
@@ -194,7 +196,7 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
      * was deliberately empty). Poll, not callbacks: the registry exposes no completion hook, so
      * {@code size() == 0} IS the completion signal its javadoc names. Three phases:
      * <ol>
-     * <li><b>Empty registry &rarr; instant no-op.</b> The point-in-time {@link ConnectionRegistry#snapshot()}
+     * <li><b>Empty registry &rarr; instant no-op.</b> The {@link ConnectionRegistry#size()} emptiness
      * read short-circuits BEFORE any deadline arithmetic or sleeping — the idle-walk bounds
      * (&lt;1.5s / &lt;5s) never pay for a drain window there is nothing to wait on.</li>
      * <li><b>Drain to the deadline.</b> Poll {@code registry.size()} against the
@@ -202,7 +204,11 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
      * in-flight writes flush and peers half-close on the still-live loop (each peer FIN tears its
      * own pair down via {@code channelInactive}, so the count drops without this thread touching a
      * channel). An interrupt breaks the poll fail-closed (flag restored, force-close below, walk
-     * continues — never a hang holding a stopped process hostage).</li>
+     * continues — never a hang holding a stopped process hostage). The restored flag also flips
+     * step 4's bounded {@code awaitTermination} to its interrupted arm while any VT is still
+     * unwinding ({@code RopcBindCredentialVerifier.release()} logs one WARN and proceeds straight
+     * to the hard close; an already-terminated pool returns true before ever observing the flag) —
+     * the VT join is traded away, never the exit bound.</li>
      * <li><b>Deadline &rarr; bulk force-close.</b> Whatever remains is force-closed in bulk through
      * {@link RelayStateManager#forceCloseForDrain()} ({@code SHUTDOWN_DRAIN} stashed on both legs of
      * every won pair, both legs closed — OBS-020: no half-flushed PDU, a peer that never half-closes
@@ -215,7 +221,7 @@ public class ProxyCompanionLifecycle implements SmartLifecycle {
      * straight past the budget.
      */
     private void drainRelayedConnections() {
-        if (registry.snapshot().isEmpty()) {
+        if (registry.size() == 0) {
             return; // empty registry: the instant no-op walk — the deadline is never even computed
         }
         Instant deadline = clock.instant().plus(shutdown.drainTimeout());

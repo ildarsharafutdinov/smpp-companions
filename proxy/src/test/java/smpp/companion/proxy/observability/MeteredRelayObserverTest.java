@@ -19,6 +19,7 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
 import smpp.companion.proxy.security.SystemId;
 import smpp.companion.proxy.security.Verdict;
+import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -160,6 +161,6 @@ class MeteredRelayObserverTest {
                                                 "beta", "reverse2.internal", 2776, null))),
                         null, null),
                 null, null,
-                new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(10)));
+                new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
     }
 }

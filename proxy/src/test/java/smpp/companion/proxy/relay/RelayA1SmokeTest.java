@@ -101,7 +101,6 @@ class RelayA1SmokeTest {
     private static final int OPAQUE_DLR_TAG = 0x00000105;
 
     /** The bind_resp wire contract, pinned as LITERALS (independent of the production constants). */
-    private static final int BIND_TRANSCEIVER = 0x00000009;
     private static final int BIND_TRANSCEIVER_RESP = 0x80000009;
 
     /** The codec module's golden-vector corpus (sibling module; :proxy:test CWD = the proxy dir). */
@@ -160,13 +159,13 @@ class RelayA1SmokeTest {
             + "socket — zero DLR cross-bleed")
     void twoConcurrentBindsSameSystemIdZeroDlrCrossBleed() throws IOException {
         try (Socket clientA = connectLegacyClient(); Socket clientB = connectLegacyClient()) {
-            byte[] bindA = bindRequest(1, "legacy1", "pw123456");
-            byte[] bindB = bindRequest(2, "legacy1", "pw123456");
+            byte[] bindA = RelayTestFixtures.bindRequest(1, "legacy1", "pw123456");
+            byte[] bindB = RelayTestFixtures.bindRequest(2, "legacy1", "pw123456");
             // CONCURRENT handshakes: both binds are on the wire before either response is read.
-            writePdu(clientA, bindA);
-            writePdu(clientB, bindB);
-            assertRokBindResp(readPdu(clientA), 1);
-            assertRokBindResp(readPdu(clientB), 2);
+            RelayTestFixtures.writePdu(clientA, bindA);
+            RelayTestFixtures.writePdu(clientB, bindB);
+            assertRokBindResp(RelayTestFixtures.readPdu(clientA), 1);
+            assertRokBindResp(RelayTestFixtures.readPdu(clientB), 2);
 
             // Each bind coupled to its OWN egress pair: two distinct SMSC sessions, each carrying
             // the AD-14 byte-exact original bind. Match by content (session order is an accept race).
@@ -183,10 +182,10 @@ class RelayA1SmokeTest {
             smppSideA.deliver(deliverToA);
             smppSideB.deliver(deliverToB);
 
-            assertThat(readPdu(clientA))
+            assertThat(RelayTestFixtures.readPdu(clientA))
                     .as("the deliver_sm injected on pair A's SMSC socket reaches legacy client A, byte-exact")
                     .isEqualTo(deliverToA);
-            assertThat(readPdu(clientB))
+            assertThat(RelayTestFixtures.readPdu(clientB))
                     .as("the deliver_sm injected on pair B's SMSC socket reaches legacy client B, byte-exact")
                     .isEqualTo(deliverToB);
             // ZERO cross-bleed and no duplicates: nothing further arrives on either leg (and neither
@@ -216,8 +215,8 @@ class RelayA1SmokeTest {
     void rel1RoundtripNoDropDupCorruptionBoundariesPreserved() throws IOException {
         byte[] goldenBind = goldenBindTransceiverRequest();
         try (Socket legacy = connectLegacyClient()) {
-            writePdu(legacy, goldenBind);
-            assertRokBindResp(readPdu(legacy), sequenceOf(goldenBind));
+            RelayTestFixtures.writePdu(legacy, goldenBind);
+            assertRokBindResp(RelayTestFixtures.readPdu(legacy), sequenceOf(goldenBind));
 
             MockSmsc.Session smppSide = smsc.awaitSession(0);
             assertThat(smppSide.bindFrame())
@@ -232,7 +231,7 @@ class RelayA1SmokeTest {
                     opaquePdu(SUBMIT_SM, 202, "SUBMIT-TWO"),
                     opaquePdu(SUBMIT_SM, 203, "SUBMIT-THREE"),
                     opaquePdu(SUBMIT_SM, 204, "SUBMIT-FOUR"));
-            writeRaw(legacy, concat(submits));
+            RelayTestFixtures.writeRaw(legacy, RelayTestFixtures.concat(submits));
             assertThat(smppSide.awaitPdus(4))
                     .as("REL-1: no drop, no duplicate, no corruption, order preserved (one capture per "
                             + "framed PDU — boundaries preserved)")
@@ -244,10 +243,10 @@ class RelayA1SmokeTest {
                     opaquePdu(OPAQUE_DLR_TAG, 301, "DLR-ONE"),
                     opaquePdu(OPAQUE_DLR_TAG, 302, "DLR-TWO"),
                     opaquePdu(OPAQUE_DLR_TAG, 303, "DLR-THREE"));
-            smppSide.deliverAll(concat(delivers));
-            assertThat(readPdu(legacy)).isEqualTo(delivers.get(0));
-            assertThat(readPdu(legacy)).isEqualTo(delivers.get(1));
-            assertThat(readPdu(legacy)).isEqualTo(delivers.get(2));
+            smppSide.deliverAll(RelayTestFixtures.concat(delivers));
+            assertThat(RelayTestFixtures.readPdu(legacy)).isEqualTo(delivers.get(0));
+            assertThat(RelayTestFixtures.readPdu(legacy)).isEqualTo(delivers.get(1));
+            assertThat(RelayTestFixtures.readPdu(legacy)).isEqualTo(delivers.get(2));
             assertNoFurtherPdu(legacy);
 
             assertThat(harness.registry().size())
@@ -269,8 +268,8 @@ class RelayA1SmokeTest {
     void realSocketHalfCloseAndRstTearDownBothLegsAndAreObserved() throws IOException {
         // (a) FIN — the client half-closes (shutdownOutput): the pair tears down, observed on both legs.
         try (Socket legacy = connectLegacyClient()) {
-            writePdu(legacy, bindRequest(7, "legacy1", "pw123456"));
-            assertRokBindResp(readPdu(legacy), 7);
+            RelayTestFixtures.writePdu(legacy, RelayTestFixtures.bindRequest(7, "legacy1", "pw123456"));
+            assertRokBindResp(RelayTestFixtures.readPdu(legacy), 7);
             MockSmsc.Session smppSide = smsc.awaitSession(0);
 
             legacy.shutdownOutput(); // FIN — read side stays open (a true half-close)
@@ -291,8 +290,8 @@ class RelayA1SmokeTest {
 
         // (b) RST — SO_LINGER(0) close sends a reset: both legs down, teardown observed again.
         Socket rst = connectLegacyClient();
-        writePdu(rst, bindRequest(8, "legacy1", "pw123456"));
-        assertRokBindResp(readPdu(rst), 8);
+        RelayTestFixtures.writePdu(rst, RelayTestFixtures.bindRequest(8, "legacy1", "pw123456"));
+        assertRokBindResp(RelayTestFixtures.readPdu(rst), 8);
         MockSmsc.Session smppSide2 = smsc.awaitSession(1);
         try {
             rst.setSoLinger(true, 0);
@@ -364,78 +363,10 @@ class RelayA1SmokeTest {
 
     // ---------- hand-authored PDU builders (raw bytes — independent of the codec) ----------
 
-    private static byte[] bindRequest(int sequence, String systemId, String password) {
-        byte[] id = ascii(systemId);
-        byte[] pw = ascii(password);
-        byte[] type = ascii("SMPP");
-        byte[] range = ascii("");
-        int body = (id.length + 1) + (pw.length + 1) + (type.length + 1) + 3 + (range.length + 1);
-        return assemble(BIND_TRANSCEIVER, 0, sequence, body, out -> {
-            out.put(id).put((byte) 0);
-            out.put(pw).put((byte) 0);
-            out.put(type).put((byte) 0);
-            out.put((byte) 0x34).put((byte) 0).put((byte) 0);
-            out.put(range).put((byte) 0);
-        });
-    }
-
     /** An OPAQUE non-bind PDU carrying an ASCII tag body (never parsed — AD-3; the tag is the probe). */
     private static byte[] opaquePdu(int commandId, int sequence, String tag) {
-        byte[] body = ascii(tag);
-        return assemble(commandId, 0, sequence, body.length, out -> out.put(body));
-    }
-
-    private interface BodyWriter {
-        void writeTo(ByteBuffer out);
-    }
-
-    private static byte[] assemble(int commandId, int commandStatus, int sequence, int bodyLen, BodyWriter writer) {
-        ByteBuffer out = ByteBuffer.allocate(16 + bodyLen);
-        out.putInt(16 + bodyLen).putInt(commandId).putInt(commandStatus).putInt(sequence);
-        writer.writeTo(out);
-        return out.array();
-    }
-
-    private static byte[] ascii(String s) {
-        return s.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    private static byte[] concat(List<byte[]> pdus) {
-        int total = pdus.stream().mapToInt(p -> p.length).sum();
-        ByteBuffer out = ByteBuffer.allocate(total);
-        pdus.forEach(out::put);
-        return out.array();
-    }
-
-    // ---------- raw-socket PDU I/O ----------
-
-    private static void writePdu(Socket socket, byte[] pdu) throws IOException {
-        socket.getOutputStream().write(pdu);
-        socket.getOutputStream().flush();
-    }
-
-    private static void writeRaw(Socket socket, byte[] bytes) throws IOException {
-        socket.getOutputStream().write(bytes);
-        socket.getOutputStream().flush();
-    }
-
-    /** Reads exactly ONE framed PDU (16-octet header, then {@code command_length - 16} body octets). */
-    private static byte[] readPdu(Socket socket) throws IOException {
-        InputStream in = socket.getInputStream();
-        byte[] header = in.readNBytes(16);
-        if (header.length < 16) {
-            throw new EOFException("peer closed mid-header (expected a complete framed PDU)");
-        }
-        int commandLength = ByteBuffer.wrap(header).getInt(0);
-        if (commandLength < 16) {
-            throw new IOException("nonsense command_length " + commandLength + " on the wire");
-        }
-        byte[] pdu = Arrays.copyOf(header, commandLength);
-        int body = in.readNBytes(pdu, 16, commandLength - 16);
-        if (body < commandLength - 16) {
-            throw new EOFException("peer closed mid-body (partial frame reached the wire!)");
-        }
-        return pdu;
+        byte[] body = RelayTestFixtures.ascii(tag);
+        return RelayTestFixtures.assemble(commandId, 0, sequence, body.length, out -> out.put(body));
     }
 
     /** The pinned ROK bind_resp contract, asserted on LITERALS (independent of the production constants). */

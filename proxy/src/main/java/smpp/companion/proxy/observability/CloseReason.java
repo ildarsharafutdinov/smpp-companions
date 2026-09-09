@@ -43,10 +43,11 @@ package smpp.companion.proxy.observability;
  *       failure (a refused/failed connect, SMSC death before the {@code bind_resp}, and the egress-leg
  *       pre-answer violations).</li>
  *   <li>{@link #SHUTDOWN_DRAIN} &mdash; <b>since Story 4.3 T5</b>: the shutdown coordinator's drain
- *       deadline force-close stashes it on BOTH legs of every pair still live when the
- *       {@code companion.shutdown.drain-timeout} budget expires (OBS-020) &mdash; a peer that never
- *       half-closes still closes with a named reason, never a hang and never the {@link #OTHER}
- *       catch-all.</li>
+ *       deadline force-close stashes it on every leg of every pair still live when the
+ *       {@code companion.shutdown.drain-timeout} budget expires &mdash; BOTH legs of a coupled pair,
+ *       the one ingress leg of a pair still in the optimistic-entry window (OBS-020) &mdash; a peer
+ *       that never half-closes still closes with a named reason, never a hang and never the
+ *       {@link #OTHER} catch-all.</li>
  * </ul>
  * The remaining <b>six are reserved</b> (kept for closed-set stability, never silently removed): the
  * framer floor/ceiling pair ({@link #OVERSIZED_FRAME}, {@link #UNDERSIZED_FRAME} &mdash; their rejects

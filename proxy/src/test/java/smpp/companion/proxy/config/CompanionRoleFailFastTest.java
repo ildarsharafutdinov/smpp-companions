@@ -24,6 +24,7 @@ import smpp.companion.proxy.config.ProxyCompanionProperties.Shutdown;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Smsc;
 import smpp.companion.proxy.config.ProxyCompanionProperties.Tls;
 import smpp.companion.proxy.config.ProxyCompanionProperties.TrustStore;
+import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -63,7 +64,7 @@ class CompanionRoleFailFastTest {
                         null, null),
                 null,
                 null,
-                new Shutdown(Duration.ofSeconds(10)));
+                new Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
         new ProxyCompanionProperties(
                 new Bind(2775, "127.0.0.1", Duration.ofSeconds(4)),
                 new Memory(64, 1024, 1.5, Memory.BudgetCheck.FAIL),
@@ -80,7 +81,7 @@ class CompanionRoleFailFastTest {
                                         new TrustStore("/run/secrets/idp-truststore.p12", null),
                                         Duration.ofSeconds(4), 64))),
                 null,
-                new Shutdown(Duration.ofSeconds(10)));
+                new Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
     }
 
     @Test

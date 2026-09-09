@@ -71,7 +71,7 @@ class ConnectionRegistryMutationFenceArchitectureTest {
                     .because("every ConnectionRegistry mutation — register, attachEgress, beginTeardown, and "
                             + "the ENTRY attribute writes/clears they carry — routes through the RelayStateManager "
                             + "(Story 3.4 T6: the cancelHttp + zeroize hygiene runs there, before the Won return), so "
-                            + "a second caller forks the AD-32 teardown ordering exactly what the fence exists to "
+                            + "a second caller forks the AD-32 teardown ordering — exactly what the fence exists to "
                             + "deny. The AD-22 drain body (Story 4.3) reads the registry (snapshot/size) but must "
                             + "never mutate through it. Any arity: an added overload slips nothing (the 3.4 ledger "
                             + "fold). Test-source direct drives are excluded via DoNotIncludeTests per the "

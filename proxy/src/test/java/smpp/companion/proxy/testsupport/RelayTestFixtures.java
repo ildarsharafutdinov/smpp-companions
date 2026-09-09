@@ -1,15 +1,20 @@
 package smpp.companion.proxy.testsupport;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 
 import io.netty.buffer.PooledByteBufAllocator;
@@ -479,6 +484,105 @@ public final class RelayTestFixtures {
                 new RelayChannelOptions(properties, PooledByteBufAllocator.DEFAULT),
                 new RoutingTable(properties), tlsFactory, gate);
         return new RelayHarness(properties, ingress, egress, registry, manager, observer, tlsFactory, gate);
+    }
+
+    // ── raw-socket PDU builders + I/O (ONE home — the 4.3 review fold: the relay/bootstrap suites
+    //    hand-author frames, deliberately independent of the codec under test) ─────────────────
+
+    /**
+     * The {@code bind_transceiver} command id, pinned as a LITERAL — the hand-authored builders are
+     * deliberately independent of the production constants they exercise.
+     */
+    public static final int BIND_TRANSCEIVER = 0x00000009;
+
+    /** One framed-PDU body writer (the {@link #assemble} tail). */
+    @FunctionalInterface
+    public interface BodyWriter {
+        void writeTo(ByteBuffer out);
+    }
+
+    /**
+     * A hand-authored framed PDU: the 16-octet SMPP header ({@code command_length}, {@code command_id},
+     * {@code command_status}, {@code sequence_number}) plus the caller's body — raw bytes, independent
+     * of the codec under test.
+     */
+    public static byte[] assemble(int commandId, int commandStatus, int sequence, int bodyLen,
+            BodyWriter writer) {
+        ByteBuffer out = ByteBuffer.allocate(16 + bodyLen);
+        out.putInt(16 + bodyLen).putInt(commandId).putInt(commandStatus).putInt(sequence);
+        writer.writeTo(out);
+        return out.array();
+    }
+
+    /** A hand-authored {@code bind_transceiver} request (raw bytes — independent of the codec). */
+    public static byte[] bindRequest(int sequence, String systemId, String password) {
+        byte[] id = ascii(systemId);
+        byte[] pw = ascii(password);
+        byte[] type = ascii("SMPP");
+        byte[] range = ascii("");
+        int body = (id.length + 1) + (pw.length + 1) + (type.length + 1) + 3 + (range.length + 1);
+        return assemble(BIND_TRANSCEIVER, 0, sequence, body, out -> {
+            out.put(id).put((byte) 0);
+            out.put(pw).put((byte) 0);
+            out.put(type).put((byte) 0);
+            out.put((byte) 0x34).put((byte) 0).put((byte) 0);
+            out.put(range).put((byte) 0);
+        });
+    }
+
+    public static byte[] ascii(String s) {
+        return s.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    /** Concatenates framed PDUs into one coalesced buffer — the framer under test owns the boundaries. */
+    public static byte[] concat(List<byte[]> pdus) {
+        int total = 0;
+        for (byte[] pdu : pdus) {
+            total += pdu.length;
+        }
+        byte[] out = new byte[total];
+        int pos = 0;
+        for (byte[] pdu : pdus) {
+            System.arraycopy(pdu, 0, out, pos, pdu.length);
+            pos += pdu.length;
+        }
+        return out;
+    }
+
+    /** Writes one framed PDU. */
+    public static void writePdu(Socket socket, byte[] pdu) throws IOException {
+        socket.getOutputStream().write(pdu);
+        socket.getOutputStream().flush();
+    }
+
+    /** Writes raw bytes (possibly several coalesced PDUs) — the framer under test owns the boundaries. */
+    public static void writeRaw(Socket socket, byte[] bytes) throws IOException {
+        socket.getOutputStream().write(bytes);
+        socket.getOutputStream().flush();
+    }
+
+    /**
+     * Reads exactly ONE framed PDU (16-octet header, then {@code command_length - 16} body octets).
+     * Sanity bounds on {@code command_length}: &lt; 16 is unframed; &gt; 64KB cannot be a frame this
+     * tier legitimately reads — a garbage length from the relay under test must FAIL THE READ, never
+     * steer a copyOf into a ~2GB allocation that OOMs the test JVM instead of failing the test.
+     */
+    public static byte[] readPdu(Socket socket) throws IOException {
+        InputStream in = socket.getInputStream();
+        byte[] header = in.readNBytes(16);
+        if (header.length < 16) {
+            throw new EOFException("peer closed mid-header (expected a complete framed PDU)");
+        }
+        int commandLength = ByteBuffer.wrap(header).getInt(0);
+        if (commandLength < 16 || commandLength > 65_536) {
+            throw new IOException("nonsense command_length " + commandLength + " on the wire");
+        }
+        byte[] pdu = Arrays.copyOf(header, commandLength);
+        int body = in.readNBytes(pdu, 16, commandLength - 16);
+        if (body < commandLength - 16) {
+            throw new EOFException("peer closed mid-body (partial frame reached the wire!)");
+        }
+        return pdu;
     }
 
     /** The generic harness (see {@link #relayHarness(ProxyCompanionProperties, BindCredentialVerifier)}). */

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.config.RoutingTable;
+import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -127,7 +128,7 @@ class StartupSummaryLoggerTest extends ObservabilityPairHarness {
     }
 
     private static ProxyCompanionProperties.Shutdown shutdown() {
-        return new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(10));
+        return new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT);
     }
 
     private static ProxyCompanionProperties.Oidc oidc() {

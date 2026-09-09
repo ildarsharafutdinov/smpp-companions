@@ -2,7 +2,7 @@
 title: 'Story 4.3 — AD-22 graceful shutdown pt. 2: the connection drain body'
 type: 'feature'
 created: '2026-09-04'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
 baseline_commit: e614291ae4e4890f92127fcd268602dae1634754
 context:
@@ -112,3 +112,33 @@ context:
 
 **Manual checks (if no CLI):**
 - Boot a forward cell with a coupled pair mid-traffic; SIGTERM; confirm the ordered shutdown sequence on stdout, the pair draining (or force-closing at the deadline), and exit well under 30s.
+
+### Review Findings
+
+*(Code review 2026-09-09 — 4 layers: blind-hunter, edge-case-hunter, verification-gap, acceptance-auditor; diff `e614291..90c1356`, 44 files +2381/−496.)*
+
+- [x] [Review][Patch] Races rows prove the drain with a real wall-clock deadline (300ms + `Clock.systemUTC()` rig overloads) — violates the frozen Always-constraint "no real wall-clock waits in tests (RELAY-022; OBS-020 blind-spot 5)"; the OBS-020 catalog row (:1189) says the injectable Clock is mandatory there. The coordinator-level rows use `MutableClock`; the races rows (six-event `GracefulShutdownRacesTest:365`, RELAY-022 `:462`, OBS-020 `:532`) take the `systemUTC` overloads (`:672`) and sleep real 50ms polls against a real 300ms deadline. *(Resolved 2026-09-09: rework the rows to inject a mutable clock — a background-advancer daemon, the `stopAdvancingTheClock` idiom.)*
+- [x] [Review][Patch] The "no half-flushed PDU" probe cannot bite — the truncation-prone direction is never loaded [GracefulShutdownRacesTest.java:569] — OBS-020's client leg is idle at force-close (its only relay→client write ever, the ROK bind_resp, was read whole at :536), so `bytesUntilEof == 0` passes trivially; RELAY-022's racing tail is unawaited and `assertDrainedSequence` (`:990`) tolerates its absence while the mock records only complete decoded frames — a truncated tail is indistinguishable from a never-accepted one. AC2/OBS-020/RELAY-022 name the property; load the egress→ingress direction mid-write at the force-close (e.g. a deliver_sm pushed toward the client racing the close; assert whole-or-nothing, never partial).
+- [x] [Review][Patch] The drain poll's interrupt arm is untested and its release() interaction undocumented [ProxyCompanionLifecycle.java:225] — no row interrupts the drain (mutating `break`→`return` or swallow-and-continue stays GREEN); and the restored interrupt flag makes `release()`'s `awaitTermination` (RpcBindCredentialVerifier:917, catch :922) throw immediately, silently degrading step 4's VT join to the "interrupted — hard close" arm. Add the deterministic frozen-clock + `stopper.interrupt()` row (force-close fired, walk completes) and a javadoc sentence naming the step-4 interaction.
+- [x] [Review][Patch] The zero-count half of the WARN contract is unverified [ProxyCompanionLifecycle.java:231] — deleting the `forceClosed > 0` guard makes every drained-clean walk log "force-closed 0 live pair(s)" and nothing goes RED (the only log capture in the tree is the WARN-shape row; the deny rows — the suite's real clean-drain walks — capture nothing). Pin zero WARN events on a clean-drain row (ListAppender idiom, `ProxyCompanionLifecycleTest:371`).
+- [x] [Review][Patch] The egress-attached-after-snapshot view of `forceCloseForDrain` is unpinned [RelayStateManager.java:184] — `won.entry().egress()` (the post-race view) vs `pair.egress()` (stale snapshot) differ exactly in the snapshot→beginTeardown window; the stale read would orphan a just-attached egress leg (its attr points at the removed entry → Lost no-op → never closed). No row attaches between snapshot and teardown. A manager-level row (snapshot() → attachEgress() → forceCloseForDrain(); assert both legs stashed+closed) pins it deterministically.
+- [x] [Review][Patch] Stale class `@DisplayName` still says "Story 4.2 T4 … ordering prefix" [GracefulShutdownRacesTest.java:158]
+- [x] [Review][Patch] Garbled `because()` prose: "…forks the AD-32 teardown ordering exactly what the fence exists to deny" (missing dash) [ConnectionRegistryMutationFenceArchitectureTest.java:74]
+- [x] [Review][Patch] Emptiness via `registry.snapshot().isEmpty()` allocates the full LivePair list to test nothing — `registry.size() == 0` matches the loop's own idiom [ProxyCompanionLifecycle.java:218]
+- [x] [Review][Patch] `Duration.ofSeconds(10)` hand-rolled at 4 non-matrix sites while 15+ use `RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT` [MeteredRelayObserverTest.java, StartupSummaryLoggerTest.java, CompanionRoleFailFastTest.java ×2] (the matrix rows' literals are defensible default-pinning)
+- [x] [Review][Patch] Third per-suite copy of the PDU-builder family (`bindRequest`/`ascii`/`writePdu`/`readPdu`) landed in the same story whose T2 rationale was "one home before a fourth consumer" [RelayServerLifecycleTest.java:511] — fold into `RelayTestFixtures`
+- [x] [Review][Patch] `CloseReason` javadoc overclaims "BOTH legs of every pair still live" — an optimistic-entry pair with the egress dial pending has one leg [CloseReason.java:46]
+- [x] [Review][Patch] `DRAIN_POLL_INTERVAL_MS` javadoc calls `size()` "one volatile map read" — `ConcurrentHashMap.size()` sums baseCount + CounterCells [ProxyCompanionLifecycle.java:103]
+- [x] [Review][Patch] Formatting drift: 128-char javadoc line where the file wraps ≤104 [RelayServerLifecycle.java:25]
+
+<details><summary>Rejected (7)</summary>
+
+- `false` **AC5 mutation-pass evidence absent from the diff** (acceptance-auditor) — the evidence lives in the session/build record, not the diff: every mutation round ran RED-on-neuter (T1 fence, T3 guard, T4 gate, T5 deadline/force-close), and the interrupted T6 mutation was completed by the orchestrator personally (six-event + OBS-020 rows RED under the live stub, then `clean build` GREEN after revert).
+- `false` **t4 (drain-completed) ≤ t5 (vt-drained) arrow unasserted** (acceptance-auditor) — the two stamps come from independent 5ms poll watchers, so a probe-level t4≤t5 assert could false-RED on poll jitter even when the causal events are correctly ordered (the row documents them as µs-adjacent causal twins); the causal guarantee — drain returns before release is invoked — holds by program order on the walk thread and is pinned transitively through the t3/t6 window.
+- `false` **one pair's teardown throwing skips the remaining pairs and release** (edge-case-hunter) — no production throw source exists in `forceCloseForDrain`'s loop: CHM remove/CAS, Netty attr writes, `Channel.close()`, `Arrays.fill` zeroize, and the ROPC `cancelHttp` (`CompletableFuture.cancel(true)` + `pin.complete`, RpcBindCredentialVerifier:869-875; the stand-in's is a no-op) are all non-throwing; the trigger requires a hypothetical future throwing `cancelHttp` implementation.
+- `false` **no drain-start INFO log** (blind-hunter) — the frozen Never-clause reserves `SHUTDOWN_DRAIN` becoming a fired value as the story's ONLY observability delta; adding a drain-start INFO line would violate it.
+- `low` **drain-timeout overflow at `Instant.plus`** (edge-case-hunter) — needs a ~10⁹-year `drain-timeout` typo; the failure is loud and bounded (finally-quiesce runs, the adapter's destroy backstop picks up release), and the spec deliberately leaves the ceiling relation as a documented operator contract, not a validated one — an upper-bound guard adds complexity for an unreachable everyday case.
+- `low` **OBS-016 event-2 redefined from the settle to the deny-step phase stamp** (acceptance-auditor) — documented in-row (:391-397) and semantically forced: the settle lands inside the drain window by design, so pinning it would false-RED the spine's own sequencing; the only fix is blessing the redefinition in this spec, i.e. editing the spec under review.
+- `low` **throw-path pinned via `ThrowingClock`, not "a throwing manager"** (acceptance-auditor) — documented in-row; `RelayStateManager` is final, and the substitute covers the same try-block contract; un-finaling production code for a test nicety is worse, and the alternative fix edits the spec under review.
+
+</details>

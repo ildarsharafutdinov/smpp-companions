@@ -338,8 +338,8 @@ class RelayServerLifecycleTest {
                 // socket proves the shared loop drained the accept FIFO PAST the late-bind socket's
                 // accept — its child pipeline (framer → interceptor) is provably live, so the post-stop
                 // deny below is the GATE's doing, not a never-accepted socket's RST.
-                writePdu(probe, bindRequest(76, "probe", "pw123456"));
-                ByteBuffer probeDeny = ByteBuffer.wrap(readPdu(probe));
+                RelayTestFixtures.writePdu(probe, RelayTestFixtures.bindRequest(76, "probe", "pw123456"));
+                ByteBuffer probeDeny = ByteBuffer.wrap(RelayTestFixtures.readPdu(probe));
                 assertThat(probeDeny.getInt(8))
                         .as("precondition: the probe bind adjudicated (Allow) and its egress dial to "
                                 + "the refused loopback port collapsed to the AD-33 deny")
@@ -351,8 +351,8 @@ class RelayServerLifecycleTest {
                 lifecycle.stop(); // AD-22 step 1: gate armed + acceptor closed; the loop stays live (4.2 T2)
                 assertThat(harness.gate().armed()).as("precondition: the stop armed the shared gate").isTrue();
 
-                writePdu(lateBind, bindRequest(77, "legacy1", "pw123456"));
-                ByteBuffer deny = ByteBuffer.wrap(readPdu(lateBind));
+                RelayTestFixtures.writePdu(lateBind, RelayTestFixtures.bindRequest(77, "legacy1", "pw123456"));
+                ByteBuffer deny = ByteBuffer.wrap(RelayTestFixtures.readPdu(lateBind));
                 assertThat(deny.getInt(0)).as("header-only synth — the ONE PDU the relay builds").isEqualTo(16);
                 assertThat(deny.getInt(4)).as("bind_transceiver answered by bind_transceiver_resp (literal pin)")
                         .isEqualTo(0x80000009);
@@ -500,56 +500,6 @@ class RelayServerLifecycleTest {
                 }
             };
         }
-    }
-
-    // ---------- hand-authored PDU builders + raw-socket I/O (the RelayA1SmokeTest idiom) ----------
-
-    /** The bind_resp wire contract, pinned as LITERALS (independent of the production constants). */
-    private static final int BIND_TRANSCEIVER = 0x00000009;
-
-    /** A hand-authored {@code bind_transceiver} request (raw bytes — independent of the codec). */
-    private static byte[] bindRequest(int sequence, String systemId, String password) {
-        byte[] id = ascii(systemId);
-        byte[] pw = ascii(password);
-        byte[] type = ascii("SMPP");
-        byte[] range = ascii("");
-        int body = (id.length + 1) + (pw.length + 1) + (type.length + 1) + 3 + (range.length + 1);
-        ByteBuffer out = ByteBuffer.allocate(16 + body);
-        out.putInt(16 + body).putInt(BIND_TRANSCEIVER).putInt(0).putInt(sequence);
-        out.put(id).put((byte) 0);
-        out.put(pw).put((byte) 0);
-        out.put(type).put((byte) 0);
-        out.put((byte) 0x34).put((byte) 0).put((byte) 0);
-        out.put(range).put((byte) 0);
-        return out.array();
-    }
-
-    private static byte[] ascii(String s) {
-        return s.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    private static void writePdu(Socket socket, byte[] pdu) throws IOException {
-        socket.getOutputStream().write(pdu);
-        socket.getOutputStream().flush();
-    }
-
-    /** Reads exactly ONE framed PDU (16-octet header, then {@code command_length - 16} body octets). */
-    private static byte[] readPdu(Socket socket) throws IOException {
-        InputStream in = socket.getInputStream();
-        byte[] header = in.readNBytes(16);
-        if (header.length < 16) {
-            throw new java.io.EOFException("peer closed mid-header (expected a complete framed PDU)");
-        }
-        int commandLength = ByteBuffer.wrap(header).getInt(0);
-        if (commandLength < 16) {
-            throw new IOException("nonsense command_length " + commandLength + " on the wire");
-        }
-        byte[] pdu = java.util.Arrays.copyOf(header, commandLength);
-        int body = in.readNBytes(pdu, 16, commandLength - 16);
-        if (body < commandLength - 16) {
-            throw new java.io.EOFException("peer closed mid-body (partial frame reached the wire!)");
-        }
-        return pdu;
     }
 
     /**

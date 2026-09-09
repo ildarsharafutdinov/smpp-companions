@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -366,6 +367,36 @@ class ProxyCompanionLifecycleTest {
     }
 
     @Test
+    @DisplayName("force-close view (4.3 review): an egress attached during the drain window — after ANY "
+            + "caller-held snapshot — is still stashed and closed (the fresh-snapshot contract)")
+    void forceCloseDrainClosesAnEgressAttachedAfterTheSnapshot() {
+        ConnectionRegistry registry = new ConnectionRegistry();
+        RelayStateManager manager = new RelayStateManager(registry);
+        EmbeddedChannel ingress = channel();
+        EmbeddedChannel egress = channel();
+        manager.register(ingress, systemId("legacyA"));
+        // The drain-entry view: the projection was taken BEFORE the egress dial landed — its
+        // egress is null (the optimistic-entry shape at snapshot time).
+        List<ConnectionRegistry.LivePair> stale = registry.snapshot();
+        assertThat(stale).as("precondition: one live pair in the drain-entry snapshot").hasSize(1);
+        assertThat(stale.get(0).egress()).as("precondition: the projection's egress is still null").isNull();
+        manager.attachEgress(ingress.id(), egress);   // the dial lands INSIDE the drain window
+
+        assertThat(manager.forceCloseForDrain()).as("the late-attaching pair still counts once").isOne();
+
+        // forceCloseForDrain takes its OWN fresh snapshot (never a caller's stale projection), so
+        // BOTH legs of the late-attaching pair close and stash — the production race (a verdict
+        // Allow completes just before the acceptor stop; the egress dial lands inside the drain
+        // window, after the coordinator's drain-entry read) orphans nothing. A regression that
+        // force-closes a caller-held snapshot instead leaves the egress leg open and goes RED here.
+        assertThat(registry.size()).as("the force-closed pair is gone").isZero();
+        assertThat(ingress.isOpen()).as("the ingress leg was force-closed").isFalse();
+        assertThat(egress.isOpen()).as("the AFTER-SNAPSHOT egress leg was force-closed").isFalse();
+        assertThat(reasonStashedOn(ingress)).isEqualTo(CloseReason.SHUTDOWN_DRAIN);
+        assertThat(reasonStashedOn(egress)).isEqualTo(CloseReason.SHUTDOWN_DRAIN);
+    }
+
+    @Test
     @DisplayName("drain WARN shape: the deadline force-close logs ONE bounded WARN naming the count")
     void theDeadlineForceCloseWarnsOnceNamingTheCount() throws Exception {
         Logger logger = (Logger) LoggerFactory.getLogger(ProxyCompanionLifecycle.class);
@@ -399,6 +430,146 @@ class ProxyCompanionLifecycleTest {
             logger.detachAppender(appender);
             appender.stop();
             group.shutdownGracefully().syncUninterruptibly();
+        }
+    }
+
+    @Test
+    @DisplayName("drain WARN silence (4.3 review): pairs that drain IN-WINDOW emit ZERO WARN events — "
+            + "the zero-count half of the WARN contract")
+    void aCleanDrainEmitsNoWarn() throws Exception {
+        Logger logger = (Logger) LoggerFactory.getLogger(ProxyCompanionLifecycle.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        EventLoopGroup group = newGroup();
+        try {
+            ConnectionRegistry registry = new ConnectionRegistry();
+            RelayStateManager manager = new RelayStateManager(registry);
+            EmbeddedChannel ingress = channel();
+            manager.register(ingress, systemId("legacyA"));
+            MutableClock clock = new MutableClock();   // FROZEN: the deadline is unreachable — only size()==0 exits
+            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(
+                    new AlwaysAllowBindCredentialVerifier(), group, registry, manager,
+                    new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(5)), clock);
+            coordinator.start();
+
+            Thread stopper = new Thread(coordinator::stop, "clean-drain-stopper");
+            stopper.setDaemon(true);
+            stopper.start();
+            long bail = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (clock.reads() < 2 && System.nanoTime() < bail) {   // the drain is polling the live pair
+                TimeUnit.MILLISECONDS.sleep(5);
+            }
+            // The in-window drain: the pair tears itself down WHILE the poll waits (a peer FIN's
+            // effect, driven here through the manager's own beginTeardown + the leg close) — the
+            // loop exits via size()==0, forceCloseForDrain finds an empty snapshot, and the WARN's
+            // zero-count arm must stay silent (delete the `forceClosed > 0` guard and this row is
+            // the one that goes RED on the spurious "force-closed 0" WARN).
+            manager.beginTeardown(ingress);
+            assertThat(ingress.close().isSuccess()).as("the in-window FIN closed the leg").isTrue();
+            stopper.join(TimeUnit.SECONDS.toMillis(10));
+            assertThat(stopper.isAlive()).as("the clean walk completed").isFalse();
+
+            assertThat(registry.size()).as("the pair drained in-window").isZero();
+            assertThat(appender.list.stream().filter(event -> event.getLevel() == Level.WARN).toList())
+                    .as("a drained-clean walk is WARN-silent")
+                    .isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            group.shutdownGracefully().syncUninterruptibly();
+        }
+    }
+
+    @Test
+    @DisplayName("drain interrupt (4.3 review): an interrupted drain poll stops waiting fail-closed — "
+            + "the remainder is STILL force-closed (WARN + SHUTDOWN_DRAIN), the walk completes, and "
+            + "release() takes its documented interrupted arm")
+    void anInterruptedDrainStillForceClosesAndCompletesTheWalk(@TempDir Path dir) throws Exception {
+        CountDownLatch tokenReceived = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        HttpsServer server = TokenIdpStandIn.parkedTokenIdp(tokenReceived, hold, "drain-interrupt-idp");
+        EventLoopGroup group = newGroup();
+        Logger logger = (Logger) LoggerFactory.getLogger(ProxyCompanionLifecycle.class);
+        Logger adapterLogger = (Logger) LoggerFactory.getLogger(RopcBindCredentialVerifier.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        ListAppender<ILoggingEvent> adapterAppender = new ListAppender<>();
+        try {
+            appender.start();
+            adapterAppender.start();
+            logger.addAppender(appender);
+            adapterLogger.addAppender(adapterAppender);
+            // The REAL adapter (AlwaysAllow is not a RopcBindCredentialVerifier, so release() would
+            // be skipped entirely), with ONE in-flight parked exchange: the interrupted arm only
+            // exists while the pool still has a task unwinding — a terminated pool's
+            // awaitTermination returns true before it ever observes the flag.
+            ProxyCompanionProperties props = RelayTestFixtures.reverseBProperties(
+                    dir, TokenIdpStandIn.realmBase(server), Duration.ofSeconds(3));
+            IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
+            RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
+            // The parked exchange (the throw-path row's recipe, 3s self-budget — the deny step's
+            // shutdownNow does NOT kill it; the forked join ignores that interrupt, so the VT is
+            // still unwinding when release() awaits).
+            ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX));
+            assertTrue(tokenReceived.await(5, TimeUnit.SECONDS),
+                    "the adjudication must be in-flight (parked at the token endpoint) when the walk begins");
+            ConnectionRegistry registry = new ConnectionRegistry();
+            RelayStateManager manager = new RelayStateManager(registry);
+            EmbeddedChannel ingress = channel();
+            manager.register(ingress, systemId("legacyA"));
+            MutableClock clock = new MutableClock();   // FROZEN: the poll loop can only leave via the catch arm
+            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(
+                    adapter, group, registry, manager,
+                    new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(5)), clock);
+            coordinator.start();
+
+            Thread stopper = new Thread(coordinator::stop, "drain-interrupt-stopper");
+            stopper.setDaemon(true);
+            stopper.start();
+            try {
+                long bail = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (clock.reads() < 2 && System.nanoTime() < bail) {   // the drain is polling the stuck pair
+                    TimeUnit.MILLISECONDS.sleep(5);
+                }
+                assertThat(clock.reads())
+                        .as("the drain reached its poll loop (the only other exit is the catch arm under pin)")
+                        .isGreaterThanOrEqualTo(2);
+                stopper.interrupt();   // the SIGKILL-the-shutdown-thread equivalent
+                stopper.join(TimeUnit.SECONDS.toMillis(10));
+                assertThat(stopper.isAlive()).as("the interrupted walk completed").isFalse();
+
+                // The fail-closed arm: break → force-close STILL ran (not return — the registry is
+                // empty, the leg SHUTDOWN_DRAIN-stashed, the count WARN present).
+                assertThat(registry.size()).as("the interrupt force-closed the stuck pair").isZero();
+                assertThat(ingress.isOpen()).as("the stuck leg was force-closed").isFalse();
+                assertThat(reasonStashedOn(ingress)).isEqualTo(CloseReason.SHUTDOWN_DRAIN);
+                assertThat(group.isTerminated()).as("the finally-quiesce still terminated the group").isTrue();
+                assertThat(appender.list.stream()
+                        .map(ILoggingEvent::getFormattedMessage)
+                        .anyMatch(message -> message.contains("force-closed 1 live pair(s)")))
+                        .as("the interrupt path still fires the bounded force-close WARN")
+                        .isTrue();
+                // The documented step-4 degradation: the restored flag makes release()'s bounded
+                // await throw immediately — its interrupted arm (one WARN) proceeds to the hard
+                // close instead of hanging or skipping the walk's tail.
+                assertThat(adapterAppender.list.stream()
+                        .map(ILoggingEvent::getFormattedMessage)
+                        .anyMatch(message -> message.contains("the adjudication drain was interrupted")))
+                        .as("release() took its interrupted arm (the VT join traded away, never the exit); "
+                                + "captured: %s",
+                                adapterAppender.list.stream()
+                                        .map(ILoggingEvent::getFormattedMessage).toList())
+                        .isTrue();
+            } finally {
+                hold.countDown();   // never strand the parked stand-in handler
+            }
+        } finally {
+            logger.detachAppender(appender);
+            adapterLogger.detachAppender(adapterAppender);
+            appender.stop();
+            adapterAppender.stop();
+            server.stop(0);
+            group.shutdownGracefully().syncUninterruptibly();   // no-op re-fire if the quiesce ran
         }
     }
 
@@ -513,14 +684,21 @@ class ProxyCompanionLifecycleTest {
     /**
      * A frozen-by-default, externally advancing {@link Clock} (the OBS-020 injectable-deadline knob):
      * reads return the last advanced instant, so a test threads the deadline from OUTSIDE the walk —
-     * the drain's {@code isBefore(deadline)} flips only when the test says so.
+     * the drain's {@code isBefore(deadline)} flips only when the test says so. Reads are counted:
+     * 1 = the drain body's deadline computation, 2+ = the poll loop (the drain-entry probe the
+     * interrupt and WARN-silence rows gate on).
      */
     private static final class MutableClock extends Clock {
 
         private volatile Instant now = Instant.EPOCH;
+        private final AtomicLong reads = new AtomicLong();
 
         void advance(Duration by) {
             now = now.plus(by);
+        }
+
+        long reads() {
+            return reads.get();
         }
 
         @Override
@@ -535,6 +713,7 @@ class ProxyCompanionLifecycleTest {
 
         @Override
         public Instant instant() {
+            reads.incrementAndGet();
             return now;
         }
     }

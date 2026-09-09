@@ -1,18 +1,18 @@
 package smpp.companion.proxy.bootstrap;
 
-import java.io.EOFException;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -155,14 +155,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("bootstrap")
 @Tag("p1")
 @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-@DisplayName("Story 4.2 T4 — AD-22 walk races: deny-on-live-loop, VT hygiene, ordering prefix")
+@DisplayName("Story 4.2 T4 + 4.3 T5/T6 — AD-22 walk races: deny-on-live-loop, VT hygiene, "
+        + "the six-event drain chain")
 @SuppressWarnings("FutureReturnValueIgnored") // reason: the recorder's whenComplete listener is
 // fire-and-forget observation — its downstream future is deliberately unobserved (the settle is
 // read via the SAME pin future the assertions hold), and the listener itself can never throw.
 class GracefulShutdownRacesTest {
 
     /** The bind_resp wire contract, pinned as LITERALS (the RelayA1SmokeTest discipline). */
-    private static final int BIND_TRANSCEIVER = 0x00000009;
     private static final int BIND_TRANSCEIVER_RESP = 0x80000009;
 
     /** ESME_RBINDFAIL 0x0000000D — the AD-33 generic bind-failure collapse (SMPP 3.4 §5.1.3). */
@@ -190,7 +190,7 @@ class GracefulShutdownRacesTest {
     void allowRacingDenyResolvesFailClosedAndTheClientHoldsTheBindRespError(@TempDir Path dir) throws Exception {
         Rig rig = rig(dir, 1);
         try (Socket legacy = rig.connectLegacy()) {
-            writePdu(legacy, bindRequest(7, "legacy1", "pw123456"));
+            RelayTestFixtures.writePdu(legacy, RelayTestFixtures.bindRequest(7, "legacy1", "pw123456"));
             assertTrue(rig.awaitTokens(),
                     "the adjudication must be in-flight (parked at the token endpoint) when SIGTERM fires");
 
@@ -198,7 +198,7 @@ class GracefulShutdownRacesTest {
 
             // OBS-019: the fail-closed bind_resp reached the client BEFORE the close — the deny's
             // continuation executed on the STILL-LIVE loop (the stranding residue is unreachable).
-            assertDenyBindResp(readPdu(legacy), 7);
+            assertDenyBindResp(RelayTestFixtures.readPdu(legacy), 7);
             assertAtEof(legacy); // "bind_resp error, then close" — the CLOSE listener ran after the write
 
             // RELAY-023: the couple flag never flipped. The mock ANSWERS ROK, so a couple attempt
@@ -246,12 +246,14 @@ class GracefulShutdownRacesTest {
             + "walk exits inside the window")
     void coupledPairsMidSpliceDrainForceClosesAtTheDeadlineAndExitInsideTheWindow(@TempDir Path dir) throws Exception {
         // The IMMEDIATE-answer IdP variant: the exchange yields Allow, the egress dials, the mock
-        // answers ROK — a genuinely COUPLED pair mid-splice when SIGTERM fires.
-        Rig rig = rig(dir, 1, false);
+        // answers ROK — a genuinely COUPLED pair mid-splice when SIGTERM fires. The drain deadline
+        // rides the row's OWN clock (the 4.3 review rework — never a real wait for the 300ms).
+        DrainClock clock = new DrainClock();
+        Rig rig = rig(dir, 1, false, OIDC_TIMEOUT, COUPLED_DRAIN_DEADLINE, clock);
         try (Socket legacy = rig.connectLegacy()) {
-            byte[] bind = bindRequest(11, "legacy1", "pw123456");
-            writePdu(legacy, bind);
-            assertRokBindResp(readPdu(legacy), 11); // the full chain: token Allow -> dial -> SMSC ROK
+            byte[] bind = RelayTestFixtures.bindRequest(11, "legacy1", "pw123456");
+            RelayTestFixtures.writePdu(legacy, bind);
+            assertRokBindResp(RelayTestFixtures.readPdu(legacy), 11); // the full chain: token Allow -> dial -> SMSC ROK
 
             // The couple REALLY established (the contrast to every other row in this suite): the
             // mock session carries the verbatim bind (AD-14), the pair is live, the flag flipped.
@@ -267,15 +269,15 @@ class GracefulShutdownRacesTest {
                     .hasSize(1);
 
             long start = System.nanoTime();
-            rig.ctx.close(); // SIGTERM-equivalent, mid-splice — the drain body owns the live pair now
+            stopAdvancingPastTheDeadline(rig, clock); // SIGTERM-equivalent, mid-splice — the drain body owns the live pair now
             long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
             // The drain contract (4.3 T5, coordinator level): neither peer half-closes, so the drain
-            // polls to the rig's SHORT deadline (300ms) and force-closes the pair there — both legs
+            // polls to the rig's SHORT deadline and force-closes the pair there — both legs
             // closed (SHUTDOWN_DRAIN stashed; never a mid-write truncation: the legs close cleanly
             // while the loop is still live), the registry emptied — and the walk still exits fast:
-            // a 300ms drain + an idle-pool deny + an instantly-joined release + the 100ms-quiet
-            // quiesce, the Bootstrap 5s idiom, well under the 30s per-phase ceiling.
+            // an instant-clock drain + an idle-pool deny + an instantly-joined release + the
+            // 100ms-quiet quiesce, the Bootstrap 5s idiom, well under the 30s per-phase ceiling.
             assertThat(elapsedMs)
                     .as("the mid-splice walk exits inside the window (the short rig drain deadline "
                             + "force-closed the pair)")
@@ -303,7 +305,7 @@ class GracefulShutdownRacesTest {
             for (int i = 0; i < 3; i++) {
                 Socket legacy = rig.connectLegacy();
                 clients.add(legacy);
-                writePdu(legacy, bindRequest(100 + i, "legacy1", "pw123456"));
+                RelayTestFixtures.writePdu(legacy, RelayTestFixtures.bindRequest(100 + i, "legacy1", "pw123456"));
             }
             assertTrue(rig.awaitTokens(), "all three adjudications must be in-flight when SIGTERM fires");
             // Sanity (the probe must be ABLE to see them): the pool counts 3 in-flight adjudications.
@@ -317,7 +319,7 @@ class GracefulShutdownRacesTest {
 
             // Every cancelled continuation executed on the live loop: each client holds its deny.
             for (int i = 0; i < 3; i++) {
-                assertDenyBindResp(readPdu(clients.get(i)), 100 + i);
+                assertDenyBindResp(RelayTestFixtures.readPdu(clients.get(i)), 100 + i);
                 assertAtEof(clients.get(i));
             }
             // Zero orphaned adjudication VTs: the count decrements only in each pool task's finally —
@@ -352,12 +354,13 @@ class GracefulShutdownRacesTest {
         // "extends, not re-authored" — its arrows all survive below, transitively). Budgets: the 3s
         // oidc idiom (4.2 review: the parked exchange self-aborts at its OWN budget, so 500ms would
         // race the watcher arming and the acceptor stop — a pre-close settle would break t3 ≤ t5)
-        // PLUS the SHORT drain deadline: the force-close lands ~300ms in, giving the t3 → effect
-        // arrows a ≥300ms mechanical margin over the 5ms poll cadence. The deny rows keep oidc + 2s
-        // so the force-close cannot beat the deny bind_resp write; THIS row does not read the
-        // client's bind_resp (the force-close closes the parked pair's ingress before its
+        // PLUS the SHORT drain deadline on the row's OWN clock (the 4.3 review rework): the
+        // force-close lands exactly when this row advances the clock, giving the t3 → effect arrows
+        // a mechanical margin (the advance + the teardown) over the 5ms poll cadence. The deny rows
+        // keep oidc + 2s so the force-close cannot beat the deny bind_resp write; THIS row does not
+        // read the client's bind_resp (the force-close closes the parked pair's ingress before its
         // continuation could write it — the bind_resp contract is the RELAY-023 row's).
-        DrainStartClock clock = new DrainStartClock();
+        DrainClock clock = new DrainClock();
         PhaseStamp acceptorStopped = new PhaseStamp((RelayServerLifecycle.RELAY_ACCEPTOR_PHASE
                 + AdjudicationLifecycle.ADJUDICATION_PHASE) / 2);   // 875: strictly acceptor → deny
         PhaseStamp adjudicationsDenied = new PhaseStamp((AdjudicationLifecycle.ADJUDICATION_PHASE
@@ -370,7 +373,7 @@ class GracefulShutdownRacesTest {
             return t;
         });
         try (Socket legacy = rig.connectLegacy()) {
-            writePdu(legacy, bindRequest(9, "legacy1", "pw123456"));
+            RelayTestFixtures.writePdu(legacy, RelayTestFixtures.bindRequest(9, "legacy1", "pw123456"));
             assertTrue(rig.awaitTokens(), "the adjudication must be in-flight when SIGTERM fires");
 
             // The three EFFECT probes, armed BEFORE the walk (the 4.2 discipline): each stamps the
@@ -386,7 +389,7 @@ class GracefulShutdownRacesTest {
             Future<Long> exitStamp = watchers.submit(() -> pollStamp("the shared relay loop terminated",
                     rig.group::isTerminated));
 
-            rig.ctx.close(); // SIGTERM-equivalent — the phases, not this hand, order the walk
+            stopAdvancingPastTheDeadline(rig, clock); // SIGTERM-equivalent — the phases order the walk; this hand owns the clock
 
             // The causal close-thread prefix (NO poll jitter): Spring stops phases strictly
             // descending and awaits each phase's stop before the next begins, so the 875 stamp is
@@ -459,14 +462,15 @@ class GracefulShutdownRacesTest {
             + "byte-exact with its sequence number intact (no drop, no dup, no truncation at the "
             + "force-close), the registry reaches zero, the walk exits inside the window")
     void relay022CoupledPairsMidSpliceDrainWithSequenceIntegrity(@TempDir Path dir) throws Exception {
-        Rig rig = rig(dir, 2, false);   // IMMEDIATE-answer IdP: both binds genuinely couple
+        DrainClock clock = new DrainClock();   // the deadline is the row's to advance (4.3 review rework)
+        Rig rig = rig(dir, 2, false, OIDC_TIMEOUT, COUPLED_DRAIN_DEADLINE, clock);   // IMMEDIATE-answer IdP: both binds genuinely couple
         try (Socket legacyA = rig.connectLegacy(); Socket legacyB = rig.connectLegacy()) {
-            byte[] bindA = bindRequest(21, "legacy1", "pw123456");
-            byte[] bindB = bindRequest(22, "legacy1", "pw123456");
-            writePdu(legacyA, bindA);
-            writePdu(legacyB, bindB);
-            assertRokBindResp(readPdu(legacyA), 21);   // the full chain per pair: token Allow -> dial -> SMSC ROK
-            assertRokBindResp(readPdu(legacyB), 22);
+            byte[] bindA = RelayTestFixtures.bindRequest(21, "legacy1", "pw123456");
+            byte[] bindB = RelayTestFixtures.bindRequest(22, "legacy1", "pw123456");
+            RelayTestFixtures.writePdu(legacyA, bindA);
+            RelayTestFixtures.writePdu(legacyB, bindB);
+            assertRokBindResp(RelayTestFixtures.readPdu(legacyA), 21);   // the full chain per pair: token Allow -> dial -> SMSC ROK
+            assertRokBindResp(RelayTestFixtures.readPdu(legacyB), 22);
             assertThat(rig.harness.registry().size())
                     .as("both coupled pairs are live mid-splice")
                     .isEqualTo(2);
@@ -480,8 +484,8 @@ class GracefulShutdownRacesTest {
             // coalesced write per leg (the framers must preserve the boundaries both ways).
             List<byte[]> spliceA = List.of(submitSm(3101), submitSm(3102), submitSm(3103));
             List<byte[]> spliceB = List.of(submitSm(3201), submitSm(3202), submitSm(3203));
-            writeRaw(legacyA, concat(spliceA));
-            writeRaw(legacyB, concat(spliceB));
+            RelayTestFixtures.writeRaw(legacyA, RelayTestFixtures.concat(spliceA));
+            RelayTestFixtures.writeRaw(legacyB, RelayTestFixtures.concat(spliceB));
             assertThat(sessionA.awaitPdus(3))
                     .as("pair A's splice landed complete before SIGTERM — no drop, no dup, byte-exact")
                     .containsExactlyElementsOf(spliceA);
@@ -494,15 +498,15 @@ class GracefulShutdownRacesTest {
             // never read never entered the relay (the force-close cannot lose an accepted PDU).
             byte[] tailA = submitSm(3104);
             byte[] tailB = submitSm(3204);
-            writeRaw(legacyA, tailA);
-            writeRaw(legacyB, tailB);
+            RelayTestFixtures.writeRaw(legacyA, tailA);
+            RelayTestFixtures.writeRaw(legacyB, tailB);
 
             long start = System.nanoTime();
-            rig.ctx.close(); // SIGTERM-equivalent, mid-splice — the drain body owns both pairs now
+            stopAdvancingPastTheDeadline(rig, clock); // SIGTERM-equivalent, mid-splice — the drain body owns both pairs now
             long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
             // The bounded exit (OBS-020's coordinator half): neither peer half-closes, so both
-            // pairs force-close at the rig's SHORT deadline and the walk still finishes fast.
+            // pairs force-close at the row-advanced SHORT deadline and the walk still finishes fast.
             assertThat(elapsedMs)
                     .as("the mid-splice walk over two pairs exits inside the window")
                     .isLessThan(5_000L);
@@ -529,23 +533,31 @@ class GracefulShutdownRacesTest {
             + "deadline — SHUTDOWN_DRAIN observed on BOTH legs through the observer seam, zero "
             + "half-flushed bytes on the client leg, exit bounded")
     void obs020PeerThatNeverHalfClosesIsForceClosedAsShutdownDrainObserved(@TempDir Path dir) throws Exception {
-        Rig rig = rig(dir, 1, false);   // the IMMEDIATE-answer IdP — a genuinely coupled pair
+        DrainClock clock = new DrainClock();   // the deadline is the row's to advance (4.3 review rework)
+        Rig rig = rig(dir, 1, false, OIDC_TIMEOUT, COUPLED_DRAIN_DEADLINE, clock);   // the IMMEDIATE-answer IdP — a genuinely coupled pair
         try (Socket legacy = rig.connectLegacy()) {
-            byte[] bind = bindRequest(31, "legacy1", "pw123456");
-            writePdu(legacy, bind);
-            assertRokBindResp(readPdu(legacy), 31);
+            byte[] bind = RelayTestFixtures.bindRequest(31, "legacy1", "pw123456");
+            RelayTestFixtures.writePdu(legacy, bind);
+            assertRokBindResp(RelayTestFixtures.readPdu(legacy), 31);
             MockSmsc.Session session = rig.smsc.awaitSession(0);
 
             // Mid-splice traffic through the pair (both directions have carried frames when the
             // walk fires — the force-close closes a BUSY splice, not an idle socket).
             byte[] submit = submitSm(3301);
-            writeRaw(legacy, submit);
+            RelayTestFixtures.writeRaw(legacy, submit);
             assertThat(session.awaitPdus(1))
                     .as("the splice PDU crossed the pair byte-exact before SIGTERM")
                     .containsExactly(submit);
 
+            // The truncation-prone direction, LOADED (the 4.3 review's bite fix): a coalesced
+            // deliver_sm burst the mock pushes toward the client, unawaited, racing the walk —
+            // whatever the relay flushed toward the client must arrive WHOLE (OBS-020's
+            // "no half-flushed PDU on the wire" can now actually bite, egress→ingress).
+            List<byte[]> burst = List.of(deliverSm(3401), deliverSm(3402), deliverSm(3403), deliverSm(3404));
+            session.deliverAll(RelayTestFixtures.concat(burst));
+
             long start = System.nanoTime();
-            rig.ctx.close(); // SIGTERM-equivalent — neither peer will ever half-close
+            stopAdvancingPastTheDeadline(rig, clock); // SIGTERM-equivalent — neither peer will ever half-close
             long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
             assertThat(elapsedMs)
@@ -563,12 +575,12 @@ class GracefulShutdownRacesTest {
                             new CapturingRelayObserver.ConnectionClose(Direction.INGRESS, CloseReason.SHUTDOWN_DRAIN),
                             new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.SHUTDOWN_DRAIN));
 
-            // NO HALF-FLUSHED FRAME on the client leg: everything the relay ever wrote toward the
-            // client was read whole (the ROK bind_resp above); the force-close must leave ZERO
-            // residue — a truncated mid-write PDU would surface as stray bytes before the EOF.
-            assertThat(bytesUntilEof(legacy))
-                    .as("the force-close left no partial frame on the client leg")
-                    .isZero();
+            // NO HALF-FLUSHED FRAME on the client leg, LOADED: the burst raced the force-close, so
+            // the leg's residue is whatever the relay managed to flush toward the client before the
+            // close — it must be a prefix of the burst ending at a WHOLE-frame boundary (nothing,
+            // or only complete frames), never a partial frame (a truncated mid-write PDU leaves a
+            // residue no boundary explains).
+            assertResidueIsWholeFramesOnly(bytesBeforeEof(legacy), burst);
             awaitTrue("the SMSC session closed by the drain force-close", session::closed);
             assertThat(rig.harness.registry().size())
                     .as("the force-closed pair is gone from the registry")
@@ -636,15 +648,10 @@ class GracefulShutdownRacesTest {
 
     /**
      * The race rows' rig: the PARKED-allow stand-in IdP (the latch-held adjudication).
-     * See {@link #rig(Path, int, boolean)}.
+     * See {@link #rig(Path, int, boolean, Duration)}.
      */
     private static Rig rig(Path dir, int tokenCount) throws IOException {
         return rig(dir, tokenCount, true, OIDC_TIMEOUT);
-    }
-
-    private static Rig rig(Path dir, int tokenCount, boolean park) throws IOException {
-        return park ? rig(dir, tokenCount, park, OIDC_TIMEOUT)
-                : rig(dir, tokenCount, park, OIDC_TIMEOUT, COUPLED_DRAIN_DEADLINE);
     }
 
     /**
@@ -702,7 +709,8 @@ class GracefulShutdownRacesTest {
             // Story 4.3 T5 re-sign: the coordinator's drain reads the SAME registry/manager the
             // initializers wired (the harness's shared beans — the wiring Spring guarantees by
             // component scan) and polls the properties' drain deadline on the caller's clock
-            // (system time everywhere except the six-event row's DrainStartClock).
+            // (system time for the deny rows — their settle is the oidc budget's business; the
+            // force-close rows' own DrainClock everywhere else, the 4.3 review rework).
             ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group,
                     harness.registry(), harness.manager(), properties.shutdown(), clock);
 
@@ -848,23 +856,36 @@ class GracefulShutdownRacesTest {
     // ── the OBS-016 six-event probes: the causal close-thread stamps (4.3 T6) ─────────────────
 
     /**
-     * The drain-started stamp (OBS-016 event 3): a pass-through {@link Clock} that records the
-     * nanoTime of its FIRST {@link #instant()} read — the drain body's deadline computation, the
-     * first thing it does once the snapshot read found the registry non-empty (the empty-arm no-op
-     * never touches the clock, so an unstamped clock also proves the no-op). The read runs ON the
-     * close thread inside the coordinator's {@code stop()}, so the stamp carries no poll jitter —
+     * The drain-deadline KNOB and the drain-started stamp (OBS-016 event 3) in one clock: reads are
+     * counted (read 1 = the drain body's deadline computation, the stamped "drain started"; read 2+
+     * = the poll loop) and the instant is FROZEN until the row advances it — the deadline is
+     * threaded from OUTSIDE the walk, so the force-close fires exactly when the row says so, never
+     * when the wall clock gets there (the frozen Always-constraint: no real wall-clock wait for the
+     * budget — RELAY-022 / OBS-020 blind-spot 5; the 4.3 review rework). The first read runs ON the
+     * close thread inside the coordinator's {@code stop()}, so its stamp carries no poll jitter —
      * the spec's "a decorated registry stamping the first snapshot", realized on the deadline's
      * injectable time source instead ({@code ConnectionRegistry} is final; the clock is the
      * coordinator's own injectable seam and stamps one call later, the same instant for ordering).
      */
-    private static final class DrainStartClock extends Clock {
+    private static final class DrainClock extends Clock {
 
-        private final Clock delegate = Clock.systemUTC();
+        private volatile Instant now = Instant.EPOCH;
+        private final AtomicLong reads = new AtomicLong();
         private final AtomicLong firstReadNanos = new AtomicLong(Long.MIN_VALUE);
+
+        /** Moves the frozen instant forward — the ONLY way the drain's deadline can pass. */
+        void advanceBy(Duration by) {
+            now = now.plus(by);
+        }
+
+        /** Reads so far — the drain-entry probe: 1 = the deadline computation, 2+ = the poll loop. */
+        long reads() {
+            return reads.get();
+        }
 
         @Override
         public ZoneId getZone() {
-            return delegate.getZone();
+            return ZoneOffset.UTC;
         }
 
         @Override
@@ -874,8 +895,9 @@ class GracefulShutdownRacesTest {
 
         @Override
         public Instant instant() {
+            reads.incrementAndGet();
             firstReadNanos.compareAndSet(Long.MIN_VALUE, System.nanoTime());
-            return delegate.instant();   // real time — the deadline arithmetic stays wall-clock true
+            return now;
         }
 
         long drainStartedOrThrow() {
@@ -885,6 +907,32 @@ class GracefulShutdownRacesTest {
                     .isNotEqualTo(Long.MIN_VALUE);
             return stamp;
         }
+    }
+
+    /**
+     * Runs the walk on a stopper daemon and threads the drain deadline from THIS thread (the 4.3
+     * review rework — the force-close rows never wait real time for the budget): waits until the
+     * drain body is polling its live pairs (the deadline read + the first loop read), then advances
+     * the {@link DrainClock} past the rig's SHORT deadline — the force-close fires at the row's
+     * word. Bounded at 10s; the stopper is a DAEMON (the mutation-pass discipline): a walk wedged
+     * past the bail fails the assert without hanging the test JVM.
+     */
+    private static void stopAdvancingPastTheDeadline(Rig rig, DrainClock clock) throws InterruptedException {
+        Thread stopper = new Thread(rig.ctx::close, "drain-clock-stopper");
+        stopper.setDaemon(true);
+        stopper.start();
+        long bail = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (clock.reads() < 2 && System.nanoTime() < bail) {
+            TimeUnit.MILLISECONDS.sleep(5);
+        }
+        assertThat(clock.reads())
+                .as("the drain body reached its poll loop (the deadline read + one loop read)")
+                .isGreaterThanOrEqualTo(2);
+        clock.advanceBy(COUPLED_DRAIN_DEADLINE.plusSeconds(1));   // past the rig's configured deadline
+        stopper.join(TimeUnit.SECONDS.toMillis(10));
+        assertThat(stopper.isAlive())
+                .as("the walk resolved at the advanced clock — never a wall-clock wait for the budget")
+                .isFalse();
     }
 
     /**
@@ -940,28 +988,8 @@ class GracefulShutdownRacesTest {
 
     /** A hand-authored opaque {@code submit_sm} (raw bytes — independent of the codec under test). */
     private static byte[] submitSm(int sequence) {
-        byte[] body = ascii("SUBMIT-" + sequence);
-        return assemble(0x00000004, 0, sequence, body.length, out -> out.put(body));
-    }
-
-    /** Writes raw bytes (several coalesced PDUs) — the framer under test owns the boundaries. */
-    private static void writeRaw(Socket socket, byte[] bytes) throws IOException {
-        socket.getOutputStream().write(bytes);
-        socket.getOutputStream().flush();
-    }
-
-    private static byte[] concat(List<byte[]> pdus) {
-        int total = 0;
-        for (byte[] pdu : pdus) {
-            total += pdu.length;
-        }
-        byte[] out = new byte[total];
-        int pos = 0;
-        for (byte[] pdu : pdus) {
-            System.arraycopy(pdu, 0, out, pos, pdu.length);
-            pos += pdu.length;
-        }
-        return out;
+        byte[] body = RelayTestFixtures.ascii("SUBMIT-" + sequence);
+        return RelayTestFixtures.assemble(0x00000004, 0, sequence, body.length, out -> out.put(body));
     }
 
     /** The {@code sequence_number} header field (offset 12) of a framed PDU — the integrity ledger key. */
@@ -1001,20 +1029,51 @@ class GracefulShutdownRacesTest {
                 .containsExactly(expected.stream().mapToInt(GracefulShutdownRacesTest::sequenceOf).toArray());
     }
 
+    /** A hand-authored opaque {@code deliver_sm} (0x00000005) — the SMSC→client direction's payload. */
+    private static byte[] deliverSm(int sequence) {
+        byte[] body = RelayTestFixtures.ascii("DELIVER-" + sequence);
+        return RelayTestFixtures.assemble(0x00000005, 0, sequence, body.length, out -> out.put(body));
+    }
+
     /**
-     * Bytes still readable before EOF — zero when the relay wrote nothing partial: every complete
-     * PDU toward the client was read whole beforehand, so a truncated mid-write frame would surface
-     * exactly here (the OBS-020 "no half-flushed frame" probe, client leg).
+     * The bytes still readable before EOF on the client leg — the OBS-020 "no half-flushed frame"
+     * probe's residue: everything the relay wrote toward the client after the last read-whole PDU.
      */
-    private static int bytesUntilEof(Socket socket) throws IOException {
+    private static byte[] bytesBeforeEof(Socket socket) throws IOException {
         socket.setSoTimeout(2_000);
         InputStream in = socket.getInputStream();
-        int total = 0;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
         int read;
         while ((read = in.read()) >= 0) {
-            total += read;
+            out.write(read);
         }
-        return total;
+        return out.toByteArray();
+    }
+
+    /**
+     * OBS-020's no-half-flush pin, LOADED (the 4.3 review's bite fix): the racing burst's residue
+     * must be a PREFIX of the burst that ends at a WHOLE-FRAME boundary — the relay flushed
+     * nothing, or only complete frames; a truncated mid-write frame leaves a residue length no
+     * boundary explains (and non-burst bytes fail the prefix equality).
+     */
+    private static void assertResidueIsWholeFramesOnly(byte[] residue, List<byte[]> burst) {
+        byte[] whole = RelayTestFixtures.concat(burst);
+        int boundary = 0;
+        boolean atWholeFrameBoundary = residue.length == 0;
+        for (byte[] frame : burst) {
+            boundary += frame.length;
+            if (residue.length == boundary) {
+                atWholeFrameBoundary = true;
+                break;
+            }
+        }
+        assertThat(atWholeFrameBoundary)
+                .as("the client-leg residue (%d byte(s)) ends at a WHOLE deliver_sm boundary — "
+                        + "never a half-flushed frame", residue.length)
+                .isTrue();
+        assertThat(residue)
+                .as("the residue is the burst's own leading bytes, in order")
+                .isEqualTo(Arrays.copyOfRange(whole, 0, residue.length));
     }
 
     /** {@code true} iff every value octet of the (shared-backing) password {@link AsciiString} is zero. */
@@ -1028,66 +1087,7 @@ class GracefulShutdownRacesTest {
         return true;
     }
 
-    /** A hand-authored {@code bind_transceiver} (raw bytes — independent of the codec under test). */
-    private static byte[] bindRequest(int sequence, String systemId, String password) {
-        byte[] id = ascii(systemId);
-        byte[] pw = ascii(password);
-        byte[] type = ascii("SMPP");
-        byte[] range = ascii("");
-        int body = (id.length + 1) + (pw.length + 1) + (type.length + 1) + 3 + (range.length + 1);
-        return assemble(BIND_TRANSCEIVER, 0, sequence, body, out -> {
-            out.put(id).put((byte) 0);
-            out.put(pw).put((byte) 0);
-            out.put(type).put((byte) 0);
-            out.put((byte) 0x34).put((byte) 0).put((byte) 0);
-            out.put(range).put((byte) 0);
-        });
-    }
-
-    private interface BodyWriter {
-        void writeTo(ByteBuffer out);
-    }
-
-    private static byte[] assemble(int commandId, int commandStatus, int sequence, int bodyLen,
-            BodyWriter writer) {
-        ByteBuffer out = ByteBuffer.allocate(16 + bodyLen);
-        out.putInt(16 + bodyLen).putInt(commandId).putInt(commandStatus).putInt(sequence);
-        writer.writeTo(out);
-        return out.array();
-    }
-
-    private static byte[] ascii(String s) {
-        return s.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    // ── raw-socket PDU I/O + the pinned deny contract (literals, independent of production) ───
-
-    private static void writePdu(Socket socket, byte[] pdu) throws IOException {
-        socket.getOutputStream().write(pdu);
-        socket.getOutputStream().flush();
-    }
-
-    /** Reads exactly ONE framed PDU (16-octet header, then {@code command_length - 16} body octets). */
-    private static byte[] readPdu(Socket socket) throws IOException {
-        InputStream in = socket.getInputStream();
-        byte[] header = in.readNBytes(16);
-        if (header.length < 16) {
-            throw new EOFException("peer closed mid-header (expected a complete framed PDU)");
-        }
-        int commandLength = ByteBuffer.wrap(header).getInt(0);
-        // Sanity bounds (4.2 review): < 16 is unframed; > 64KB cannot be a bind_resp this suite
-        // reads — a garbage frame from the relay under test must FAIL THE READ, never steer a
-        // copyOf into a ~2GB allocation that OOMs the test JVM instead of failing the test.
-        if (commandLength < 16 || commandLength > 65_536) {
-            throw new IOException("nonsense command_length " + commandLength + " on the wire");
-        }
-        byte[] pdu = java.util.Arrays.copyOf(header, commandLength);
-        int body = in.readNBytes(pdu, 16, commandLength - 16);
-        if (body < commandLength - 16) {
-            throw new EOFException("peer closed mid-body (partial frame reached the wire!)");
-        }
-        return pdu;
-    }
+    // ── the pinned deny contract (literals, independent of production) ────────────────────────
 
     /** The pinned ROK contract (the RelayA1SmokeTest literals) — the couple's premise at this leg. */
     private static void assertRokBindResp(byte[] resp, int expectedSequence) {

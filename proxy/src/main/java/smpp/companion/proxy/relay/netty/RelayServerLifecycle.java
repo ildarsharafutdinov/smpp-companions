@@ -22,8 +22,9 @@ import smpp.companion.proxy.relay.NewAdjudicationGate;
  * {@link ProxyCompanionLifecycle#APP_PHASE} — the deferred-work 2nd-SmartLifecycle ordering item).
  * The AD-22 5-step drain body is Epic 4; this bean owns only step 1's window: start = bind;
  * stop = arm the {@link NewAdjudicationGate} (Story 4.3 T4, OBS-017 — the established sockets the
- * closed listener cannot reach) + close the acceptor ONLY — the shared event loop SURVIVES the stop (Story 4.2 T2 re-authored
- * the quiesce out: every deny-time continuation executes on that loop, so killing it here would
+ * closed listener cannot reach) + close the acceptor ONLY — the shared event loop SURVIVES the stop
+ * (Story 4.2 T2 re-authored the quiesce out: every deny-time continuation executes on that loop, so
+ * killing it here would
  * strand the fail-closed {@code bind_resp}s AD-22 step 2 owes the clients). The quiesce — an explicit
  * short quiet period, never Netty's 2s default — is the shutdown coordinator's final step
  * ({@link ProxyCompanionLifecycle}, Story 4.2 T3), with the group bean's
