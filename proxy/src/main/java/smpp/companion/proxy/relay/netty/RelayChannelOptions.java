@@ -15,10 +15,14 @@ import smpp.companion.proxy.config.ProxyCompanionProperties;
 /**
  * The shared per-channel option substrate for BOTH relay legs (AC4; AD-2/AD-21/AD-30) — applied by
  * {@link RelayServerLifecycle} to the acceptor's child channels now, and by the T7 egress
- * {@code Bootstrap} to every per-bind SMSC connection. One component so both legs carry IDENTICAL
- * options (they are the same data plane): the AD-21 shared allocator, the AD-2
+ * {@code Bootstrap} to every per-bind SMSC connection. One component so both legs carry the IDENTICAL
+ * data-plane substrate (they are one coupled plane): the AD-21 shared allocator, the AD-2
  * {@code AUTO_READ=false} demand-driven read, and the AD-30 explicit
- * {@link ChannelOption#WRITE_BUFFER_WATER_MARK}.
+ * {@link ChannelOption#WRITE_BUFFER_WATER_MARK}. Two options are deliberately PER-LEG rather than
+ * shared: the acceptor's {@code SO_REUSEADDR} (ingress-only listener semantics — see
+ * {@link #applyToIngress}) and, since Story 4.4 T1 (F10), the egress dial's bound
+ * {@link ChannelOption#CONNECT_TIMEOUT_MILLIS} (client-connect semantics — an accepted ingress
+ * socket never dials; see {@link #connectTimeoutMillis()}).
  *
  * <p><b>Watermark math (AD-30 &mdash; the per-channel bound, made real in bytes; direction matters).</b>
  * The watermark trips on the channel's OWN OUTBOUND write buffer ({@link WriteBufferWaterMark} is the
@@ -76,16 +80,40 @@ public final class RelayChannelOptions {
     /**
      * Applies the SAME substrate to a per-bind egress {@code Bootstrap} (the SMSC leg — T7 assembles
      * one per accepted bind, HexDumpProxy-style, with the ingress channel's event loop as its group).
-     * Identical options on both legs is the point: ingress and egress are one coupled data plane.
-     * NO {@code SO_REUSEADDR} here — that is acceptor-socket semantics (rebind over TIME_WAIT on a
-     * listener); a connecting client socket has no use for it.
+     * Identical data-plane options on both legs is the point: ingress and egress are one coupled data
+     * plane. NO {@code SO_REUSEADDR} here — that is acceptor-socket semantics (rebind over TIME_WAIT on a
+     * listener); a connecting client socket has no use for it. PLUS the one egress-ONLY option (the
+     * mirror of that asymmetry): the dial bound {@link ChannelOption#CONNECT_TIMEOUT_MILLIS}, derived
+     * from the adjudication deadline (Story 4.4 T1, F10 — see {@link #connectTimeoutMillis()}).
      *
      * @param bootstrap the egress {@link Bootstrap} being assembled for one bind's SMSC connection
      */
     public void applyToEgress(Bootstrap bootstrap) {
         bootstrap.option(ChannelOption.ALLOCATOR, allocator)
                 .option(ChannelOption.AUTO_READ, false)
-                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, writeBufferWaterMark());
+                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, writeBufferWaterMark())
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMillis());
+    }
+
+    /**
+     * The egress dial bound (Story 4.4 T1, F10): {@code CONNECT_TIMEOUT_MILLIS} DERIVED from
+     * {@code companion.bind.adjudication-deadline} — no second knob (the F13 one-number precedent:
+     * the deadline IS the whole pre-couple auth budget, so the dial bound is the same number).
+     * Without it a SYN-blackholing SMSC target hangs the legacy client's socket on Netty/OS's ~30s
+     * default — ~7.5&times; PERF-3's configured fail-closed budget; with it the dial fails at
+     * &le; the deadline and the existing connect-fail arm ({@code BindInterceptor}'s
+     * {@code EGRESS_CONNECT_FAILED} deny) answers immediately, so the worst-case client answer is
+     * deadline + &epsilon;.
+     *
+     * <p>Long math with both clamps (the {@link #writeBufferWaterMark()} idiom): {@code max(1, &hellip;)}
+     * because the {@code Bind} record's positive guard admits SUB-millisecond durations whose
+     * {@code toMillis()} floors to 0 — a 0ms bound is no bound; {@code min(Integer.MAX_VALUE, &hellip;)}
+     * because the same guard admits pathologically large durations whose millis would wrap the
+     * int-typed option negative.
+     */
+    private int connectTimeoutMillis() {
+        long millis = properties.bind().adjudicationDeadline().toMillis();
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1L, millis));
     }
 
     /**

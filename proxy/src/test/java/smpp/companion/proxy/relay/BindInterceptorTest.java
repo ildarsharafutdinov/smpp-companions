@@ -21,6 +21,7 @@ import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.ConnectTimeoutException;
 import io.netty.channel.DefaultChannelId;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -265,6 +266,46 @@ class BindInterceptorTest {
         assertThat(observer.connectionCloses())
                 .as("Story 4.1 T4 hoist: the connect-fail close carries EGRESS_CONNECT_FAILED — the "
                         + "taxonomy value's namesake arm (no egress leg exists to close)")
+                .containsExactly(new CapturingRelayObserver.ConnectionClose(
+                        Direction.INGRESS, CloseReason.EGRESS_CONNECT_FAILED));
+        assertThat(frame.refCnt()).as("the never-forwarded original frame is released").isZero();
+    }
+
+    @Test
+    @DisplayName("F10 (Story 4.4 T1): a blackholed SMSC target fails the dial at the deadline-derived "
+            + "CONNECT_TIMEOUT_MILLIS — the SAME collapse arm as a refused connect")
+    void blackholedEgressFailsAtTheDerivedConnectBoundAndCollapses() {
+        verifier.completeAllow();
+        egress = new EmbeddedChannel();
+        // The connect-timeout shape Netty fails the dial future with once CONNECT_TIMEOUT_MILLIS
+        // elapses against a SYN-dropping target — the blackhole variant of the refused-connect row
+        // above (RELAY-020b's unit half; the bound itself is pinned in RelayChannelOptionsTest).
+        connector.result = egress.newFailedFuture(
+                new ConnectTimeoutException("connection timed out: " + SMSC_HOST + '/' + SMSC_PORT));
+        ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 21, "legacy1", "pw123456"));
+        ingress.writeInbound(frame);
+
+        // The dial the interceptor assembled carried the DERIVED bound — the fixture's 4s adjudication
+        // deadline → 4000ms, NOT Netty's ~30s default (the F10 landing: the legacy client's answer is
+        // bounded by the deadline, deadline + ε at worst).
+        Bootstrap bootstrap = connector.bootstraps.get(0);
+        assertThat(bootstrap.config().options().get(ChannelOption.CONNECT_TIMEOUT_MILLIS))
+                .as("the egress dial is bounded at the adjudication-deadline millis (F10)")
+                .isEqualTo((int) RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE.toMillis());
+
+        // The existing connect-fail arm runs unchanged: AD-33 deny, no onBindReject, teardown, release.
+        ByteBuf deny = ingress.readOutbound();
+        assertThat(deny).as("the timeout-shaped connect failure answers with the AD-33 deny").isNotNull();
+        assertThat(deny.getInt(8)).isEqualTo(ESME_RBINDFAIL);
+        assertThat(deny.getInt(12)).as("correlates the still-pending bind").isEqualTo(21);
+        assertThat(observer.bindRejects())
+                .as("NOT a Verdict — a timed-out dial never reaches onBindReject (AD-27)")
+                .isEmpty();
+        assertThat(ingress.isOpen()).as("deny → then close").isFalse();
+        assertThat(registry.size()).as("the pair is cleaned from the registry").isZero();
+        assertThat(observer.connectionCloses())
+                .as("Story 4.1 T4 hoist: the timeout-shaped connect-fail close carries "
+                        + "EGRESS_CONNECT_FAILED — indistinguishable from a refused dial by design")
                 .containsExactly(new CapturingRelayObserver.ConnectionClose(
                         Direction.INGRESS, CloseReason.EGRESS_CONNECT_FAILED));
         assertThat(frame.refCnt()).as("the never-forwarded original frame is released").isZero();

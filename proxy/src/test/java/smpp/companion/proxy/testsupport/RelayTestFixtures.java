@@ -144,9 +144,30 @@ public final class RelayTestFixtures {
      */
     public static ProxyCompanionProperties modeBProperties(
             int bindPort, int maxInboundDepth, String smscHost, int smscPort) {
+        return modeBProperties(bindPort, maxInboundDepth, smscHost, smscPort, DEFAULT_ADJUDICATION_DEADLINE);
+    }
+
+    /**
+     * The adjudication-deadline variant (Story 4.4 T1): rows that pin the DERIVATION of the egress
+     * dial bound ({@code CONNECT_TIMEOUT_MILLIS} = {@code companion.bind.adjudication-deadline}
+     * millis) need fixtures whose deadline differs from the yml default — otherwise the pin cannot
+     * tell a derivation from a coincidental constant.
+     */
+    public static ProxyCompanionProperties modeBProperties(
+            int bindPort, int maxInboundDepth, Duration adjudicationDeadline) {
+        return modeBProperties(bindPort, maxInboundDepth, "smsc.example", 2775, adjudicationDeadline);
+    }
+
+    /**
+     * The egress-targeted + adjudication-deadline variant: the full-fidelity builder every overload
+     * above funnels into (one home — a {@code ProxyCompanionProperties} field addition breaks ONE
+     * fixture).
+     */
+    public static ProxyCompanionProperties modeBProperties(
+            int bindPort, int maxInboundDepth, String smscHost, int smscPort, Duration adjudicationDeadline) {
         return new ProxyCompanionProperties(
                 new ProxyCompanionProperties.Bind(
-                        bindPort, DEFAULT_BIND_HOST, DEFAULT_ADJUDICATION_DEADLINE),
+                        bindPort, DEFAULT_BIND_HOST, adjudicationDeadline),
                 new ProxyCompanionProperties.Memory(
                         maxInboundDepth, DEFAULT_CONCURRENT_PAIRS, 1.0,
                         ProxyCompanionProperties.Memory.BudgetCheck.FAIL),

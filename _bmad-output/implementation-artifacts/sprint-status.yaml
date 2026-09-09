@@ -96,7 +96,7 @@ development_status:
   4-1-structured-logs-and-loopback-metrics: done
   4-2-graceful-shutdown-deny-on-live-loop: done
   4-3-graceful-shutdown-drain: done
-  4-4-relay-timeout-round: ready-for-dev
+  4-4-relay-timeout-round: in-progress
   epic-4-retrospective: optional
 
   # --- Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker ---

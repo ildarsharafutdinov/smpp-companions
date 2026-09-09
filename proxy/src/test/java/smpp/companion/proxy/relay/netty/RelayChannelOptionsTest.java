@@ -53,6 +53,12 @@ class RelayChannelOptionsTest {
         assertThat(childOptions.get(ChannelOption.AUTO_READ))
                 .as("AUTO_READ must be OFF on the ingress leg (AD-2 write-completes-gates-read)")
                 .isEqualTo(false);
+        // Story 4.4 T1 (F10): the connect bound is CLIENT-dial semantics — an accepted ingress socket
+        // never dials, so the option must not ride the acceptor's child config (the mirror of the
+        // SO_REUSEADDR ingress-only asymmetry on the egress side).
+        assertThat(childOptions.get(ChannelOption.CONNECT_TIMEOUT_MILLIS))
+                .as("CONNECT_TIMEOUT_MILLIS never rides the accepted ingress legs (client-dial-only)")
+                .isNull();
         // AD-30: explicit low-water re-arm + per-channel inbound ceiling (64 frames high).
         // (WriteBufferWaterMark has no equals — assert the low()/high() accessors.)
         WriteBufferWaterMark ingressMark = (WriteBufferWaterMark)
@@ -65,7 +71,7 @@ class RelayChannelOptionsTest {
     }
 
     @Test
-    @DisplayName("egress options: the IDENTICAL substrate (both legs are one data plane)")
+    @DisplayName("egress options: the shared substrate + the egress-only dial bound (one data plane)")
     void egressBootstrapCarriesTheIdenticalSubstrate() {
         Bootstrap bootstrap = new Bootstrap();
         options(64).applyToEgress(bootstrap);
@@ -84,11 +90,46 @@ class RelayChannelOptionsTest {
                 .isNotNull();
         assertThat(egressMark.low()).isEqualTo(SmppFrame.MAX_COMMAND_LENGTH);
         assertThat(egressMark.high()).isEqualTo(SmppFrame.MAX_COMMAND_LENGTH * 64);
+        // Story 4.4 T1 (F10): the dial bound — DERIVED from companion.bind.adjudication-deadline (the
+        // 4s yml/fixture default → 4000ms), so a SYN-blackholing SMSC target fails the dial at the
+        // deadline, not on Netty's ~30s OS default. Mutation: the derive removed → this key vanishes
+        // from the map → RED.
+        assertThat(channelOptions.get(ChannelOption.CONNECT_TIMEOUT_MILLIS))
+                .as("the egress dial is bounded at the adjudication-deadline millis (F10: 4s → 4000)")
+                .isEqualTo(4_000);
         // The one ingress-only option stays absent here: SO_REUSEADDR is acceptor-socket semantics
         // (rebind over TIME_WAIT on a listener) — a connecting client socket has no use for it.
         assertThat(channelOptions.get(ChannelOption.SO_REUSEADDR))
                 .as("SO_REUSEADDR never rides the egress client bootstrap")
                 .isNull();
+    }
+
+    @Test
+    @DisplayName("F10: the dial bound is DERIVED from adjudication-deadline — custom value flows through; "
+            + "sub-millisecond floors clamp to 1; pathological size clamps at Integer.MAX_VALUE")
+    void connectTimeoutMillisDerivesFromTheAdjudicationDeadline() {
+        // A deadline that differs from the 4s default pins the DERIVATION, not a coincidental constant.
+        Bootstrap custom = new Bootstrap();
+        options(64, java.time.Duration.ofMillis(1500)).applyToEgress(custom);
+        assertThat(custom.config().options().get(ChannelOption.CONNECT_TIMEOUT_MILLIS))
+                .as("CONNECT_TIMEOUT_MILLIS == adjudication-deadline millis (1500ms fixture)")
+                .isEqualTo(1_500);
+
+        // The Bind record's positive guard admits SUB-millisecond durations; toMillis() floors them to
+        // 0 — a 0ms bound is no bound. The floor clamp keeps the option at 1.
+        Bootstrap subMilli = new Bootstrap();
+        options(64, java.time.Duration.ofNanos(999_999)).applyToEgress(subMilli);
+        assertThat(subMilli.config().options().get(ChannelOption.CONNECT_TIMEOUT_MILLIS))
+                .as("a positive sub-millisecond deadline floors to 0 in toMillis() — clamped to 1")
+                .isEqualTo(1);
+
+        // The same guard admits pathologically large durations; the int-typed option must clamp, not
+        // wrap (the watermark's long-math idiom — a wrapped negative bound would be garbage).
+        Bootstrap huge = new Bootstrap();
+        options(64, java.time.Duration.ofSeconds(Integer.MAX_VALUE)).applyToEgress(huge);
+        assertThat(huge.config().options().get(ChannelOption.CONNECT_TIMEOUT_MILLIS))
+                .as("a pathological deadline clamps at Integer.MAX_VALUE — never a wrapped negative")
+                .isEqualTo(Integer.MAX_VALUE);
     }
 
     @Test
@@ -126,10 +167,16 @@ class RelayChannelOptionsTest {
 
     /**
      * Builds the options component over the shared minimal mode-b fixture (the bind port is irrelevant
-     * to the option maps — 2775 kept from the pre-consolidation copy).
+     * to the option maps — 2775 kept from the pre-consolidation copy). The deadline overload feeds the
+     * F10 derivation rows (Story 4.4 T1).
      */
     private static RelayChannelOptions options(int maxInboundDepth) {
+        return options(maxInboundDepth, RelayTestFixtures.DEFAULT_ADJUDICATION_DEADLINE);
+    }
+
+    private static RelayChannelOptions options(int maxInboundDepth, java.time.Duration adjudicationDeadline) {
         return new RelayChannelOptions(
-                RelayTestFixtures.modeBProperties(2775, maxInboundDepth), PooledByteBufAllocator.DEFAULT);
+                RelayTestFixtures.modeBProperties(2775, maxInboundDepth, adjudicationDeadline),
+                PooledByteBufAllocator.DEFAULT);
     }
 }

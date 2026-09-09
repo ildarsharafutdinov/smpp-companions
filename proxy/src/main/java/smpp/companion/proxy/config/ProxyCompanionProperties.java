@@ -364,8 +364,12 @@ public record ProxyCompanionProperties(
      *         {@code BindCredentialVerifier} via the {@code ScopedValue} (AD-5/AD-12); the Epic-3 ROPC
      *         adapter derives its per-call timeouts from it. Default {@code 4s} in
      *         {@code application.yml} — the PERF-3-flavored bind-latency budget; the wired
-     *         {@code AlwaysAllow} stand-in ignores it, and the RELAY-side timeout arm
-     *         (no-hanging-socket enforcement) remains the deferred RELAY-020 slice. Positive — zero and
+     *         {@code AlwaysAllow} stand-in ignores it. Relay-side arms (Story 4.4): the EGRESS half is
+     *         armed — {@code RelayChannelOptions.applyToEgress} derives the per-bind dial's
+     *         {@code CONNECT_TIMEOUT_MILLIS} from this value (F10: a blackholed SMSC target fails the
+     *         dial at the deadline, not on Netty's ~30s default; the same number, not a second knob —
+     *         the F13 precedent); the INGRESS deadline timer (deny at deadline when the verifier never
+     *         settles) remains the deferred RELAY-020 slice. Positive — zero and
      *         negative refuse startup (compact-ctor guard, AD-17).
      */
     public record Bind(
