@@ -11,8 +11,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -37,9 +41,13 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import smpp.companion.proxy.config.ProxyCompanionProperties;
+import smpp.companion.proxy.observability.CapturingRelayObserver;
+import smpp.companion.proxy.observability.CloseReason;
+import smpp.companion.proxy.observability.Direction;
 import smpp.companion.proxy.relay.MockSmsc;
 import smpp.companion.proxy.relay.netty.RelayChannelOptions;
 import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
@@ -86,13 +94,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the LIVE loop, the fail-closed settle, and the once-only pin.</li>
  * <li><b>The matrix row "SIGTERM, coupled pairs mid-splice" + AC3's coupled arm.</b> The
  * IMMEDIATE-answer IdP variant lets the bind genuinely COUPLE (token Allow &rarr; egress dial
- * &rarr; the mock's ROK — the only row in this suite where the couple flag DOES flip); the walk
+ * &rarr; the mock's ROK — the only row family in this suite where the couple flag DOES flip); the walk
  * then fires mid-splice and pins the drain body's contract (Story 4.3 T5): neither peer
  * half-closes, so the drain polls the registry to the rig's SHORT drain deadline and
  * force-closes the pair there ({@code SHUTDOWN_DRAIN} stashed on both legs) — both legs die,
  * the registry empties, and the walk still exits inside the meaningful window (the 5s idiom,
- * well under the 30s ceiling). The sequence-integrity and observer-level drain proofs (RELAY-022,
- * OBS-020) are T6's.</li>
+ * well under the 30s ceiling). Story 4.3 T6 adds the two proofs that row named as T6's: the
+ * RELAY-022 sequenced-splice row (N coupled pairs mid-splice — every accepted PDU lands
+ * byte-exact with its sequence number intact, never dropped, duplicated, or truncated by the
+ * force-close) and the OBS-020 observer row (the force-close's {@code SHUTDOWN_DRAIN} named on
+ * BOTH legs through the {@code CapturingRelayObserver} seam, zero half-flushed bytes on the
+ * client leg).</li>
  * <li><b>OBS-021 — zero orphaned adjudication VTs.</b> The catalog's literal "ThreadMXBean
  * snapshot" is unimplementable as written: JEP 444 excludes virtual threads from
  * {@code Thread.getAllStackTraces()}/{@code ThreadMXBean.getAllThreadIds()} (verified empirically
@@ -103,15 +115,33 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * hold it &gt; 0) — plus the joined-walk bound: release's {@code awaitTermination} only returns
  * promptly if the pool drained, so a walk that finished well inside the await budget proves no VT
  * outlived it.</li>
- * <li><b>The ordering prefix pin</b> (the OBS-016 probe's 4.3 extension lands later):
- * acceptor-stopped &le; adjudications-denied &le; vt-released &le; loop-quiesced, observed
- * INDEPENDENTLY of the stop calls by four monotonic probes stamped on one nanoTime timeline —
- * the port rebindable (the acceptor REALLY closed), the in-flight pin settled fail-closed (the
- * deny's effect, stamped by a {@code whenComplete} listener registered BEFORE the relay's own
- * continuation), the VT pool drained to zero, and the shared loop terminated. The middle two are
- * µs-adjacent causal twins (the settle and the pool task's exit), so the prefix is asserted as a
- * chain of windows: the acceptor stop strictly precedes BOTH, BOTH strictly precede the quiesce
- * (margins ~500ms and ~100ms) — never the twins against each other at nanoTime granularity.</li>
+ * <li><b>The OBS-016 six-event ordering chain</b> (Story 4.3 T6 — the 4.2 ordering-prefix pin
+ * EXTENDED, not re-authored): acceptor-stopped &le; adjudications-denied &le; drain-started &le;
+ * drain-completed &le; vt-drained &le; exit. The walk's step gaps (acceptor &rarr; deny &rarr;
+ * drain entry) are MILLISECONDS — far under the 5ms poll-cadence jitter the 4.2 row absorbed with
+ * seconds-wide budgets — so the first three events are stamped CAUSALLY on the close thread
+ * itself: two {@link PhaseStamp} listener beans slotted strictly between the production phases
+ * (Spring stops phases strictly descending and awaits each before the next, so an 875-phase
+ * stamp can only be taken after the acceptor's stop completed and a 375-phase stamp only after
+ * the deny returned), plus the drain's FIRST clock read ({@link DrainStartClock} — the rig
+ * constructs the coordinator directly, the deadline's injectable time source is the seam).
+ * "Adjudications-denied" is thereby the DENY STEP's completion — the settle of the parked
+ * exchange is its bounded async tail (the forked join ignores the interrupt; release's await
+ * joins it at step 4), which mechanically lands INSIDE the drain window, after drain-started —
+ * pinning the settle there instead would false-RED the spine's own design. The last three events
+ * keep the 4.2 polled-probe discipline (monotonic predicates, stamps can only run LATE):
+ * drain-completed = the registry reaching zero (the deadline force-close), vt-drained = the VT
+ * pool count reaching zero, exit = the shared loop terminated behind the 100ms-quiet quiesce.
+ * The row arms the SHORT drain deadline so the force-close lands ~300ms in — a &ge;300ms margin
+ * for every arrow the pollers CAN separate. The one pair they cannot: drain-completed and
+ * vt-drained are µs-adjacent causal twins BY THE DRAIN'S OWN MECHANICS (the force-close's
+ * teardown hygiene {@code cancelHttp()}s the parked exchange inside the same loop iteration that
+ * removed its entry — the pin completes on the walk thread and the pool task's finally lands
+ * microseconds behind; and from the other side a self-settle empties the registry, so the pool
+ * can never outlive the registry by more than that finally) — asserted as one window against
+ * drain-started and exit, never against each other, the 4.2 prefix row's own discipline. The 4.2
+ * arrows survive transitively: the settle (the pool-count flip) is strictly after the acceptor
+ * stamp and strictly before the loop's death.</li>
  * </ul>
  *
  * <p>Timing idiom (the T3 rows): a SHORT {@code oidc.timeout} budget — the parked exchange aborts
@@ -315,15 +345,25 @@ class GracefulShutdownRacesTest {
     }
 
     @Test
-    @DisplayName("ordering prefix: acceptor-stopped ≤ adjudications-denied ≤ vt-released ≤ "
-            + "loop-quiesced — four monotonic probes on one timeline, independent of the stop calls")
-    void theWalksOrderingPrefixAcceptorDeniedReleasedQuiesced(@TempDir Path dir) throws Exception {
-        // A LONG per-request budget for THIS row (4.2 review, not the suite's 500ms idiom): the
-        // pinned exchange self-aborts at its OWN budget, so a 500ms budget races the watcher arming
-        // and the acceptor stop (a slow runner between awaitTokens() and ctx.close() would settle
-        // the pin BEFORE the acceptor stopped → t1 < t2 false-RED). 3s makes the arming race
-        // unwinnable and widens every watcher's stamp margin from ~100ms to seconds.
-        Rig rig = rig(dir, 1, true, Duration.ofSeconds(3));
+    @DisplayName("OBS-016 six-event chain: acceptor-stopped ≤ adjudications-denied ≤ drain-started ≤ "
+            + "drain-completed ≤ vt-drained ≤ exit — causal phase stamps + polled effect stamps, one timeline")
+    void theWalksSixEventOrderingChainAcceptorDeniedDrainReleasedExit(@TempDir Path dir) throws Exception {
+        // The 4.2 ordering-prefix row EXTENDED to the OBS-016 six-event probe (the frozen block's
+        // "extends, not re-authored" — its arrows all survive below, transitively). Budgets: the 3s
+        // oidc idiom (4.2 review: the parked exchange self-aborts at its OWN budget, so 500ms would
+        // race the watcher arming and the acceptor stop — a pre-close settle would break t3 ≤ t5)
+        // PLUS the SHORT drain deadline: the force-close lands ~300ms in, giving the t3 → effect
+        // arrows a ≥300ms mechanical margin over the 5ms poll cadence. The deny rows keep oidc + 2s
+        // so the force-close cannot beat the deny bind_resp write; THIS row does not read the
+        // client's bind_resp (the force-close closes the parked pair's ingress before its
+        // continuation could write it — the bind_resp contract is the RELAY-023 row's).
+        DrainStartClock clock = new DrainStartClock();
+        PhaseStamp acceptorStopped = new PhaseStamp((RelayServerLifecycle.RELAY_ACCEPTOR_PHASE
+                + AdjudicationLifecycle.ADJUDICATION_PHASE) / 2);   // 875: strictly acceptor → deny
+        PhaseStamp adjudicationsDenied = new PhaseStamp((AdjudicationLifecycle.ADJUDICATION_PHASE
+                + ProxyCompanionLifecycle.APP_PHASE) / 2);   // 375: strictly deny → coordinator
+        Rig rig = rig(dir, 1, true, Duration.ofSeconds(3), COUPLED_DRAIN_DEADLINE,
+                clock, acceptorStopped, adjudicationsDenied);
         ExecutorService watchers = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "shutdown-race-watcher");
             t.setDaemon(true);
@@ -333,51 +373,210 @@ class GracefulShutdownRacesTest {
             writePdu(legacy, bindRequest(9, "legacy1", "pw123456"));
             assertTrue(rig.awaitTokens(), "the adjudication must be in-flight when SIGTERM fires");
 
-            // Armed BEFORE the walk; each stamps the FIRST time its monotonic predicate holds, so a
-            // stamp can only run LATE, never early — the asserted chain is conservative.
-            Future<Long> acceptorStopped = watchers.submit(() -> pollStamp("the acceptor port freed",
-                    () -> portFree(rig.relayPort)));
-            Future<Long> adjudicationsDenied = watchers.submit(() -> pollStamp(
-                    "the in-flight adjudication settled fail-closed",
-                    () -> !rig.recorder.settleStamps.isEmpty()));
-            Future<Long> vtReleased = watchers.submit(() -> pollStamp("the adjudication VT pool drained",
+            // The three EFFECT probes, armed BEFORE the walk (the 4.2 discipline): each stamps the
+            // FIRST time its monotonic predicate holds, so a stamp can only run LATE, never early —
+            // the asserted chain is conservative. All three predicates are FALSE at arming (the
+            // parked pair's optimistic entry holds the registry at 1, its adjudication the pool at 1).
+            Future<Long> drainCompleted = watchers.submit(() -> pollStamp(
+                    "the registry emptied (the drain force-closed the parked pair at the deadline)",
+                    () -> rig.harness.registry().size() == 0));
+            Future<Long> vtDrained = watchers.submit(() -> pollStamp(
+                    "the adjudication VT pool drained (the force-close's cancelHttp settled the parked exchange)",
                     () -> rig.adapter.activeAdjudications() == 0));
-            Future<Long> loopQuiesced = watchers.submit(() -> pollStamp("the shared relay loop terminated",
+            Future<Long> exitStamp = watchers.submit(() -> pollStamp("the shared relay loop terminated",
                     rig.group::isTerminated));
 
             rig.ctx.close(); // SIGTERM-equivalent — the phases, not this hand, order the walk
 
-            long t1 = acceptorStopped.get(20, TimeUnit.SECONDS);
-            long t2 = adjudicationsDenied.get(20, TimeUnit.SECONDS);
-            long t3 = vtReleased.get(20, TimeUnit.SECONDS);
-            long t4 = loopQuiesced.get(20, TimeUnit.SECONDS);
+            // The causal close-thread prefix (NO poll jitter): Spring stops phases strictly
+            // descending and awaits each phase's stop before the next begins, so the 875 stamp is
+            // taken only after the acceptor's stop completed, the 375 stamp only after the deny
+            // step returned, and the drain's first clock read (drain-started) only inside the
+            // coordinator's stop that follows them all. "Adjudications-denied" is thereby the DENY
+            // STEP's completion — the parked exchange's settle is its bounded async tail (joined by
+            // release's await at step 4), mechanically INSIDE the drain window by design.
+            long t1 = acceptorStopped.stampOrThrow("the acceptor phase completed");
+            long t2 = adjudicationsDenied.stampOrThrow("the deny phase completed");
+            long t3 = clock.drainStartedOrThrow();
+            long t4 = drainCompleted.get(20, TimeUnit.SECONDS);
+            long t5 = vtDrained.get(20, TimeUnit.SECONDS);
+            long t6 = exitStamp.get(20, TimeUnit.SECONDS);
 
-            // The deny's effect is fail-closed (not a provider verdict) — the probe saw the REAL settle.
+            // The six-event chain (OBS-016). The prefix is causal (same thread, Spring's phase
+            // sequencing) — ≤, exact. The effect arrows carry ≥300ms mechanical margins over the
+            // 5ms poll cadence — strict <. The ONE window: drain-completed and vt-drained are
+            // µs-adjacent CAUSAL TWINS by the drain's own mechanics — the force-close's teardown
+            // hygiene cancelHttp()s the parked exchange's pending verdict INSIDE the same loop
+            // iteration that removed its registry entry, so the pin completes on the walk thread
+            // and the pool task's finally lands microseconds behind the registry flip (and the
+            // alternative ordering — the exchange's own settle emptying the registry — is the same
+            // twin pair from the other side: a settle tears down its pair, so the pool can never
+            // outlive the registry by more than the finally's µs). They are asserted as one window
+            // against t3 and t6, never against each other — the 4.2 prefix row's discipline for
+            // exactly this mechanical reason.
+            assertThat(t1).as("step 1 -> step 2: the acceptor stopped before the deny phase ran")
+                    .isLessThanOrEqualTo(t2);
+            assertThat(t2).as("step 2 -> step 3: the deny step completed before the drain began")
+                    .isLessThanOrEqualTo(t3);
+            assertThat(t3).as("step 3: the drain began before it completed (the deadline force-close)")
+                    .isLessThan(t4);
+            assertThat(t3).as("step 3: the drain began before the VT pool drained (the twin window's "
+                    + "other side)")
+                    .isLessThan(t5);
+            assertThat(t4).as("the drain-completed/vt-drained twin window closed before the exit "
+                    + "(release's await joined the settled pool, then the 100ms-quiet quiesce)")
+                    .isLessThan(t6);
+            assertThat(t5).as("the VT pool drained before the loop's death (release's await joins it)")
+                    .isLessThan(t6);
+            // The 4.2 prefix arrows, transitively re-stated (the settle is the pool-count flip the
+            // vt-drained probe observed): the acceptor strictly precedes the fail-closed settle...
+            assertThat(t1).as("4.2 prefix: the acceptor stopped before the in-flight settle landed")
+                    .isLessThan(t5);
+            // ...and the settle's verdict is the fail-closed deny, not a provider verdict.
             assertThat(rig.recorder.settleVerdicts.get(0))
-                    .as("the settle the ordering probe observed is the fail-closed deny")
+                    .as("the settle the pool-drain probe observed is the fail-closed deny")
                     .isInstanceOf(Verdict.DenyIndeterminate.class);
-            // The prefix pin, as a CHAIN OF WINDOWS (the spec's ≤ chain): the acceptor stop
-            // strictly precedes BOTH middle observables, and BOTH strictly precede the loop's
-            // death — so acceptor-stopped < {adjudications-denied, vt-released} < loop-quiesced.
-            // The two middle observables themselves are µs-adjacent causal twins (the pool task
-            // settles the pin and exits; a concurrent cancelHttp settle can complete the pin on
-            // the relay's thread instead — either fail-closed arm winning that µs race is
-            // contract-identical), so they are asserted as one window, never against each other.
-            assertThat(t1).as("step 1: the acceptor stopped before the adjudications were denied")
-                    .isLessThan(t2);
-            assertThat(t1).as("step 1: the acceptor stopped before the VT pool released")
-                    .isLessThan(t3);
-            assertThat(t2).as("steps 2->5: the adjudications denied before the loop quiesced")
-                    .isLessThan(t4);
-            assertThat(t3).as("steps 4->5: the VT pool released before the loop quiesced")
-                    .isLessThan(t4);
-            // The end state the walk owes, and the client-visible outcome.
+
+            // The end state the walk owes, and the client-visible outcome (the parked pair was
+            // force-closed at the deadline — before its continuation could write the deny
+            // bind_resp — so this row pins EOF, not the bind_resp; that contract is the
+            // RELAY-023 row's, whose deadline outlives the settle).
             assertThat(rig.group.isTerminated()).as("the walk awaited the loop's death").isTrue();
             assertThat(rig.adapter.activeAdjudications()).isZero();
-            assertDenyBindResp(readPdu(legacy), 9);
+            assertThat(rig.harness.registry().size()).isZero();
             assertAtEof(legacy);
+            // The acceptor REALLY closed (the 4.2 t1 probe, kept as an end-state check — the
+            // ordering above no longer needs its poll jitter).
+            awaitTrue("the acceptor port freed", () -> portFree(rig.relayPort));
         } finally {
             watchers.shutdownNow();
+            rig.close();
+        }
+    }
+
+    @Test
+    @DisplayName("RELAY-022: N coupled pairs mid-splice drain clean — every accepted PDU lands "
+            + "byte-exact with its sequence number intact (no drop, no dup, no truncation at the "
+            + "force-close), the registry reaches zero, the walk exits inside the window")
+    void relay022CoupledPairsMidSpliceDrainWithSequenceIntegrity(@TempDir Path dir) throws Exception {
+        Rig rig = rig(dir, 2, false);   // IMMEDIATE-answer IdP: both binds genuinely couple
+        try (Socket legacyA = rig.connectLegacy(); Socket legacyB = rig.connectLegacy()) {
+            byte[] bindA = bindRequest(21, "legacy1", "pw123456");
+            byte[] bindB = bindRequest(22, "legacy1", "pw123456");
+            writePdu(legacyA, bindA);
+            writePdu(legacyB, bindB);
+            assertRokBindResp(readPdu(legacyA), 21);   // the full chain per pair: token Allow -> dial -> SMSC ROK
+            assertRokBindResp(readPdu(legacyB), 22);
+            assertThat(rig.harness.registry().size())
+                    .as("both coupled pairs are live mid-splice")
+                    .isEqualTo(2);
+
+            // Match each legacy client to ITS SMSC session by the bind frame it carried (the
+            // egress accept order is a race — the RelayA1SmokeTest idiom).
+            MockSmsc.Session sessionA = sessionBoundWith(rig, bindA);
+            MockSmsc.Session sessionB = sessionBoundWith(rig, bindB);
+
+            // The sequenced splice: three submit_sm per client, distinct sequence numbers, one
+            // coalesced write per leg (the framers must preserve the boundaries both ways).
+            List<byte[]> spliceA = List.of(submitSm(3101), submitSm(3102), submitSm(3103));
+            List<byte[]> spliceB = List.of(submitSm(3201), submitSm(3202), submitSm(3203));
+            writeRaw(legacyA, concat(spliceA));
+            writeRaw(legacyB, concat(spliceB));
+            assertThat(sessionA.awaitPdus(3))
+                    .as("pair A's splice landed complete before SIGTERM — no drop, no dup, byte-exact")
+                    .containsExactlyElementsOf(spliceA);
+            assertThat(sessionB.awaitPdus(3))
+                    .as("pair B's splice landed complete before SIGTERM — no drop, no dup, byte-exact")
+                    .containsExactlyElementsOf(spliceB);
+
+            // MID-SPLICE: one further PDU per client races the walk — written immediately before
+            // ctx.close(), unawaited. Whatever the relay ACCEPTED it relayed whole; whatever it
+            // never read never entered the relay (the force-close cannot lose an accepted PDU).
+            byte[] tailA = submitSm(3104);
+            byte[] tailB = submitSm(3204);
+            writeRaw(legacyA, tailA);
+            writeRaw(legacyB, tailB);
+
+            long start = System.nanoTime();
+            rig.ctx.close(); // SIGTERM-equivalent, mid-splice — the drain body owns both pairs now
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+            // The bounded exit (OBS-020's coordinator half): neither peer half-closes, so both
+            // pairs force-close at the rig's SHORT deadline and the walk still finishes fast.
+            assertThat(elapsedMs)
+                    .as("the mid-splice walk over two pairs exits inside the window")
+                    .isLessThan(5_000L);
+            // Drain integrity, per pair: the SMSC-side stream is the exact sequenced splice plus
+            // OPTIONALLY the racing tail — a prefix of what was written, every frame byte-exact
+            // (a truncated or corrupted write surfaces as a frame that is not the sent bytes; a
+            // dropped completed PDU surfaces as a hole the sequence ledger exposes).
+            assertDrainedSequence(sessionA.received(), spliceA, tailA, "pair A");
+            assertDrainedSequence(sessionB.received(), spliceB, tailB, "pair B");
+            // The registry emptied and both legs of both pairs died.
+            assertThat(rig.harness.registry().size())
+                    .as("RELAY-022: the registry reached zero")
+                    .isZero();
+            assertThat(rig.group.isTerminated())
+                    .as("the loop is down — the walk completed")
+                    .isTrue();
+        } finally {
+            rig.close();
+        }
+    }
+
+    @Test
+    @DisplayName("OBS-020 races row: a peer that never FINs is force-closed at the SHORT drain "
+            + "deadline — SHUTDOWN_DRAIN observed on BOTH legs through the observer seam, zero "
+            + "half-flushed bytes on the client leg, exit bounded")
+    void obs020PeerThatNeverHalfClosesIsForceClosedAsShutdownDrainObserved(@TempDir Path dir) throws Exception {
+        Rig rig = rig(dir, 1, false);   // the IMMEDIATE-answer IdP — a genuinely coupled pair
+        try (Socket legacy = rig.connectLegacy()) {
+            byte[] bind = bindRequest(31, "legacy1", "pw123456");
+            writePdu(legacy, bind);
+            assertRokBindResp(readPdu(legacy), 31);
+            MockSmsc.Session session = rig.smsc.awaitSession(0);
+
+            // Mid-splice traffic through the pair (both directions have carried frames when the
+            // walk fires — the force-close closes a BUSY splice, not an idle socket).
+            byte[] submit = submitSm(3301);
+            writeRaw(legacy, submit);
+            assertThat(session.awaitPdus(1))
+                    .as("the splice PDU crossed the pair byte-exact before SIGTERM")
+                    .containsExactly(submit);
+
+            long start = System.nanoTime();
+            rig.ctx.close(); // SIGTERM-equivalent — neither peer will ever half-close
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+            assertThat(elapsedMs)
+                    .as("the peer that never FINs cannot hang the exit — force-closed AT the deadline")
+                    .isLessThan(5_000L);
+
+            // The observer seam: BOTH legs' closes name the drain — exactly two onConnectionClosed
+            // fires (exactly-once per channel), one per direction, both SHUTDOWN_DRAIN, never the
+            // OTHER catch-all (the stash the force-close left for the channelInactive site).
+            awaitTrue("both legs fired their exactly-once onConnectionClosed",
+                    () -> rig.harness.observer().connectionCloses().size() >= 2);
+            assertThat(rig.harness.observer().connectionCloses())
+                    .as("OBS-020: the deadline force-close is named SHUTDOWN_DRAIN on both legs")
+                    .containsExactlyInAnyOrder(
+                            new CapturingRelayObserver.ConnectionClose(Direction.INGRESS, CloseReason.SHUTDOWN_DRAIN),
+                            new CapturingRelayObserver.ConnectionClose(Direction.EGRESS, CloseReason.SHUTDOWN_DRAIN));
+
+            // NO HALF-FLUSHED FRAME on the client leg: everything the relay ever wrote toward the
+            // client was read whole (the ROK bind_resp above); the force-close must leave ZERO
+            // residue — a truncated mid-write PDU would surface as stray bytes before the EOF.
+            assertThat(bytesUntilEof(legacy))
+                    .as("the force-close left no partial frame on the client leg")
+                    .isZero();
+            awaitTrue("the SMSC session closed by the drain force-close", session::closed);
+            assertThat(rig.harness.registry().size())
+                    .as("the force-closed pair is gone from the registry")
+                    .isZero();
+            assertThat(rig.group.isTerminated())
+                    .as("the loop is down — the walk completed")
+                    .isTrue();
+        } finally {
             rig.close();
         }
     }
@@ -458,15 +657,23 @@ class GracefulShutdownRacesTest {
 
     /**
      * Builds the whole rig: the mock SMSC (it ANSWERS ROK — a couple attempt cannot hide), the
-     * stand-in IdP (PARKED for the race rows, IMMEDIATE for the coupled-pairs row), the shared
+     * stand-in IdP (PARKED for the race rows, IMMEDIATE for the coupled-pairs rows), the shared
      * loop, the REAL adapter, the real ingress wiring behind a {@link RecordingVerifier} (the
      * relay-facing half — production wires ONE verifier bean; the recorder is a pass-through that
      * only captures the credential and the settle, the OBS-019 tooling), and the three lifecycles
      * + the two destroy backstops as Spring beans so {@code ctx.close()} walks the REAL phase
-     * order.
+     * order. Story 4.3 T6: the coordinator's {@link Clock} is caller-injectable (the drain-started
+     * probe — a {@link DrainStartClock} stamps the drain body's first deadline read) and extra
+     * {@link SmartLifecycle} listener beans (the OBS-016 {@link PhaseStamp}s) slot between the
+     * production phases.
      */
     private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout,
             Duration drainDeadline) throws IOException {
+        return rig(dir, tokenCount, park, oidcTimeout, drainDeadline, Clock.systemUTC());
+    }
+
+    private static Rig rig(Path dir, int tokenCount, boolean park, Duration oidcTimeout,
+            Duration drainDeadline, Clock clock, SmartLifecycle... extraLifecycles) throws IOException {
         MockSmsc smsc = MockSmsc.start();
         CountDownLatch tokenReceived = new CountDownLatch(tokenCount);
         CountDownLatch hold = new CountDownLatch(1);
@@ -479,8 +686,8 @@ class GracefulShutdownRacesTest {
         try {
             // concurrent-pairs 8 (>= the row's binds): the F13 acceptor cap shares this number. The
             // drain deadline: oidc + 2s for the deny rows (the parked exchanges must settle and
-            // empty the registry BEFORE any force-close), the SHORT 300ms knob for the coupled row
-            // (its pair never drains — the force-close is the point there).
+            // empty the registry BEFORE any force-close), the SHORT 300ms knob for the coupled rows
+            // (their pairs never drain — the force-close is the point there).
             ProxyCompanionProperties properties = RelayTestFixtures.reverseBProperties(
                     dir, TokenIdpStandIn.realmBase(idp), RelayTestFixtures.freePort(), 8,
                     "127.0.0.1", smsc.port(), oidcTimeout, drainDeadline);
@@ -494,9 +701,10 @@ class GracefulShutdownRacesTest {
             AdjudicationLifecycle adjudication = new AdjudicationLifecycle(adapter);
             // Story 4.3 T5 re-sign: the coordinator's drain reads the SAME registry/manager the
             // initializers wired (the harness's shared beans — the wiring Spring guarantees by
-            // component scan) and polls the properties' drain deadline on a system clock.
+            // component scan) and polls the properties' drain deadline on the caller's clock
+            // (system time everywhere except the six-event row's DrainStartClock).
             ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(adapter, group,
-                    harness.registry(), harness.manager(), properties.shutdown(), Clock.systemUTC());
+                    harness.registry(), harness.manager(), properties.shutdown(), clock);
 
             // The production bean set the stop order needs — the group bean's destroyMethod backstop
             // (RelayNettyConfig) and the adapter bean's fused close() backstop included, so a full
@@ -508,6 +716,11 @@ class GracefulShutdownRacesTest {
             ctx.registerBean(RelayServerLifecycle.class, () -> relay);
             ctx.registerBean(AdjudicationLifecycle.class, () -> adjudication);
             ctx.registerBean(ProxyCompanionLifecycle.class, () -> coordinator);
+            for (SmartLifecycle extra : extraLifecycles) {
+                // The OBS-016 PhaseStamp listeners — named beans (several may share the interface),
+                // registered in whatever phase slots the row chose between the production phases.
+                ctx.registerBean("walk-phase-stamp-" + extra.getPhase(), SmartLifecycle.class, () -> extra);
+            }
             ctx.refresh(); // starts ascending (coordinator 0, deny window 750, acceptor 1000 — the port binds)
 
             assertThat(relay.isRunning()).as("precondition: the real acceptor is up").isTrue();
@@ -630,6 +843,178 @@ class GracefulShutdownRacesTest {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    // ── the OBS-016 six-event probes: the causal close-thread stamps (4.3 T6) ─────────────────
+
+    /**
+     * The drain-started stamp (OBS-016 event 3): a pass-through {@link Clock} that records the
+     * nanoTime of its FIRST {@link #instant()} read — the drain body's deadline computation, the
+     * first thing it does once the snapshot read found the registry non-empty (the empty-arm no-op
+     * never touches the clock, so an unstamped clock also proves the no-op). The read runs ON the
+     * close thread inside the coordinator's {@code stop()}, so the stamp carries no poll jitter —
+     * the spec's "a decorated registry stamping the first snapshot", realized on the deadline's
+     * injectable time source instead ({@code ConnectionRegistry} is final; the clock is the
+     * coordinator's own injectable seam and stamps one call later, the same instant for ordering).
+     */
+    private static final class DrainStartClock extends Clock {
+
+        private final Clock delegate = Clock.systemUTC();
+        private final AtomicLong firstReadNanos = new AtomicLong(Long.MIN_VALUE);
+
+        @Override
+        public ZoneId getZone() {
+            return delegate.getZone();
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            firstReadNanos.compareAndSet(Long.MIN_VALUE, System.nanoTime());
+            return delegate.instant();   // real time — the deadline arithmetic stays wall-clock true
+        }
+
+        long drainStartedOrThrow() {
+            long stamp = firstReadNanos.get();
+            assertThat(stamp)
+                    .as("the drain body opened its deadline window (its first clock read ran)")
+                    .isNotEqualTo(Long.MIN_VALUE);
+            return stamp;
+        }
+    }
+
+    /**
+     * One causal phase stamp (the OBS-016 "capturing lifecycle listener"): a trivial
+     * {@link SmartLifecycle} whose {@code stop()} records one nanoTime. Spring stops phases
+     * strictly descending and awaits each phase's stop before the next begins, so a bean slotted
+     * strictly between two production phases stamps, ON THE CLOSE THREAD, provably after the
+     * earlier phase completed and before the later one began — the millisecond step gaps of the
+     * walk (acceptor &rarr; deny &rarr; drain) made causal, where the 4.2 polled probes could only
+     * be as fine as their 5ms cadence.
+     */
+    private static final class PhaseStamp implements SmartLifecycle {
+
+        private final int phase;
+        private volatile boolean running;
+        private final AtomicLong stamp = new AtomicLong(Long.MIN_VALUE);
+
+        PhaseStamp(int phase) {
+            this.phase = phase;
+        }
+
+        @Override
+        public void start() {
+            running = true;
+        }
+
+        @Override
+        public void stop() {
+            running = false;
+            stamp.compareAndSet(Long.MIN_VALUE, System.nanoTime());
+        }
+
+        @Override
+        public boolean isRunning() {
+            return running;
+        }
+
+        @Override
+        public int getPhase() {
+            return phase;
+        }
+
+        long stampOrThrow(String what) {
+            long value = stamp.get();
+            assertThat(value)
+                    .as("the walk completed the phase this listener stamps (%s)", what)
+                    .isNotEqualTo(Long.MIN_VALUE);
+            return value;
+        }
+    }
+
+    // ── splice helpers (RELAY-022 / OBS-020 — the RelayA1SmokeTest idioms, this suite's copies) ──
+
+    /** A hand-authored opaque {@code submit_sm} (raw bytes — independent of the codec under test). */
+    private static byte[] submitSm(int sequence) {
+        byte[] body = ascii("SUBMIT-" + sequence);
+        return assemble(0x00000004, 0, sequence, body.length, out -> out.put(body));
+    }
+
+    /** Writes raw bytes (several coalesced PDUs) — the framer under test owns the boundaries. */
+    private static void writeRaw(Socket socket, byte[] bytes) throws IOException {
+        socket.getOutputStream().write(bytes);
+        socket.getOutputStream().flush();
+    }
+
+    private static byte[] concat(List<byte[]> pdus) {
+        int total = 0;
+        for (byte[] pdu : pdus) {
+            total += pdu.length;
+        }
+        byte[] out = new byte[total];
+        int pos = 0;
+        for (byte[] pdu : pdus) {
+            System.arraycopy(pdu, 0, out, pos, pdu.length);
+            pos += pdu.length;
+        }
+        return out;
+    }
+
+    /** The {@code sequence_number} header field (offset 12) of a framed PDU — the integrity ledger key. */
+    private static int sequenceOf(byte[] pdu) {
+        return ByteBuffer.wrap(pdu).getInt(12);
+    }
+
+    /** The SMSC session whose bind frame is byte-exactly {@code bind} (the accept order is a race). */
+    private static MockSmsc.Session sessionBoundWith(Rig rig, byte[] bind) {
+        rig.smsc.awaitSession(1);   // bounded-wait until BOTH egress sessions exist, then match by content
+        return rig.smsc.sessions().stream()
+                .filter(session -> Arrays.equals(session.bindFrame(), bind))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no SMSC session carried the expected bind frame"));
+    }
+
+    /**
+     * RELAY-022's per-pair integrity ledger: the drained stream must be the awaited splice,
+     * byte-exact and in sequence order, plus OPTIONALLY the PDU that raced the walk (accepted whole
+     * or never accepted — a force-close can lose neither a completed relay nor a frame's tail).
+     */
+    private static void assertDrainedSequence(List<byte[]> drained, List<byte[]> splice, byte[] racingTail,
+            String which) {
+        assertThat(drained.size())
+                .as("%s: the drained stream is the splice, at most plus the racing tail PDU", which)
+                .isBetween(splice.size(), splice.size() + 1);
+        List<byte[]> expected = new ArrayList<>(splice);
+        if (drained.size() == splice.size() + 1) {
+            expected.add(racingTail);
+        }
+        assertThat(drained)
+                .as("%s: no drop, no duplicate, no corruption — every drained frame byte-exact", which)
+                .containsExactlyElementsOf(expected);
+        // The sequence ledger, stated on the parsed field (byte-equality implies it; parsing names it):
+        assertThat(drained.stream().mapToInt(GracefulShutdownRacesTest::sequenceOf).toArray())
+                .as("%s: the drained sequence_numbers are intact and in order", which)
+                .containsExactly(expected.stream().mapToInt(GracefulShutdownRacesTest::sequenceOf).toArray());
+    }
+
+    /**
+     * Bytes still readable before EOF — zero when the relay wrote nothing partial: every complete
+     * PDU toward the client was read whole beforehand, so a truncated mid-write frame would surface
+     * exactly here (the OBS-020 "no half-flushed frame" probe, client leg).
+     */
+    private static int bytesUntilEof(Socket socket) throws IOException {
+        socket.setSoTimeout(2_000);
+        InputStream in = socket.getInputStream();
+        int total = 0;
+        int read;
+        while ((read = in.read()) >= 0) {
+            total += read;
+        }
+        return total;
     }
 
     /** {@code true} iff every value octet of the (shared-backing) password {@link AsciiString} is zero. */

@@ -1,16 +1,37 @@
 package smpp.companion.proxy.security;
 
+import java.io.IOException;
+import java.net.Authenticator;
+import java.net.CookieHandler;
+import java.net.ProxySelector;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandler;
+import java.net.http.HttpResponse.PushPromiseHandler;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.sun.net.httpserver.HttpsServer;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+
 import io.netty.channel.DefaultChannelId;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.util.AsciiString;
+import io.netty.util.concurrent.DefaultThreadFactory;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -20,6 +41,8 @@ import org.junit.jupiter.api.io.TempDir;
 import smpp.companion.proxy.bootstrap.ProxyCompanionLifecycle;
 import smpp.companion.proxy.config.ProxyCompanionProperties;
 import smpp.companion.proxy.observability.MetricsEndpointLifecycle;
+import smpp.companion.proxy.relay.ConnectionRegistry;
+import smpp.companion.proxy.relay.RelayStateManager;
 import smpp.companion.proxy.relay.netty.RelayServerLifecycle;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 import smpp.companion.proxy.testsupport.TokenIdpStandIn;
@@ -190,6 +213,65 @@ class AdjudicationLifecycleTest {
         }
     }
 
+    @Test
+    @DisplayName("AD-10 (4.2 ledger fold): the shutdown walk's step-4 effects observed — the "
+            + "coordinator's release() closes the ONE shared provider client and zeroizes the "
+            + "client secret (all-zero shared backing array)")
+    void theWalksReleaseClosesTheClientAndZeroizesTheSecret(@TempDir Path dir) throws Exception {
+        // Real adapter, idle (the never-dialed placeholder — no wire call at construction, no
+        // in-flight adjudication, so release's await joins instantly): the ONLY two additions are
+        // the observation pair the 4.2 review ledger named — a close-counting stand-in around the
+        // real provider-facing client (the package-private injecting ctor) and the adapter's own
+        // ClientSecret handle (the T6 seam), read through the WALK, not around it.
+        ProxyCompanionProperties props = RelayTestFixtures.reverseBProperties(
+                dir, "https://idle.invalid/realms/smpp-companions", Duration.ofSeconds(1));
+        IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
+        CloseCountingHttpClient http = new CloseCountingHttpClient(tlsFactory.newClient());
+        RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory, http);
+        EventLoopGroup group = newGroup();
+        try {
+            ConnectionRegistry registry = new ConnectionRegistry();
+            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(
+                    adapter, group, registry, new RelayStateManager(registry),
+                    props.shutdown(), Clock.systemUTC());
+
+            // Preconditions: the secret is LIVE (the file-loaded bytes non-zero) and the shared
+            // client unclosed — the row would pass vacuously otherwise.
+            assertThat(allZero(adapter.clientSecret().value()))
+                    .as("precondition: the client secret's backing array is live before the walk")
+                    .isFalse();
+            assertThat(http.closeCount())
+                    .as("precondition: the shared provider client is open before the walk")
+                    .isZero();
+
+            coordinator.start();
+            coordinator.stop();   // the walk: deny → (empty-registry drain no-op) → RELEASE → quiesce
+
+            // Step 4's AD-10 effects, both observed: the ONE shared provider client closed exactly
+            // once, and the client secret's backing array wiped — the probe the 4.2 review verified
+            // no test made (deleting either line in release() kept every suite GREEN; it cannot now).
+            assertThat(http.closeCount())
+                    .as("the walk's release closed the ONE shared provider client (AD-10)")
+                    .isEqualTo(1);
+            assertThat(allZero(adapter.clientSecret().value()))
+                    .as("the walk's release zeroized the client secret — every backing byte zero (AD-10)")
+                    .isTrue();
+            assertThat(group.isTerminated())
+                    .as("the walk completed through the quiesce")
+                    .isTrue();
+
+            // The backstops re-fire harmlessly (the idempotence contract): a second stop() and the
+            // adapter bean's fused close() never re-close the client or re-await the pool.
+            coordinator.stop();
+            adapter.close();
+            assertThat(http.closeCount())
+                    .as("no double-close through any backstop re-fire (the once-guards)")
+                    .isEqualTo(1);
+        } finally {
+            group.shutdownGracefully().syncUninterruptibly();   // exception-safe: no-op if quiesced
+        }
+    }
+
     // ── fixtures (the stand-in IdP and the reverse×B record live in testsupport — 4.3 T2) ─────
 
     private static BindCredential credential() {
@@ -200,5 +282,110 @@ class AdjudicationLifecycleTest {
     private static RequestContext rc() {
         return new RequestContext(new SystemId(new AsciiString("testuser")),
                 DefaultChannelId.newInstance(), Instant.now().plusSeconds(30));
+    }
+
+    /** Mirrors the RelayNettyConfig bean: the Netty 4.2 NIO idiom, daemon (a hung walk must not outlive the failure). */
+    private static EventLoopGroup newGroup() {
+        return new MultiThreadIoEventLoopGroup(
+                1, new DefaultThreadFactory("adjudication-lifecycle-test", true), NioIoHandler.newFactory());
+    }
+
+    /** {@code true} iff every byte of the (shared-backing) client-secret array is zero (the AD-10 probe). */
+    private static boolean allZero(byte[] value) {
+        for (byte b : value) {
+            if (b != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * A delegating {@link HttpClient} that counts {@code close()} invocations — the AD-10
+     * client-close probe (the {@code RopcSliceCancelTest} recording-wrapper idiom, this suite's
+     * close-counting variant; the delegate is the REAL factory-built client, so TLS posture and
+     * exchange mechanics stay production-true).
+     */
+    private static final class CloseCountingHttpClient extends HttpClient {
+
+        private final HttpClient delegate;
+        private final AtomicInteger closes = new AtomicInteger();
+
+        CloseCountingHttpClient(HttpClient delegate) {
+            this.delegate = delegate;
+        }
+
+        int closeCount() {
+            return closes.get();
+        }
+
+        @Override
+        public void close() {
+            closes.incrementAndGet();
+            delegate.close();
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request, BodyHandler<T> handler) {
+            return delegate.sendAsync(request, handler);
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request, BodyHandler<T> handler, PushPromiseHandler<T> pushPromiseHandler) {
+            return delegate.sendAsync(request, handler, pushPromiseHandler);
+        }
+
+        @Override
+        public <T> HttpResponse<T> send(HttpRequest request, BodyHandler<T> handler)
+                throws IOException, InterruptedException {
+            return delegate.send(request, handler);
+        }
+
+        @Override
+        public Optional<CookieHandler> cookieHandler() {
+            return delegate.cookieHandler();
+        }
+
+        @Override
+        public Optional<Duration> connectTimeout() {
+            return delegate.connectTimeout();
+        }
+
+        @Override
+        public Redirect followRedirects() {
+            return delegate.followRedirects();
+        }
+
+        @Override
+        public Optional<ProxySelector> proxy() {
+            return delegate.proxy();
+        }
+
+        @Override
+        public SSLContext sslContext() {
+            return delegate.sslContext();
+        }
+
+        @Override
+        public SSLParameters sslParameters() {
+            return delegate.sslParameters();
+        }
+
+        @Override
+        public Optional<Authenticator> authenticator() {
+            return delegate.authenticator();
+        }
+
+        @Override
+        public Version version() {
+            return delegate.version();
+        }
+
+        @Override
+        public Optional<Executor> executor() {
+            return delegate.executor();
+        }
     }
 }

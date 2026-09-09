@@ -60,6 +60,7 @@ import smpp.companion.proxy.testsupport.RelayTestFixtures;
 import smpp.companion.proxy.testsupport.TokenIdpStandIn;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -83,8 +84,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code ConnectionRegistry}/{@code RelayStateManager} populated with embedded channels (a MUTABLE
  * {@link Clock} advances past the budget — the OBS-020 knob, never a wall-clock wait; the channels
  * are the recording surface: force-closed legs, {@code SHUTDOWN_DRAIN} stashed on each, registry
- * empty), and the ONE bounded WARN naming the count. The full six-event ordering, RELAY-022
- * sequence integrity, and the observer-level OBS-020 proof are T6's races rows.
+ * empty), and the ONE bounded WARN naming the count. Story 4.3 T6 adds the 4.2 ledger's
+ * <b>throw-path behavioral pin</b> (a throwing drain step &rarr; release skipped, the
+ * finally-quiesce still terminates the group); the six-event walk-order behavioral pin, RELAY-022
+ * sequence integrity, and the observer-level OBS-020 proof are the races rows
+ * ({@code GracefulShutdownRacesTest}).
  *
  * <p>The real-adapter rows drive the ROPC adapter over a parked in-process TLS stand-in IdP (the
  * {@code AdjudicationLifecycleTest} pattern, compact): the bind's token exchange parks on a latch,
@@ -265,7 +269,9 @@ class ProxyCompanionLifecycleTest {
             + "EXPLICIT quiesce args (never Netty's 2s default)")
     void theWalkOrderAndExplicitQuiesceAreSourcePinned() throws IOException {
         // The MetricsEndpointTest scan idiom (test CWD = the proxy module; `clean build` covers the
-        // incremental UP-TO-DATE trap for source scans).
+        // incremental UP-TO-DATE trap for source scans). BELT ONLY since Story 4.3 T6: the order
+        // and the throw-path are pinned BEHAVIORALLY — the OBS-016 six-event chain and the
+        // throw-path quiesce rows (this suite + GracefulShutdownRacesTest).
         Path src = Path.of("src/main/java/smpp/companion/proxy/bootstrap/ProxyCompanionLifecycle.java");
         assertThat(Files.exists(src)).as("coordinator source present (test CWD = proxy module)").isTrue();
         String code = Files.readString(src);
@@ -396,6 +402,76 @@ class ProxyCompanionLifecycleTest {
         }
     }
 
+    @Test
+    @DisplayName("throw-path (4.2 ledger fold): a throwing drain step skips release but NEVER strands "
+            + "the shared loop — the finally-quiesce still terminates the group")
+    void aThrowingDrainStepSkipsReleaseAndStillQuiescesTheLoop(@TempDir Path dir) throws Exception {
+        CountDownLatch tokenReceived = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        HttpsServer server = TokenIdpStandIn.parkedTokenIdp(tokenReceived, hold, "throw-path-idp");
+        EventLoopGroup group = newGroup();
+        try {
+            // A LONG per-request budget (the AdjudicationLifecycleTest idiom): the pin's
+            // "still pending at stop() return" assertion below races the exchange's OWN self-abort
+            // budget — 3s makes an early settle unreachable inside the row's ~200ms window.
+            ProxyCompanionProperties props = RelayTestFixtures.reverseBProperties(
+                    dir, TokenIdpStandIn.realmBase(server), Duration.ofSeconds(3));
+            IdpSslContextFactory tlsFactory = new IdpSslContextFactory(props);
+            RopcBindCredentialVerifier adapter = new RopcBindCredentialVerifier(tlsFactory);
+            // The walk's step-3 blow-up, injected through the coordinator's own seam: a live pair in
+            // the registry (the drain's non-empty arm) + a clock whose first read — the drain body's
+            // deadline computation — throws. (The spec's "a throwing manager" presumed a stubbable
+            // manager; RelayStateManager is final, and the Clock is the coordinator's one injectable
+            // dependency INSIDE the drain body — same behavioral pin: a throwing step 3.)
+            ConnectionRegistry registry = new ConnectionRegistry();
+            RelayStateManager manager = new RelayStateManager(registry);
+            manager.register(channel(), systemId("legacyA"));
+            RuntimeException drainBlewUp = new RuntimeException("the drain step blew up");
+            ProxyCompanionLifecycle coordinator = new ProxyCompanionLifecycle(
+                    adapter, group, registry, manager,
+                    new ProxyCompanionProperties.Shutdown(Duration.ofSeconds(5)),
+                    new ThrowingClock(drainBlewUp));
+            coordinator.start();
+
+            // An in-flight adjudication over the REAL adapter: release's bounded awaitTermination is
+            // the ONLY step that joins its settle (the synchronous-settle row above) — so "the pin is
+            // still pending at stop() return" IS the observable for "release never ran".
+            VerdictRequest inFlight = ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX));
+            assertTrue(tokenReceived.await(5, TimeUnit.SECONDS),
+                    "the adjudication must be in-flight (parked at the token endpoint) when the walk begins");
+
+            assertThatThrownBy(coordinator::stop)
+                    .as("the drain step's failure propagates out of stop() (never swallowed)")
+                    .isSameAs(drainBlewUp);
+
+            // RELEASE SKIPPED: its await never ran, so the parked pin is still PENDING at stop()
+            // return — the healthy walk joins it (the synchronous-settle row); a re-shaped stop()
+            // that swallowed the throw and carried on would settle it and go RED here.
+            assertThat(inFlight.future().isDone())
+                    .as("release skipped — the drain's throw short-circuited step 4 (the pin still pending)")
+                    .isFalse();
+            // The finally-quiesce STILL ran and was AWAITED: the walk's one non-negotiable tail —
+            // a throwing step must never strand the shared loop's non-daemon threads.
+            assertThat(group.isTerminated())
+                    .as("the finally-quiesce terminated the group despite the throwing drain step")
+                    .isTrue();
+            // And the throw aborted the drain BEFORE the force-close: the pair is still registered
+            // (force-close-never-ran is also the drain-started proof — the throw was step 3's).
+            assertThat(registry.size())
+                    .as("the force-close never ran (the drain threw at its first clock read)")
+                    .isEqualTo(1);
+            // The deny step DID run before the drain blew up: every post-walk verify settles
+            // fail-closed SYNCHRONOUSLY (the use-after-close arm, no wire call, no wait).
+            assertThat(ScopedValue.where(CTX, rc()).call(() -> adapter.verify(credential(), CTX)).future().getNow(null))
+                    .as("the deny step ran before the throwing drain — post-walk verifies fail closed")
+                    .isInstanceOf(Verdict.DenyIndeterminate.class);
+        } finally {
+            hold.countDown();   // exception-safe: never strand the parked stand-in handler
+            server.stop(0);
+            group.shutdownGracefully().syncUninterruptibly();   // no-op re-fire if the quiesce ran
+        }
+    }
+
     // ── T5 fixtures: the mutable clock, the embedded drain pairs, the stopper ─────────────────
 
     /**
@@ -460,6 +536,36 @@ class ProxyCompanionLifecycleTest {
         @Override
         public Instant instant() {
             return now;
+        }
+    }
+
+    /**
+     * The throw-path injection (Story 4.3 T6, the 4.2 ledger fold): every {@link #instant()} read
+     * throws the caller's failure — the drain body's FIRST clock read (its deadline computation)
+     * blows step 3 open. The coordinator's one injectable dependency inside the drain body
+     * ({@code RelayStateManager} is final — not stubbable; the clock is the sanctioned seam).
+     */
+    private static final class ThrowingClock extends Clock {
+
+        private final RuntimeException failure;
+
+        ThrowingClock(RuntimeException failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            throw failure;
         }
     }
 

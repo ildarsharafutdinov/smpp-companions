@@ -347,6 +347,18 @@ public final class RopcBindCredentialVerifier implements BindCredentialVerifier,
         return activeAdjudications.get();
     }
 
+    /**
+     * The AD-10 observation seam (Story 4.3 T6, the 4.2 review ledger's sanctioned
+     * "test-visible ClientSecret seam"): the adapter's own client-secret handle, so the
+     * shutdown-walk rows read the SAME backing array {@link #release()} zeroizes (the all-zero
+     * probe, the bind-password idiom) instead of only asserting around the tail. Package-private
+     * like the {@code HttpClient}-injecting ctor it pairs with — test-tier observation from this
+     * package only; no production caller reads the secret back.
+     */
+    ClientSecret clientSecret() {
+        return clientSecret;
+    }
+
     @Override
     public VerdictRequest verify(BindCredential cred, ScopedValue<RequestContext> ctx) {
         Objects.requireNonNull(cred, "cred");

@@ -21,7 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * timeout. "SIGTERM-equivalent" = closing the context ({@code ContextClosedEvent} ->
  * {@code SmartLifecycle.stop}), which is exactly what the JVM shutdown hook does on SIGTERM.
  * Since Story 4.2 T3 the close drives the REAL AD-22 coordinator body
- * ({@code ProxyCompanionLifecycle}'s 5-step walk); the MEANINGFUL shutdown upper bound (well
+ * ({@code ProxyCompanionLifecycle}'s 5-step walk; since 4.3 T5 step 3 carries the drain body —
+ * the EMPTY-registry no-op on this idle boot); the MEANINGFUL shutdown upper bound (well
  * under the 30s phase ceiling) landed with Story 4.2 T4 — the walk's race-level rows live in
  * {@code GracefulShutdownRacesTest}.
  *
@@ -80,12 +81,18 @@ class BootstrapLifecycleTest {
         assertThat(group.isTerminated())
                 .as("the coordinator's quiesce ran and was awaited before close() returned")
                 .isTrue();
-        // The MEANINGFUL upper bound (Story 4.2 T4 — replaces the trivial 30s ceiling assert): an
-        // idle forward-cell walk is the flag + three no-op adapter steps + the 100ms-quiet quiesce,
-        // so a healthy close lands well under a second; 5s is 6x inside the 30s per-phase ceiling
-        // (application.yml) with CI-variance headroom, and still catches every gross walk
-        // regression the old assert waved through (a wedged step that eats most of the phase
-        // window, a re-added blocking drain before 4.3's deadline exists).
+        // The MEANINGFUL upper bound (Story 4.2 T4; rationale re-signed by Story 4.3 T6 for the
+        // drain deadline): an idle forward-cell walk is the flag + three no-op adapter steps + the
+        // 100ms-quiet quiesce — the 4.3 drain body's EMPTY-REGISTRY short-circuit is what keeps it
+        // that way (the snapshot read returns before any deadline arithmetic, so the armed 10s
+        // drain-timeout is never slept on this boot). The deadline-aware margin for a NON-idle
+        // close: drain-timeout (10s yml default) + release's await (oidc.timeout + 1s over the
+        // documented [2s, 5s] operator window) + the 2s quiesce cap = 18s at the defaults, still
+        // inside the 30s per-phase ceiling — and a peer that never half-closes is force-closed AT
+        // the deadline (OBS-020), so nothing can push the walk past that sum. 5s stays the idle
+        // bound: headroom for CI variance over the ~0.1s reality while still catching every gross
+        // regression (a wedged step eating most of the phase window, a drain that unconditionally
+        // sleeps its window, a re-added blocking seam).
         assertThat(elapsedMs)
                 .as("the full-app SIGTERM-equivalent close completes well under the 30s phase ceiling")
                 .isLessThan(5_000L);
