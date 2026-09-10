@@ -1,0 +1,115 @@
+---
+title: 'Story 5.1 — the runnable JAR deploy shape'
+type: 'feature'
+created: '2026-09-10'
+status: 'in-progress'
+route: 'dispatch'
+baseline_commit: b6de4929ae2930556125da1efb1569e00a396a50
+review_loop_iteration: 0
+context:
+  - {project-root}/_bmad-output/implementation-artifacts/epic-5-context.md
+  - {project-root}/_bmad-output/test-artifacts/test-design/test-coverage-scenarios.md
+---
+
+<frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
+
+## Intent
+
+**Problem:** The proxy ships no first-class deploy shape: `bootJar` runs on plugin defaults only, nothing carries `--enable-preview` into the packaged artifact (a plain `java -jar` of today's jar cannot run preview-compiled classes), no launcher pins the runtime flags the catalog asserts (`-XX:+UseZGC`, `-XX:MaxDirectMemorySize`, IPv4 preference), and the packaged shape has never been booted or smoke-tested as `java -jar`.
+
+**Approach:** Make the standalone runnable JAR a first-class shape — explicit bootJar configuration (Enable-Preview manifest attribute, pinned main class), a documented operator JVM-flag contract (the one pinned flag set `java -jar` must be launched with — no repo launcher script; flags are the operator's invocation per the contract, exercised by the packaged smoke and consumed verbatim by the later Docker entrypoint; the page also carries the lazy-init documented deviation), JSON-stream mode banners (the parked decision visible at JAR boot), the standard Micrometer JVM binders bound, a JDK exact-build pin guard, and a subprocess packaged boot+smoke test (boot → one bind/relay round → SIGTERM drain) against the existing MockSmsc harness.
+
+## Boundaries & Constraints
+
+**Always:**
+- ONE flag set, single source of truth — the documented operator contract, executed by the packaged smoke, consumed verbatim by the (later) Docker entrypoint — the two shapes must not drift (FR-DEPLOY-1).
+- Fail-closed posture holds identically in the packaged shape: startup validation, the AD-30 budget check, and the JDK build-pin guard all refuse, never warn-and-continue. The lazy-init deviation is the one documented exception, by owner decision.
+- Ledger discipline: every deferred-work marker cites a biting test + commit; every new guard ships its mutation row.
+- The packaged smoke boots the REAL jar as a subprocess (production main, yml defaults overridable by args) — no ApplicationContextRunner substitute for the shape being proven.
+
+**Never:**
+- No Docker/jlink/distroless work (Epic 5 later story): no Dockerfile, no jlink plugin, no Testcontainers parity smoke, no DEP-1 secrets-E2E rows.
+- No CI scaffolding (none exists; dual-arch CI is a later slice).
+- No native-image anything (AD-23).
+- No relay/security/observability logic changes — beyond the banner emission swap and the new binder beans, nothing in those packages is touched.
+- No new operator-facing config keys.
+
+## I/O & Edge-Case Matrix
+
+| Scenario | Input / State | Expected Output / Behavior | Error Handling |
+|----------|--------------|---------------------------|----------------|
+| Packaged boot | `java -jar proxy-*.jar` + the documented flag set (valid cell args) | Boots to `startup_summary` JSON line; SMPP + metrics listeners bound | Config matrix refusals unchanged (AD-17) |
+| Preview classes under plain `java -jar` | No `--enable-preview` on CLI | Manifest `Enable-Preview: true` makes it boot | Missing attr → hard `UnsupportedClassVersionError` — the mutation row |
+| Lazy-init enabled | `spring.main.lazy-initialization=true` | Boots — documented deviation: startup validation defers to first use | No runtime guard (owner decision); the contract page carries the warning |
+| Off-pin JDK | Build/run on JDK ≠ pinned exact build | Build-time refusal naming expected vs actual | Fail, not warn |
+| SIGTERM on packaged shape | `kill <pid>` of the booted jar | AD-22 ordered drain log lines, then clean exit | Quiesce bound (4.4 T5) holds |
+| Mode A/B boot banners | Any A/B cell boot | WARN-level JSON lines on the logback stream | No plain-text stderr output |
+| Budget check under defaults | Contract's `-XX:MaxDirectMemorySize` + yml memory trio | AD-30 self-check passes | Mismatch still refuses per existing check |
+| JVM metrics bound | Any packaged boot | Standard Micrometer JVM binder gauges present in the `/metrics` scrape | Absent binder = silent gap; pinned by scrape row |
+
+**Decisions (owner, 2026-09-10):**
+- Slice: JAR-only foundation — Docker/jlink/distroless, Testcontainers parity smoke, and the DEP-1 secrets E2E belong to a later Epic-5 story.
+- Launcher: bare `java -jar` + a documented operator JVM-flag contract. No repo launcher script; the contract document is the single source of the flag set, the packaged smoke executes it, the future Docker entrypoint consumes it verbatim. The catalog's DEPLOY-003/004 JAR halves land as contract + smoke (dated technique amendment in the markers).
+- Mode banners: route through logback as WARN-level JSON (deferred-work :706 resolved by this story).
+- Micrometer: the standard JVM binders are bound IN this story (deferred-work :710 resolved here, not Epic 6) — `ResourceMetrics`'s "deliberate exclusion" javadoc is amended to match.
+- Lazy-init: documented operator-accepted deviation — NO runtime guard (deferred-work :195 resolved as docs). The flag ships live; the contract page carries the warning that enabling `spring.main.lazy-initialization` defers the AD-17 matrix and AD-30 self-check to first use.
+- Token gate: full spec kept (owner precedent — 4.x specs run larger).
+
+</frozen-after-approval>
+
+## Code Map
+
+- `proxy/build.gradle.kts` -- bootJar lives on plugin defaults (Spring Boot 4.1.0); zero explicit packaging config today; Testcontainers 2.0.5 + netty 4.2.16.Final override already here.
+- `buildSrc/src/main/kotlin/smpp.java-conventions.gradle.kts` -- `--enable-preview` threaded into JavaCompile/Test/JavaExec(bootRun) ONLY (:23,:28,:31-34); toolchain is major-version-only (25, :16-20); JDK build-pin guard lands here or beside it.
+- `.tool-versions` -- the exact environment pin (`java temurin-25.0.3+9.0.LTS`) — the single source the build-pin guard reads.
+- `proxy/src/main/java/.../ProxyCompanionApplication.java` -- plain `SpringApplication.run`; no builder customization to fight.
+- `proxy/src/main/resources/application.yml` -- production defaults (memory trio 64/1024/1.5 ≈ 6 GiB derived budget, `budget-check: fail`); packaged boots override via args, not edits.
+- `proxy/src/main/java/.../relay/netty/DirectMemoryBudgetValidator.java` -- reads `-XX:MaxDirectMemorySize` via `ManagementFactory` input-args (:45); deliberately avoids `jdk.internal.misc.VM` so the boot jar needs NO `--add-exports` (javadoc :19) — do not reintroduce.
+- `proxy/src/main/java/.../config/CompanionModeAWarning.java` / `CompanionModeBWarning.java` -- `System.err.println` in `@PostConstruct` (:47 each) — the stream swap target.
+- `proxy/src/test/java/.../config/TestCompanionConfigs.java` -- per-cell factories (`reverseB(dir)` etc., `args()` for builder runs) — the packaged smoke's config source.
+- `proxy/src/test/java/.../relay/RelayA1SmokeTest.java` + `testsupport/RelayTestFixtures.java` -- the real-socket smoke idiom + MockSmsc harness the packaged test reuses.
+- `proxy/src/test/java/.../bootstrap/BootstrapLifecycleTest.java` / `RelayWiringConfigTest` -- the full-yml-boot idiom (builder `.web(NONE)` + run args).
+- `proxy/src/main/resources/logback-spring.xml` -- LogstashEncoder JSON-lines; banners join this stream.
+- `proxy/src/main/java/.../observability/ObservabilityConfig.java` (:31) + `ResourceMetrics.java` -- the sole `PrometheusMeterRegistry` bean and the two custom gauges; binder beans land beside them, and ResourceMetrics' "no standard binders, deliberate" javadoc is the amendment target (deferred-work :710).
+- `proxy/src/test/java/.../observability/MetricsEndpointTest.java` / `ResourceMetricsTest` -- the scrape-assertion idiom the binder row reuses.
+
+## Tasks & Acceptance
+
+**Execution:**
+- [ ] **T1 — bootJar first-class** — Explicit `bootJar {}` in `proxy/build.gradle.kts`: `Enable-Preview: true` manifest attribute, pinned main class, stable archive name; wire the packaged-smoke test to consume the built jar (task dependency). Mutation: attribute removed → packaged boot row RED.
+- [ ] **T2 — operator flag contract** — Author the contract (the pinned set: `--enable-preview`, `-XX:+UseZGC`, `-XX:MaxDirectMemorySize` coherent with the yml default budget, `-Djava.net.preferIPv4Stack=true`; rationale per flag) as a `docs/` page, INCLUDING the lazy-init deviation paragraph (the owner-decided :195 stance: enabling `spring.main.lazy-initialization` defers the AD-17 matrix and AD-30 self-check to first use — accepted deviation, warning lives here); the packaged smoke and a doc-consistency source-scan pin the set against the one definition. Mutation: a flag dropped from the contract → consistency row RED.
+- [ ] **T3 — banner stream swap** — Both mode warnings emit WARN-level JSON via logback (no `System.err`); boot-capture test asserts the JSON line + no plain-text stderr. Mutation: reverted to println → row RED.
+- [ ] **T4 — Micrometer JVM binders** — Bind the standard JVM binder set (memory/GC/threads/processor/uptime) via `ObservabilityConfig`; amend the `ResourceMetrics` "deliberate exclusion" javadoc; scrape test asserts the binder gauges appear beside the existing custom gauges. Mutation: binder beans removed → scrape row RED.
+- [ ] **T5 — packaged boot+smoke** — Subprocess test: `java -jar` the built jar with the T2 contract's flag set, `reverseB` cell (secret files from a temp dir), MockSmsc on the loopback; assert `startup_summary`, one bind→relay round via real socket, SIGTERM → ordered AD-22 drain lines → clean exit; AD-30 check passes under the contract flags. Mutation: smoke pointed at a stale jar / drain lines unasserted → row RED.
+- [ ] **T6 — JDK build-pin guard** — Build refuses on a JDK runtime ≠ the `.tool-versions` pin (reads the running JVM, no provisioning — foojay stays relaxed). Mutation: guard neutered → off-pin simulation row RED.
+- [ ] **T7 — proofs, catalog rows, ledger closure** — `./gradlew clean build --console=plain` GREEN end-to-end (clean required — source-scan trap); DEPLOY catalog: dated Status markers for the JAR halves of DEPLOY-003/004 (technique amended: contract + smoke, Docker halves stay open), DEPLOY-014, and any new rows authored as-landed; deferred-work: resolve the banner (:706), binder (:710), and lazy-init (:195 — documented-deviation decision, cites the contract page + commit) entries.
+
+**Acceptance Criteria:**
+- Given the built jar and a valid cell, when launched as `java -jar` with the documented flag set, then it boots to `startup_summary` with both listeners bound — and the manifest alone suffices for preview (no `--enable-preview` needed on the CLI for the classes to load).
+- Given the operator flag contract, when lazy-init is considered, then the page documents the deviation — no runtime guard exists (owner decision 2026-09-10), and the warning names what defers to first use.
+- Given a mode A or B boot, when the banner fires, then it is a WARN JSON line on the logback stream and stderr carries no plain text.
+- Given any boot, when the `/metrics` endpoint is scraped, then the standard JVM binder gauges are present beside the custom relay/ROPC gauges.
+- Given the packaged smoke rig, when SIGTERM arrives post-couple, then the AD-22 drain sequence is logged in order before exit.
+- Given a JDK other than the pinned build, when any build task runs, then the build fails naming expected vs actual.
+
+## Implementation Notes
+
+## Spec Change Log
+
+## Review Triage Log
+
+## Design Notes
+
+- The `-XX` flags cannot travel in a jar manifest — under the bare-`java -jar` decision the contract page is their single home; `Enable-Preview` (a real manifest attribute, JEP 12) is the only piece that belongs in the jar itself. Keep the two mechanisms separate in code and in the docs.
+- The flag set must be ONE shared definition — the contract page is the source; the smoke executes it and a doc-consistency source-scan pins the page against the smoke's own invocation, so the future Docker entrypoint copies from exactly one place — parity by construction, not by copy.
+- Memory interlock: yml defaults derive ~6 GiB budget with `budget-check: fail`; the contract's `MaxDirectMemorySize` must satisfy the AD-30 check against those SAME defaults (pick the value once, assert it in the smoke — do not fork yml).
+- The subprocess smoke needs the jar built before tests run — wire the dependency in Gradle, and mind the incremental-run trap: the smoke must re-run when the jar changes.
+
+## Verification
+
+**Commands:**
+- `./gradlew clean build --console=plain` -- expected: GREEN, including the new packaged-smoke, matrix, source-pin, and build-pin rows.
+- `./gradlew :proxy:test --tests '*Packaged*' --tests '*LazyInit*' --tests '*Banner*' --console=plain` -- expected: GREEN after `clean`.
+
+**Manual checks (if no CLI):**
+- From `proxy/build/libs`: `java -jar` the boot jar with the documented flag set and a reverse-B arg set against a stub SMSC; observe the JSON startup line, one relayed bind, binder gauges in a `/metrics` scrape, and clean SIGTERM shutdown.
