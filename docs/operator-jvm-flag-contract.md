@@ -13,9 +13,11 @@ through a story that touches both. The (later) Docker entrypoint must carry the 
 deploy shape authors its own flags, so the two shapes cannot drift.
 
 The launch presumes the pinned JDK 25 build (`java temurin-25.0.3+9.0.LTS`, `.tool-versions`):
-preview semantics ride on the exact build, and the build refuses an off-pin JDK (DEPLOY-014 arm,
-Story 5.1 T6). Flags go **before** `-jar`; anything after the jar path is ordinary Spring/cell
-configuration (args or env), not part of this contract.
+preview semantics ride on the exact build, which is pinned by the **environment** (asdf
+`.tool-versions`), not by the build — the Gradle toolchain pins major 25 only, and there is
+deliberately no build-time version check (owner decision, 2026-09-10: "asdf pin is enough, no
+additional jdk/jre version check is needed"). Flags go **before** `-jar`; anything after the jar
+path is ordinary Spring/cell configuration (args or env), not part of this contract.
 
 ## The pinned set
 
