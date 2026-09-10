@@ -10,6 +10,8 @@
 > **Vocabulary note (2026-08-28, Story 3.4 T4):** the relay vocabulary was UNIFIED — data-plane action `splice` → `relay` ("spliced PDU"/"spliced traffic" → "relayed PDU(s)", `RelayHandler.splice()` → `relayFramedPdu()`); pair-state transition `flip`/`spliced` → `couple`/`coupled` (`flipSpliced()` → `couple()`, `spliced()` → `coupled()`; the AD-25 flip = the couple); and the observability seam type `SpliceObserver` → `RelayObserver` (`NoopSpliceObserver` → `NoopRelayObserver`, `CapturingSpliceObserver` → `CapturingRelayObserver`; the 4 method names unchanged). Live row text below keeps its pre-T4 wording; read it through this mapping (spine AD-1/2/8/25/27/32 carry the dated amendment markers).
 >
 > **Split note (2026-08-28, Story 3.4 T5):** the couple unit `RelayHandler` was SPLIT into the per-leg `RelayIngressHandler`/`RelayEgressHandler` over the abstract base `CoupledRelayHandler` (D3, owner checkpoint same date; `RelayHandlerTest` split likewise into the two per-leg suites). Rows below naming `RelayHandler` as the couple unit read as `RelayEgressHandler` post-split; the flip/couple trigger is unchanged. Live row text stays.
+>
+> **Row-additions note (2026-09-09, Story 4.4 T6):** two RELAY rows were authored AS-LANDED for the relay-timeout round — **RELAY-027** (the armed adjudication deadline, Story 4.4 T3) and **RELAY-028** (the pre-couple idle watchdog, Story 4.4 T4) — plus a dated blackhole amendment inside RELAY-020. The catalog counts **253 scenarios** since (the §1.1/§1.2 tallies amended in step); the 251 above remains the Step-4 critic-reconciliation count.
 
 ---
 
@@ -20,15 +22,15 @@
 | Area | Total | P0 | P1 | P2 | P3 |
 |------|-------|----|----|----|----|
 | CODEC | 41 | 0 | 40 | 1 | 0 |
-| RELAY | 25 | 12 | 11 | 2 | 0 |
+| RELAY | 27 | 13 | 12 | 2 | 0 |
 | SEC | 98 | 52 | 26 | 18 | 2 |
 | OBS | 43 | 0 | 14 | 29 | 0 |
 | DEPLOY | 14 | 0 | 5 | 9 | 0 |
 | PERF | 29 | 0 | 16 | 13 | 0 |
 | E2E | 1 | 0 | 1 | 0 | 0 |
-| **TOTAL** | **251** | **64** | **113** | **72** | **2** |
+| **TOTAL** | **253** | **65** | **114** | **72** | **2** |
 
-- **Coverage core** (risk_threshold = p1): every one of the 18 P0/P1 risks has ≥1 explicit passing scenario. P0 concentration is in SEC (52: the fail-closed / trust-anchoring / credential-free-at-rest crown jewels) and RELAY (12: the five decomposed R5 concurrency seams).
+- **Coverage core** (risk_threshold = p1): every one of the 18 P0/P1 risks has ≥1 explicit passing scenario. P0 concentration is in SEC (52: the fail-closed / trust-anchoring / credential-free-at-rest crown jewels) and RELAY (12 at reconciliation — the five decomposed R5 concurrency seams; 13 since Story 4.4 added RELAY-027's armed pre-couple deadline, 2026-09-09).
 - **Reconciliation delta vs. the 242-scenario designer output:** +12 additions (SEC-093/094/095/096/097/098/099, RELAY-025/026, E2E-001, CODEC-041, OBS-043), −3 dedup removals (RELAY-016, PERF-041, PERF-042), +4 in-place reframes/fixes (SEC-037 rewritten, SEC-048/049 reframed, SEC-089 blocked-on-config, OBS-015 scope-reduced).
 
 ### 1.2 Area × level tally (derived directly from each scenario's declared level)
@@ -36,13 +38,13 @@
 | Area | Unit | Fuzz | Integration | Conformance | Perf | E2E | Total |
 |------|------|------|-------------|-------------|------|-----|-------|
 | CODEC | 29 | 4 | 4 | 4 | 0 | 0 | 41 |
-| RELAY | 3 | 1 | 13 | 6 | 2 | 0 | 25 |
+| RELAY | 5 | 1 | 13 | 6 | 2 | 0 | 27 |
 | SEC | 60 | 0 | 38 | 0 | 0 | 0 | 98 |
 | OBS | 13 | 0 | 28 | 1 | 0 | 1 | 43 |
 | DEPLOY | 0 | 0 | 6 | 0 | 0 | 8 | 14 |
 | PERF | 1 | 0 | 0 | 0 | 28 | 0 | 29 |
 | E2E | 0 | 0 | 0 | 0 | 0 | 1 | 1 |
-| **TOTAL** | **106** | **5** | **89** | **11** | **30** | **10** | **251** |
+| **TOTAL** | **108** | **5** | **89** | **11** | **30** | **10** | **253** |
 
 ### 1.3 Critic-fix application map (what changed and why)
 
@@ -441,6 +443,7 @@ Level: integration · Priority: P2 · Risks: R32 · NFR: REL-3, PERF-3, AD-12
 - Technique: fake BindCredentialVerifier returns Allow; egress Bootstrap.connect() to a refused port; with an injectable Clock advance past the egress-connect timeout; assert legacy receives a synthesized bind_resp error or clean close within the PERF-3 bound and the registry empties.
 - Tooling: in-JVM pair; injectable Clock/scheduler; fake verifier; a refused egress endpoint; AssertJ on the legacy-received PDU and registry size; no Thread.sleep.
 - Notes: R32 — the underspecified error path: ALLOW won, but the relay cannot reach the SMSC. Risk = a hanging legacy socket. Injectable Clock makes the timeout deterministic. Registry-cleanup aspect is RELAY-006; this isolates the legacy-facing no-hang behavior. Exact ESME_* status code deferred to a single story (Q7) — assert 'bind_resp with non-ROK status OR clean close, within timeout'.
+- **Status (Story 4.4 T1, 2026-09-09): the BLACKHOLE half landed — the row's injectable-Clock technique was superseded by the Netty connect bound.** `RelayChannelOptions.applyToEgress` now sets `ChannelOption.CONNECT_TIMEOUT_MILLIS` derived from `companion.bind.adjudication-deadline` (millis, clamped; no new knob — the F13 one-number precedent), so a SYN-blackholing SMSC target fails the dial at the deadline instead of Netty/OS's ~30s default — the connect-that-never-completes case this row's refused-port technique (already green: RST fails fast without the option) cannot reach. The existing `EGRESS_CONNECT_FAILED` deny arm then answers immediately (registry + frame cleanup as written). Successor tests: `RelayChannelOptionsTest.connectTimeoutMillisDerivesFromTheAdjudicationDeadline` (+ the flipped substrate pin `egressBootstrapCarriesTheIdenticalSubstrate`, now asserting the egress-only dial bound, and the new ingress negative pin) and `BindInterceptorTest.blackholedEgressFailsAtTheDerivedConnectBoundAndCollapses` (commit `f60b82d`).**
 
 **RELAY-021** — Egress TLS handshake failure post-ALLOW (TCP up, handshake fails) tears down the half-created pair: legacy notified, no lingering pair
 Level: integration · Priority: P2 · Risks: R32 · NFR: REL-3, PERF-3, SEC-1
@@ -477,6 +480,18 @@ Level: integration · Priority: P1 · Risks: R27 · NFR: REL-2, SEC-2, AD-30
 - Technique: ArchUnit/Gradle static assertion: the codec max frame size (65536) and the MaxDirectMemorySize formula input (max_frame × max_inbound_depth × concurrent_pairs × safety_factor) both reference the SAME named constant (compile-time AST / reference scan). Compile-time drift prevention — a runtime soak (RELAY-013/PERF-040) cannot catch a conservative drift where both happen to be large enough that the soak passes while the constants silently differ.
 - Tooling: ArchUnit + Gradle build task (AST/reference scan) + JUnit5 CI gate.
 - Notes: [critic-fix] Closes the cross-level gap (open question Q5). AD-30's headline invariant is 'one named formula so the codec max and the allocator budget cannot drift.' The specific R27 defect is the codec max and MaxDirectMemorySize silently diverging. RELAY-013/PERF-040/DEPLOY-004 assert the budget holds at runtime; none makes the compile-time shared-constant assertion.
+
+**RELAY-027** — Armed adjudication deadline (F14): a never-settling verifier future is denied AT `companion.bind.adjudication-deadline` through the one AD-32 teardown path; a late ALLOW no-ops; the deadline racing SIGTERM converges on deny
+Level: unit · Priority: P0 · Risks: R5, R1(fail-closed), R11 · NFR: FR-SEC-5, PERF-3, AD-25, AD-27, AD-32, AD-33
+- Technique: per-channel scheduled task on the package-private `ChannelTimer` seam (production = `channel.eventLoop().schedule(...)` — AD-2's per-channel scheduled task, never an `IdleStateHandler`), armed in `adjudicate` beside the `RequestContext.deadline` computation at the same configured millis; the fire body re-checks FIRST (entry absent / tearing-down / coupled → no-op — convergence, not cancellation) then routes `denyAndTeardown(channel, commandId, seq, BIND_REJECTED)`: the AD-33 synthesizer answers the wire with the one generic 0x0000000D status, and the single-sited `RelayStateManager.beginTeardown` carries `cancelHttp()` (the pin settles `DenyIndeterminate` per the port's no-op-if-done contract — the relay never authors a second completion) + the password zeroize. NO Verdict is fabricated → `onBindReject` NEVER fires (AD-27: verifier-returned Verdicts only). Tests capture the scheduled task and fire it manually — no wall-clock waits.
+- Tooling: JUnit5 + AssertJ; the capture-and-fire `ChannelTimer` double; `LatchedBindCredentialVerifier` (the never-settling seam); the EmbeddedChannel couple harness; the real-socket shutdown rig for the one SIGTERM-race row (production timer, order-robust convergence assertions, bounded awaits).
+- Notes: **Status (Story 4.4 T3, 2026-09-09, commit `28b65d7`): LANDED** — `BindInterceptorTest.neverSettlingVerifierIsDeniedAtTheConfiguredDeadline` (deny PDU 0x0D sequence-correlated on the wire, `BIND_REJECTED` close exactly once, entry released, `cancelHttp()` == 1, password zeroized, no `onBindReject`, armed delay == the configured 4000ms, then the late Allow no-ops), `BindInterceptorTest.lateAllowAfterTheDeadlineFiredIsANoOpThatNeverCouples` (exactly ONE wire write — the deny), `BindInterceptorTest.clientCloseThenTimerFireIsASingleTeardown` (the stale fire no-ops), and `GracefulShutdownRacesTest.deadlineTimerRacingSigtermConvergesOnDenyNeverCouples` (the R11 deadline×SIGTERM convergence on the real stack: one non-ROK bind_resp then EOF, never couples, registry empty, settle `DenyIndeterminate`, zeroized). The verifier-budget halves stay with PERF-032/SEC-009; this row is the relay-side arm. Mutation: the schedule call removed → the three unit rows RED; the task body emptied → never-settling + late-ALLOW RED.
+
+**RELAY-028** — Pre-couple idle watchdog (F13 residue): an accepted-but-never-binding socket is bare-closed at `companion.bind.pre-couple-idle-timeout` and its `concurrent-pairs` cap slot reclaimed; a COUPLED idle pair is NEVER reaped (PERF-2 negative)
+Level: unit · Priority: P1 · Risks: R5, R27 · NFR: PERF-2, REL-4, AD-2, AD-27, AD-32
+- Technique: the watchdog is armed at `BindInterceptor.channelActive` (not at the first bind — the never-binding socket has no registry entry, so arming at ACTIVE is what puts it inside the bound) on the `ChannelTimer` seam at the configured window; the fire body re-checks first (tearing-down/coupled → no-op — PERF-2's 10K legitimately-idle coupled pairs are held by design; no-entry → WARN + stash `PRE_COUPLE_NON_BIND_PDU` + close only; live entry → the F1 arm's exact shape: cancel the deadline timer → `beginTeardown` → stash → close both legs). NO response PDU, NO Verdict, never `onBindReject` (AD-27). Cancelled at the couple (the `EgressLeg` answer arm); bounds connect→couple ONLY — it also bounds the silent-SMSC await after the forward (the R32 sub-window RELAY-021 does not cover). The cap-slot reclaim rides `ConnectionCapHandler`'s existing `closeFuture` release — finally REACHABLE for never-binding sockets; the handler itself is unchanged.
+- Tooling: JUnit5 + AssertJ; the capture-and-fire `ChannelTimer`; the `IdleWatchdogHarness` cross-package test fixture; for the reclaim row, real loopback `NioSocketChannel` children on a real one-thread event loop through `ConnectionCapHandler(1)` (first→admitted, second→refused `closeForcibly`, fire the captured watchdog, third→admitted).
+- Notes: **Status (Story 4.4 T4, 2026-09-09, commit `267abb8`): LANDED** — `BindInterceptorTest.idleWatchdogArmsAtChannelActiveAtTheConfiguredWindow` (armed at the CONFIGURED millis, the derivation-pin rule), `idleWatchdogBareClosesTheNeverBindingSocket` (no PDU, no entry, no verifier contact, exactly-one INGRESS/`PRE_COUPLE_NON_BIND_PDU` close), `idleWatchdogMidAdjudicationBareClosesCancelsAndZeroizes`, `idleWatchdogBoundsTheSilentSmscAwaitAfterTheForward` (the watchdog SURVIVES verdict settle — pinned), `coupledIdlePairIsNeverReapedByTheIdleWatchdog` (the PERF-2 negative: cancelled at the couple — pinned; a stale fire leaves the pair up), and `ConnectionCapHandlerTest.idleWatchdogReclaimReleasesTheCapSlotForTheNextAccept` (the first direct cap-handler-level coverage); the config matrix `CompanionConfigMatrixTest.invalidPreCoupleIdleTimeoutRefuses` (""/0s/-5s/not-a-duration — value-bound, never key-removed). Mutation: the arming neutered → 8 rows RED (all five T4 rows + the three T3 rows at their arming pins); the coupled-recheck neutered → exactly the PERF-2 negative RED.
 
 ## 4. SEC — Security: fail-closed adjudication, trust anchoring, credential-free-at-rest, fail-fast, TLS
 

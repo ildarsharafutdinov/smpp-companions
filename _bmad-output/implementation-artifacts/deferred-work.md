@@ -27,6 +27,11 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   credited T1 for a guard T1 had removed — a re-occurrence of the false-RESOLVED failure mode; recorded
   here so the timeline is not misread as continuous correctness since 2026-08-03.
 - **`contextCloseStopsLifecycleWithinGracefulTimeout` 30s-ceiling assertion is trivial** — stop()-ran IS checked (`isRunning` false); a meaningful upper-bound test lands with the AD-22 body in Epic 4. [proxy/src/test/.../bootstrap/BootstrapLifecycleTest.java]
+  **✅ RESOLVED 2026-09-05 (Story 4.2 T4, commit `27d7c7b`; marker added 2026-09-10 by Story 4.4 T6):**
+  the bound is meaningful — `contextCloseStopsLifecycleWithinGracefulTimeout` asserts the
+  whole-context close lands under 5s (6x inside the 30s phase ceiling; rationale re-signed by
+  Story 4.3 T6 for the drain deadline: the empty-registry short-circuit keeps the idle boot fast,
+  and the non-idle margin 10s+6s+2s=18s stays inside the ceiling).
 - **`BootstrapLifecycleTest` non-web assertion is tautological (forces `.web(NONE)`)** — AD-16 is guarded by OBS-013 + `spring.main.web-application-type: none`; the class-name check can't detect classpath drift. Cosmetic. [BootstrapLifecycleTest.java]
 - **`CompanionLifecycle` phase ordering (default `MAX_VALUE` stops first) once a 2nd `SmartLifecycle` lands** — single bean today; Epic 4 manages phases. [proxy/src/main/java/.../bootstrap/CompanionLifecycle.java]
   **[RESOLVED 2026-08-15 (Story 2.2 T6): both lifecycles now carry EXPLICIT phases —
@@ -238,12 +243,25 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   loop" tension resolves only when Epic 4's AD-22 7-step drain re-authors this stop body. Spec-mandated today
   (the T6 checkbox pins exactly this stop: close acceptor → `shutdownGracefully` awaited); recorded so T7
   review + Epic 4 own the ordering consciously.
+  **✅ RESOLVED 2026-09-04 (Story 4.2 T2, commit `fe1fefb`; marker added 2026-09-10 by Story 4.4 T6):**
+  the stop body was re-authored acceptor-close-only — the shared loop SURVIVES the acceptor phase
+  (the deny continuations need it); the quiesce moved to the AD-22 coordinator's final step. Pinned
+  by `RelayServerLifecycleTest.relayAcceptorStopsBeforeTheAppLifecycle` (the phase order) and — the
+  loop provably LIVE post-stop — `.lateBindOnAnEstablishedSocketIsDeniedAndFreshConnectsAreRefused`
+  (Story 4.3 T4, commit `6f38a74`: the OBS-017 gate's fail-closed deny executes on the surviving loop).
 - **`shutdownGracefully()` default 2s quiet period costs every mode-b context close ≥2s**
   [`proxy/.../relay/netty/RelayServerLifecycle.java:115`] — no-arg = 2s quiet / 15s cap, awaited
   `syncUninterruptibly()`: ~+8-10s across the suite's mode-b boots (full suite 47s), 2s per production
   shutdown, up to ~17s of the 30s per-phase window. A documented deliberate choice (javadoc cites Netty's
   defaults); becomes a mini-drain feature once in-flight PDUs exist. Revisit with the Epic-4 drain work
   (or pass an explicit 0-quiet / shorter window then).
+  **✅ RESOLVED 2026-09-04 (Story 4.2 T2, commit `fe1fefb`; marker added 2026-09-10 by Story 4.4 T6):**
+  with the acceptor stop no longer quiescing the loop at all, the no-arg 2s-quiet/15s-cap awaited
+  close is gone from every context close — the quiesce now lives once, at the app-phase coordinator,
+  with EXPLICIT short args (100ms/2s;
+  `ProxyCompanionLifecycleTest.theWalkOrderAndExplicitQuiesceAreSourcePinned` pins "never the
+  no-args default"), and the acceptor-side stop is bounded by
+  `RelayServerLifecycleTest.stopInvokesCallbackAndReleasesPort`.
 - **Wildcard listener posture: the acceptor binds `0.0.0.0` with no bind-host key, connection cap, or idle
   timeout** (owner decision 2026-08-15, T6 code review) [`proxy/.../relay/netty/RelayServerLifecycle.java:89`;
   `ProxyCompanionProperties.Bind` is port-only] — accepted channels are inert-but-never-reaped until T7/T8
@@ -267,6 +285,14 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   (mutation M6 RED-on-neuter). NOT claimed: this entry's third clause — an idle timeout for the accepted-but-
   never-binding socket — did not land (no idle handler exists in `relay/`); post-cap such a leg still holds its
   slot indefinitely, and that clause re-homes to the Epic-4 RELAY-020/021 timeout round with F10/F14.
+  **✅ RESOLVED 2026-09-09 (Story 4.4 T4, commit `267abb8`; marker added 2026-09-10 by Story 4.4 T6):**
+  the third clause landed — the `companion.bind.pre-couple-idle-timeout` watchdog bare-closes the
+  accepted-but-never-binding socket at the configured window, and its close is what
+  `ConnectionCapHandler`'s `closeFuture` release rides (the slot is reclaimed for the next accept).
+  Pinned by `BindInterceptorTest.idleWatchdogBareClosesTheNeverBindingSocket` and
+  `ConnectionCapHandlerTest.idleWatchdogReclaimReleasesTheCapSlotForTheNextAccept` (the first direct
+  cap-handler-level coverage); PERF-2's coupled-idle-pairs-never-reaped negative is
+  `BindInterceptorTest.coupledIdlePairIsNeverReapedByTheIdleWatchdog`. The catalog row is RELAY-028.
 
 ## Deferred from: owner notes during Story 2.2 T7 + owner-FIXME round (2026-08-16)
 
@@ -420,6 +446,18 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   complete-exceptionally-at-deadline vs deny+teardown, and whether that obligates `VerdictRequest` to promise
   settlement on `cancelHttp()` (interlocks with review finding F7's frame-ownership question). Natural home:
   the later Epic-2 story / Epic 4 alongside RELAY-020/021 (story Out of scope :339).
+  **✅ RESOLVED 2026-09-09 (Story 4.4 T3, commit `28b65d7`):** the deny+teardown arm landed, relay-side.
+  `BindInterceptor.adjudicate` arms a per-channel scheduled task (the package-private `ChannelTimer`
+  seam; production = `channel.eventLoop().schedule` — AD-2) at the configured `adjudication-deadline`;
+  the fire body re-checks first (entry absent / tearing-down / coupled → no-op — convergence, not
+  cancellation) then routes `denyAndTeardown(..., BIND_REJECTED)` through the one AD-32 teardown path
+  (`cancelHttp` settles the pin `DenyIndeterminate`; the port was NOT amended — see the F7 decision
+  below). Pinned by `BindInterceptorTest.neverSettlingVerifierIsDeniedAtTheConfiguredDeadline` (deny
+  on the wire, entry released, `cancelHttp()==1`, zeroized, no `onBindReject`, armed delay == the
+  configured millis), `.lateAllowAfterTheDeadlineFiredIsANoOpThatNeverCouples`,
+  `.clientCloseThenTimerFireIsASingleTeardown`, and
+  `GracefulShutdownRacesTest.deadlineTimerRacingSigtermConvergesOnDenyNeverCouples` (the
+  deadline×SIGTERM race on the real stack). The catalog row is RELAY-027.
 
 - **Ingress-leg `bind_*_resp` handling [F1|medium]** — a decoded bind response arriving on the INGRESS leg is
   released and dropped (`BindInterceptor.java:188-197`): no AD-32 bare-close pre-flip, no splice post-flip
@@ -428,6 +466,16 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   flip the pair without SMSC consent via `Relayer.channelRead:126-137`, so any future fix must bare-close
   pre-flip, not forward); the AD-32 letter + post-flip splice question rides with RELAY-020/021 in the later
   Epic-2 story.
+  **✅ RESOLVED 2026-09-09 (Story 4.4 T2, commit `a409866`) — the PRE-COUPLE half this entry owns:**
+  the silent drop is gone — a client-sent `bind_resp` pre-couple now takes the AD-32 bare-close
+  (release frame → `beginTeardown` → stash `PRE_COUPLE_NON_BIND_PDU` → close legs, NO response PDU —
+  the forged-ROK window stays sealed). Pinned by
+  `BindInterceptorTest.clientBindRespBeforeAnyBindBareClosesWithNoResponse` and
+  `.clientBindRespMidAdjudicationBareClosesCancelsAndZeroizes` (cancel called, zeroized, entry gone,
+  `onBindReject` NOT fired, frame released exactly once). The post-couple plane needs no fix: past
+  the couple the ingress leg IS the relay data plane (`CoupledRelayHandler` forwards every framed
+  PDU — `smscRokBindRespIsForwardedVerbatim` / `smscNonRokBindRespIsForwardedVerbatimNotCollapsed`
+  pin the egress-side forward verbatim), so "no silent drop post-flip" holds by construction.
 - **Verdict-future frame ownership on cancellation [F7|medium]** — the `whenComplete` continuation is the only
   releaser of the in-flight `req.originalFrame()` (`BindInterceptor.java:271-274`); the four teardown arms'
   `cancelAndWipePending` (:336-347) never releases it, and the ratified port (`VerdictRequest.java:26-30`) does
@@ -452,12 +500,28 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   discipline can still strand one pooled buffer per abandoned adjudication (the port stays silent) — it
   interlocks with F14 exactly as F14's entry above anticipates ("whether that obligates `VerdictRequest` to
   promise settlement on `cancelHttp()`").
+  **🟡 DECIDED 2026-09-10 (Story 4.4 T6, per AC8):** the port is NOT amended — the AC8
+  ratified-immutable `VerdictRequest` stays silent on cancel-settlement. The F14 relay-side arm
+  (T3, `28b65d7`) CONSUMES `cancelHttp()` through the single-sited `beginTeardown` (its pin settles
+  `DenyIndeterminate`, so the continuation always runs and releases the frame on its losing-race arm
+  — the production adapter's AC5 guarantee holds), and the discipline-violating-verifier
+  single-buffer strand stays a DOCUMENTED RESIDUAL of this entry (a verifier whose `future()` never
+  settles after `cancelHttp()` leaks one pooled buffer per abandoned adjudication; AlwaysAllow
+  pre-completes, ROPC settles per AC5).
 - **Egress connect-phase bounding (blackholed SMSC) [F10|medium]** — the per-bind egress `Bootstrap` sets no
   `CONNECT_TIMEOUT_MILLIS` (`BindInterceptor.java:400-406`): a blackholed endpoint (SYN drop) hangs the legacy
   socket ~30s (Netty default, pinned 4.2.16.Final) while the 4s `adjudication-deadline` never bounds TCP
   establishment (~7.5x PERF-3's 2-5s fail-closed budget); RELAY-020-as-written (connect-refused, RST fails
   fast) passes without the option. **Owner (2026-08-17): defer** — folds into the RELAY-020/021 timeout work
   in the later Epic-2 story; ~30s worst case accepted for the plaintext test-tier slice.
+  **✅ RESOLVED 2026-09-09 (Story 4.4 T1, commit `f60b82d`):** `RelayChannelOptions.applyToEgress`
+  sets `ChannelOption.CONNECT_TIMEOUT_MILLIS` derived from
+  `companion.bind.adjudication-deadline` (no new knob — the F13 one-number precedent), so a
+  SYN-blackholing SMSC fails the dial at the deadline instead of Netty/OS's ~30s default. Pinned by
+  `RelayChannelOptionsTest.connectTimeoutMillisDerivesFromTheAdjudicationDeadline`,
+  `.egressBootstrapCarriesTheIdenticalSubstrate` (the flipped egress-only pin), and
+  `BindInterceptorTest.blackholedEgressFailsAtTheDerivedConnectBoundAndCollapses`. The catalog
+  amendment is the dated Status marker inside RELAY-020.
 - **`EGRESS_CONNECT_FAILED` / `BIND_REJECTED` CloseReasons never fire [F9|low]** — `denyAndTeardown`
   (`BindInterceptor.java:321-333`) stashes no reason and `ConnectionRegistry` clears the entry attr before
   close, so deny/connect-fail closes surface as `OTHER` (the other 5 dead values are documented
@@ -465,12 +529,26 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   semantics decided when the metrics observer consumes the taxonomy (needs hoisting the RelayHandler-private
   CLOSE_REASON key `RelayHandler.java:83-84` + a deny-variant→value mapping; may amend the ratified
   not-a-must-fire-list contract).
+  **✅ RESOLVED across two landings (marker added 2026-09-10 by Story 4.4 T6):** the taxonomy was
+  hoisted and the reasons FIRE. Story 4.1 T4 (commit `66d3a26`, 2026-09-03) hoisted the close-reason
+  key and made the EgressLeg collapse stash its reason — `EGRESS_CONNECT_FAILED` pinned by
+  `RelayEgressHandlerTest.egressPreCoupleNonBindPduIsNotLeaked` and
+  `.headerOnlyBindRespTearsDownViaDecodeErrorNeverReachingIsOk` (the "4.1 T4 hoist" assertions);
+  Story 4.4 T3 (commit `28b65d7`, 2026-09-09) armed the deadline deny that stashes `BIND_REJECTED` —
+  pinned by `BindInterceptorTest.neverSettlingVerifierIsDeniedAtTheConfiguredDeadline`.
 - **`onFramedPdu` pre-couple firing vs seam contract [F11|low]** — the interface javadoc says "pre- or
   post-couple" (`SpliceObserver.java:30-36`) but the sole fire site is post-flip
   (`RelayHandler.java:197`); the AD-14 verbatim bind forward (`BindInterceptor.java:427`) and the `bind_resp`
   forward (:511) cross uncounted (deny-synthesis + generic_nack forward likewise). **Owner (2026-08-17): defer
   to Epic 4** — folds into the PDU-count metric semantics decision (fire at the handshakes — flips three pinned
   tests RED — vs amend the javadoc to post-couple-only).
+  **✅ RESOLVED 2026-09-03 (Story 4.1 T4, commit `66d3a26`; marker added 2026-09-10 by Story 4.4 T6):**
+  the javadoc-amendment arm was taken — `RelayObserver.onFramedPdu` now documents "post-couple only"
+  (the pre-couple bind-handshake plane — the AD-14 verbatim forward, the deny synthesis, the
+  generic_nack forward — stays uncounted BY DESIGN), so the three pinned tests never flipped. The
+  contract is pinned by `RelayObserverShapeTest` (the four-method interface + signature rows) and
+  the fire-site path by `ThrowingObserverHardeningTest.throwingOnFramedPduStillForwardsTheFrame`
+  (the sole fire site is `CoupledRelayHandler.relayFramedPdu`, post-couple by construction).
 - **RELAY-014 backpressure behavioral test (re-affirmed) [F16|low]** — the writability CONDITION and the
   `channelWritabilityChanged` low-water body (`RelayHandler.java:200,219-231`) have no behavioral test (the
   re-arm happy path IS exercised on real sockets — multi-roundtrip traffic needs it; the forward itself is
@@ -584,18 +662,43 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `3-4-relay-refactoring-round.md`
   summary: Unguarded RelayObserver callbacks — none of the four production fire sites (onBindReject in the verdict continuation, onBindAccept at the couple, onFramedPdu per relayed PDU, onConnectionClosed at channelInactive) isolates a throwing implementation, and the RelayObserver interface documents no "must not throw" contract. Worst arm: onBindReject runs in an event-loop task (no exceptionCaught net) — a throwing observer leaks the original frame, skips the AD-33 deny, and hangs the client until TCP timeout; onFramedPdu leaks one frame per PDU pre-write. NoopRelayObserver (the current bean) cannot throw; the exposure materializes when Epic 4 swaps in the production Micrometer observer — harden the seam (try/catch or a documented throw contract) at that story.
   evidence: Code review 2026-09-01 (edge-case-hunter layer, source-verified at `BindInterceptor.java:370`, `RelayEgressHandler.java:70`, `CoupledRelayHandler.java:159,274`); pre-existing 2.2-era seam posture — Story 3.4 moved/renamed the sites (T4/T5) without changing guard behavior.
+  **✅ RESOLVED 2026-09-03 (Story 4.1 T4, commit `66d3a26`; marker added 2026-09-10 by Story 4.4 T6):**
+  the seam is hardened — every fire site routes `CoupledRelayHandler.fireGuarded(...)`
+  (onBindReject/onBindAccept/onFramedPdu/onConnectionClosed), isolating a throwing implementation
+  (logged, never propagated: the deny still synthesizes, the frame still forwards, teardown stays
+  exactly-once). Pinned by `ThrowingObserverHardeningTest`
+  (throwingOnBindRejectStillSynthesizesTheDenyAndTearsDown,
+  throwingOnBindAcceptLeavesTheCoupleAndRelayIntact, throwingOnFramedPduStillForwardsTheFrame,
+  throwingOnConnectionClosedKeepsTeardownAndExactlyOnce, fullCycleWithEveryTriggerThrowingHoldsEveryInvariant).
 - source_spec: `3-4-relay-refactoring-round.md`
   summary: OPERATOR_WARNING per-bind flooding — the T9 starred banner (~14 lines) logs on EVERY denied bind with no once-per-condition/rate bound; a dead or typo'd provider under sustained binds floods the log (up to max-in-flight concurrent), undermining the "unmissable in any log aggregation" intent. Bounding options considered: first-banner + one-liner-per-bind, once-per-condition, keep per-bind.
   evidence: Code review 2026-09-01 (blind-hunter + verification-gap layers, source-verified at `RopcBindCredentialVerifier.java:406-411`). Deferred by owner 2026-09-01: Epic 4 owns operator logging — decide with the production observer it lands.
+  **✅ RESOLVED 2026-09-03 (Story 4.1 T5, commit `695ebaa`; marker added 2026-09-10 by Story 4.4 T6):**
+  bounded once-per-condition — the starred banner fires once, then `OPERATOR_WARNING_REPEAT` (one
+  contextual line per bind). Pinned by
+  `RopcBindCredentialVerifierTest.deadProviderFloodLogsBannerOnceThenOneLinerPerBind` and
+  `.statusArmFloodIsBoundedPerCondition`.
 - source_spec: `3-4-relay-refactoring-round.md`
   summary: Non-JWT (opaque-token) WARN inconsistent with the operator-banner pattern — not starred, carries no tokenEndpoint/providerUrl context (a multi-cell operator cannot tell which provider issued the opaque token), and repeats per bind; should align with whatever bound the OPERATOR_WARNING item above picks.
   evidence: Code review 2026-09-01 (blind-hunter layer, source-verified at `RopcBindCredentialVerifier.java:448-450`). Deferred by owner 2026-09-01: Epic 4 owns operator logging — decide with the production observer it lands.
+  **✅ RESOLVED 2026-09-03 (Story 4.1 T5, commit `695ebaa`; marker added 2026-09-10 by Story 4.4 T6):**
+  aligned with the banner pattern — `OPAQUE_TOKEN_WARNING` carries the tokenEndpoint/providerUrl
+  context with the same once-then-`OPAQUE_TOKEN_WARNING_REPEAT` bound. Pinned by
+  `RopcBindCredentialVerifierTest.opaqueTokenWarningIsBoundedAndContextualized`.
 - source_spec: `3-4-relay-refactoring-round.md` (chunk B — test tier, 2026-09-01)
   summary: No standing ArchUnit rule for registry-mutating transitions, and the AC6 couple-forbid rule matches only the no-arg `couple()` signature — raw `ConnectionRegistry.register/attachEgress/beginTeardown` calls outside `RelayStateManager` are guarded only by the T11 grep evidence (single-siting verified once, not enforced), and a future `ConnectionEntry.couple(...)` overload would escape the `callMethod` match. Mirror the `RelayCoupleSiteArchitectureTest` idiom (forbid + positive control) for registry-mutating calls and widen the couple rule to any-arity.
   evidence: Code review 2026-09-01, chunk B (blind-hunter layer, source-verified at `RelayCoupleSiteArchitectureTest.java:43-53`, `RelayStateManager.java`). Deferred: hardening beyond any AC — AC6 mandates the couple-site pin only; single-siting is grep-proven in T11's Debug Log. Epic-4 candidate.
+  **✅ RESOLVED 2026-09-05 (Story 4.3 T1, commit `a074b41`; marker added 2026-09-10 by Story 4.4 T6):**
+  the fence is standing — `ConnectionRegistryMutationFenceArchitectureTest` (the forbid +
+  positive-control idiom) pins the registry-mutating single-siting and the any-arity couple rule.
 - source_spec: `3-4-relay-refactoring-round.md` (chunk B — test tier, 2026-09-01)
   summary: No wiring-level pin that `RelayIngressInitializer` and `RelayEgressInitializer` share ONE manager/registry singleton — the test harnesses hand-share the pair, `RelayPipelineInitializersTest` uses deliberately disjoint pairs, and `VerifierWiringConfigTest` covers the security wiring only. Spring singleton injection makes divergence unlikely, but AD-25's premise (the couple unit must resolve the registry the ingress arm wrote) is unpinned at the wiring level; a context-level same-bean assertion in one full boot would close it.
   evidence: Code review 2026-09-01, chunk B (blind-hunter layer, source-verified at `RelayPipelineInitializersTest.java:54`, `RelayTestFixtures.java`, `RelayNettyConfig` wiring). Deferred: hardening beyond any AC. Epic-4 candidate.
+  **✅ RESOLVED 2026-09-09 (Story 4.4 T5, commit `bbe935e`; marker added 2026-09-10 by Story 4.4 T6):**
+  pinned at the wiring level — `RelayWiringConfigTest.bothLegInitializersShareTheOneManagerAndRegistryBeans`
+  (one full reverse-B boot: BOTH per-leg initializers carry the context's ONE `RelayStateManager`,
+  the manager wraps the ONE `ConnectionRegistry`) + `.theSameBeanComparisonDistinguishesDisjointManagers`
+  (the disjoint-pairs positive control).
 
 ## Deferred from: code review of 4-1-structured-logs-and-loopback-metrics (2026-09-03)
 
@@ -609,18 +712,48 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `/home/ildar/Documents/smpp-bmad/_bmad-output/implementation-artifacts/4-2-graceful-shutdown-deny-on-live-loop.md`
   summary: The shutdown walk's step-4 AD-10 effects (release()'s provider-client close + client-secret zeroize) are observed by no test — deleting both lines keeps every suite GREEN.
   evidence: Verified by the 4.2 review verification-gap pass: every test that executes release()/close() asserts around the tail (settle done, DenyIndeterminate, group terminated, no-op re-fires), none observe the client or the secret; grep for zeroize/clientSecret across proxy/src/test finds only ClientSecretTest unit-testing the wrapper itself. Pre-existing since the 3.2 fused close (the split did not weaken it), but the coordinator javadoc now makes it the documented contract of a new production path (ProxyCompanionLifecycle step 4). Needs a test-visible ClientSecret seam (shared-backing-array all-zero probe, the idiom the races row already uses for the bind password).
+  **✅ RESOLVED 2026-09-09 (Story 4.3 T6, commit `90c1356`; marker added 2026-09-10 by Story 4.4 T6):**
+  both step-4 effects are now observed — `AdjudicationLifecycleTest.theWalksReleaseClosesTheClientAndZeroizesTheSecret`
+  asserts the ONE shared provider client closed exactly once (`http.closeCount()==1`) AND the client
+  secret's backing array all-zero after the walk (the shared-backing-array probe this entry asked
+  for; the row's comment names the 4.2 verification gap it closes — deleting either line in
+  `release()` can no longer stay GREEN).
 - source_spec: `/home/ildar/Documents/smpp-bmad/_bmad-output/implementation-artifacts/4-2-graceful-shutdown-deny-on-live-loop.md`
   summary: The coordinator walk's internal step order (deny → drain seam → release → quiesce) and its throw-path quiesce (finally runs even when a step throws) are pinned only by the source-scan test, never behaviorally.
   evidence: 4.2 review: theWalkOrderAndExplicitQuiesceAreSourcePinned matches source text, not executed behavior; no test injects a throwing step to prove the quiesce still ran. Today the order is behaviorally near-unobservable (once-guards make release-before-deny contract-identical; no new adjudication can race in after the acceptor closed), but story 4.3 lands the drain body exactly between deny and release, where both the order and the throw path become load-bearing — pin them there.
+  **✅ RESOLVED 2026-09-09 (Story 4.3 T6, commit `90c1356`; marker added 2026-09-10 by Story 4.4 T6):**
+  pinned behaviorally — `GracefulShutdownRacesTest.theWalksSixEventOrderingChainAcceptorDeniedDrainReleasedExit`
+  (the OBS-016 causal chain: acceptor-stopped ≤ adjudications-denied ≤ drain-started ≤
+  drain-completed ≤ vt-drained ≤ exit) and
+  `ProxyCompanionLifecycleTest.aThrowingDrainStepSkipsReleaseAndStillQuiescesTheLoop` (the
+  injected-throwing-step quiesce).
 - source_spec: `/home/ildar/Documents/smpp-bmad/_bmad-output/implementation-artifacts/4-2-graceful-shutdown-deny-on-live-loop.md`
   summary: The walk's final quiesce (shutdownGracefully(100ms, 2s).syncUninterruptibly()) has no outer bound — a loop task wedged in a handler delays termination past the 2s cap and the uninterruptible wait stalls the shutdown thread past every ceiling, with no log line.
   evidence: 4.2 review: Netty's 2s caps the graceful period, not thread death; syncUninterruptibly ignores both interrupts and Spring's per-phase timeout. Same shape as the pre-4.2 quiesce in RelayServerLifecycle (relocated, not introduced, by this story); until 4.3/4.4 land the drain body and relay timeouts the loop carries live splice traffic at quiesce time. Revisit with 4.3/4.4 or the Epic 6 under-load proof (PERF-061); candidate shape: bounded await + WARN-and-proceed, mirroring release()'s defensive timeout arm.
+  **✅ RESOLVED 2026-09-09 (Story 4.4 T5, commit `bbe935e`; marker added 2026-09-10 by Story 4.4 T6):**
+  the candidate shape landed verbatim — `QUIESCE_AWAIT_BOUND_MS` (3s = the 2s graceful cap + 1s
+  thread-death slack) bounds a termination await with ONE WARN-and-proceed (fail-closed in outcome;
+  the destroy backstop still guarantees loop death), the interrupt flag saved/cleared/restored
+  around the await so the drain's fail-closed break cannot degrade the join. Pinned by
+  `ProxyCompanionLifecycleTest.aWedgedLoopTaskCannotStallShutdownPastTheQuiesceBound` (stop()
+  returns inside the bound, exactly ONE WARN, the wedged thread provably outlives the walk).
 - source_spec: `/home/ildar/Documents/smpp-bmad/_bmad-output/implementation-artifacts/4-2-graceful-shutdown-deny-on-live-loop.md`
   summary: oidc.timeout's [2s, 5s] operator window (PERF-3) is documented-not-validated — an out-of-window value (e.g. 60s) makes release()'s awaitTermination budget 61s and the walk exceeds the 30s per-phase shutdown ceiling.
   evidence: 4.2 review: ProxyCompanionProperties.Oidc.timeout javadoc explicitly says the window and the <= adjudication-deadline relation are an OPERATOR CONTRACT, NOT validated; the coordinator's Bounded-exit claim rests on it (javadoc reworded this review to name the dependency). Whether to add a bind-time guard is a config-matrix decision (a new validation can fail existing operator configs), out of 4.2's No-new-config-keys scope.
+  **✅ RESOLVED 2026-09-09 (Story 4.4 T5, commit `bbe935e`; marker added 2026-09-10 by Story 4.4 T6):**
+  validated at bind time now — `CompanionConfigValidator.requireOidc` refuses reverse-cell boots with
+  `oidc.timeout` outside the INCLUSIVE [2s, 5s] PERF-3 window or above
+  `companion.bind.adjudication-deadline`. Pinned by
+  `CompanionConfigMatrixTest.outOfWindowOidcTimeoutRefuses` (4 cases),
+  `.oidcTimeoutAboveTheAdjudicationDeadlineRefuses`, and
+  `.oidcTimeoutAtTheInclusiveWindowEdgesBoots` (the 2s/5s edges).
 - source_spec: `/home/ildar/Documents/smpp-bmad/_bmad-output/implementation-artifacts/4-2-graceful-shutdown-deny-on-live-loop.md`
   summary: The zero-orphans row's walk bound (assertThat(walkMs).isLessThan(OIDC_TIMEOUT + 1s = 1500ms)) couples whole-context close() wall-clock to the release-await budget — typical ~700-800ms leaves ~2x headroom, so a CI-load-stalled healthy walk false-REDs indistinguishably from the wedged-drain it exists to catch.
   evidence: 4.2 review (edge-case + blind passes, independently): the bound includes Spring lifecycle-processor overhead, three 500ms-budget TLS aborts, http.close, destroy backstops, and the 100ms-quiet quiesce; the precise pin would be the drain-timeout WARN's absence, but no log-capture idiom exists in the test tier (grep for ListAppender/captureLog is empty). Tuning strictness vs flake-tolerance is a judgment call left to the owner; introducing a log-capture fixture is the suggested shape.
 - source_spec: `/home/ildar/Documents/smpp-bmad/_bmad-output/implementation-artifacts/4-2-graceful-shutdown-deny-on-live-loop.md`
   summary: The 4.2 suites fork the parked-IdP / reverseBProperties / respond / drain / realmBase fixtures three ways (AdjudicationLifecycleTest, ProxyCompanionLifecycleTest, GracefulShutdownRacesTest) and rebindableProbe twice more (RelayServerLifecycleTest, GracefulShutdownRacesTest) instead of extending testsupport/.
   evidence: 4.2 review: the parked-401 vs armed-200 IdP variants are already diverging across the copies; the repo maintains RelayTestFixtures and OidcDiscoveryStandIn for exactly this purpose. Consolidation is a mechanical refactor beyond this story's diff — do it before 4.3 adds a fourth consumer (the drain-deadline rows).
+  **✅ RESOLVED 2026-09-05 (Story 4.3 T2, commit `6c58076`; marker added 2026-09-10 by Story 4.4 T6):**
+  folded — the triplicated parked-IdP / reverseBProperties / respond / drain / realmBase fixtures
+  live in `testsupport/` (`TokenIdpStandIn` + `RelayTestFixtures`, five consumer suites),
+  consolidated before the fourth consumer landed.
