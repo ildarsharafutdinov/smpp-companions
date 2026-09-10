@@ -7,6 +7,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -81,9 +82,21 @@ class MetricsEndpointTest {
                     .contains("story41_endpoint_probe_total 3.0")
                     // the production observer's pre-registered close grid rides the same scrape
                     .contains("relay_connections_closed_total");
-            assertThat(exchange(port, get(MetricsHttpHandler.SCRAPE_PATH)))
-                    .as("row 1: idempotent — a scrape mutates nothing (not even a scrape counter)")
-                    .isEqualTo(first);
+            // Story 5.1 T4: the standard JVM binders are now bound (ObservabilityConfig), so the
+            // scrape carries live gauges — uptime, CPU usage, thread counts legitimately move
+            // between two scrapes and raw byte-identity is no longer the read-only contract. The
+            // SHAPE is (see scrapeShape): a scrape may not create, remove, or rename a series —
+            // that is how a scrape counter would betray itself — and the value-level check below
+            // pins that it moves no counter.
+            String second = exchange(port, get(MetricsHttpHandler.SCRAPE_PATH));
+            assertThat(second).as("row 1: the second scrape is still a 200").startsWith("HTTP/1.1 200");
+            assertThat(scrapeShape(second))
+                    .as("row 1: idempotent — a scrape creates/removes/renames no series "
+                            + "(not even a scrape counter)")
+                    .isEqualTo(scrapeShape(first));
+            assertThat(second)
+                    .as("row 1: and it moves no counter — the probe still reads exactly 3.0")
+                    .contains("story41_endpoint_probe_total 3.0");
         }
     }
 
@@ -137,6 +150,38 @@ class MetricsEndpointTest {
             String bigBody = "POST /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 16384\r\n"
                     + "Connection: close\r\n\r\n" + "\0".repeat(16 * 1024);
             assertThat(exchange(port, bigBody)).as("oversized body must be 413").startsWith("HTTP/1.1 413");
+        }
+    }
+
+    @Test
+    @DisplayName("binder row (Story 5.1 T4): the standard JVM binder gauges ride the scrape beside "
+            + "the custom gauges")
+    void standardJvmBinderGaugesRideTheScrapeBesideTheCustomGauges(@TempDir Path dir) throws IOException {
+        int port = RelayTestFixtures.freePort();
+        try (ConfigurableApplicationContext ctx = bootForwardA(dir, port)) {
+            assertThat(ctx.getBean(MetricsEndpointLifecycle.class).isRunning()).isTrue();
+            String body = exchange(port, get(MetricsHttpHandler.SCRAPE_PATH));
+            // One deterministic family per binder, present on ANY collector (incl. the operator
+            // contract's ZGC): JvmGcMetrics registers the data-size gauges EAGERLY at bindTo, while
+            // its jvm_gc_pause timers are created lazily on the first GC notification — asserting
+            // those would flake on a quiet JVM. Removing any binder bean (ObservabilityConfig) drops
+            // its whole family -> this row goes RED (the T4 mutation arm).
+            assertThat(body)
+                    .as("JvmMemoryMetrics")
+                    .contains("jvm_memory_used_bytes")
+                    .as("JvmGcMetrics")
+                    .contains("jvm_gc_live_data_size_bytes")
+                    .as("JvmThreadMetrics")
+                    .contains("jvm_threads_live")
+                    .as("ProcessorMetrics")
+                    .contains("system_cpu_count")
+                    .as("UptimeMetrics")
+                    .contains("process_uptime_seconds")
+                    // AD-27: ONE registry, ONE scrape — the binder families land BESIDE the custom
+                    // gauges (the forward cell has no ROPC pool, so no ropc_adjudications_active —
+                    // that gauge's absence here is truthful; ResourceMetricsTest pins it).
+                    .as("the custom gauges ride the same scrape")
+                    .contains("relay_direct_memory_used_bytes", "relay_connections_closed_total");
         }
     }
 
@@ -310,5 +355,29 @@ class MetricsEndpointTest {
         return Thread.getAllStackTraces().keySet().stream()
                 .map(Thread::getName)
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * The scrape SHAPE — the exposition body with live sample values stripped: {@code # HELP/# TYPE}
+     * lines verbatim, sample lines reduced to their series name + labels, sorted. Two scrapes of a
+     * read-only registry have IDENTICAL shapes (Story 5.1 T4 made byte-identity impossible: the JVM
+     * binder gauges are live); any series the scrape itself created (a scrape counter) would widen
+     * the shape. {@code jvm_gc_pause} lines are excluded on both sides: JvmGcMetrics registers that
+     * family lazily on the first GC notification, so a collection between two scrapes legitimately
+     * adds series (every other family is bound eagerly at construction).
+     */
+    private static List<String> scrapeShape(String response) {
+        int separator = response.indexOf("\r\n\r\n");
+        return (separator >= 0 ? response.substring(separator + 4) : response).lines()
+                .filter(line -> !line.contains("jvm_gc_pause"))
+                .map(line -> {
+                    if (line.startsWith("#")) {
+                        return line; // HELP/TYPE text is static per series
+                    }
+                    int value = line.lastIndexOf(' ');
+                    return value > 0 ? line.substring(0, value) : line; // drop the live sample value
+                })
+                .sorted()
+                .toList();
     }
 }
