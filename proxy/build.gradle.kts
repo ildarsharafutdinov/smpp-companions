@@ -68,12 +68,34 @@ jmh {
     // (jmh -> test via the plugin's default includeTests=true, test -> jmh via that edge).
     includeTests.set(false)
 }
+// Story 5.1 T1 (DEPLOY-003 JAR half) — the runnable JAR becomes a first-class deploy shape. Two
+// explicit pins replace the bootJar plugin defaults:
+//   * Pinned main class — the entrypoint never silently follows main-class discovery.
+//   * Stable version-free archive name — operators, the packaged smoke (T5), and the later Docker
+//     entrypoint all reference ONE filename across releases (version stays in the manifest).
+// Deliberately NO Enable-Preview manifest attribute (owner amendment, 2026-09-10): it is INERT on
+// the pinned JDK 25 launcher — the runtime image carries Add-Exports/Add-Opens/Enable-Native-Access
+// arms but no Enable-Preview arm (proven on temurin 25.0.3+9: bare `java -jar` of a valid
+// reverse-B cell dies UnsupportedClassVersionError at the first preview-marked class, attribute
+// present or not). The LOAD-BEARING preview mechanism is the operator flag contract's
+// --enable-preview (Story 5.1 T2); no launch configuration travels in the manifest.
+tasks.bootJar {
+    mainClass.set("smpp.companion.proxy.ProxyCompanionApplication")
+    archiveFileName.set("proxy.jar")
+}
+
 tasks.named("test") {
     dependsOn("compileJmhJava")
     // A1CarrierPlanDocsTest reads this doc at runtime — declare it as a test input so a docs-only edit
     // cannot leave the task UP-TO-DATE and silently skip the OBS-035/036/037 falsifiability gate
     // (the runtime-file-read Gradle trap; 2.2 review F17, 2026-08-17).
     inputs.file(layout.projectDirectory.file("../docs/a-1-carrier-test-plan.md"))
+    // Story 5.1 T1/T5: the packaged boot+smoke test `java -jar`s the REAL bootJar as a subprocess,
+    // so the jar must exist before tests run (dependsOn) — and the test must re-run when the jar
+    // changes (inputs.file; the same runtime-file-read Gradle trap as the doc input above, else an
+    // incremental run executes the smoke against a stale jar).
+    dependsOn(tasks.bootJar)
+    inputs.file(tasks.bootJar.flatMap { it.archiveFile })
 }
 
 // SEC-091: OWASP dependency-check CI lane. Deliberately NOT wired into `check`, so `./gradlew build`
