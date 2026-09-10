@@ -1,5 +1,5 @@
 # generated: 2026-07-24
-# last_updated: 2026-09-09
+# last_updated: 2026-09-10
 # project: smpp-companions
 # project_key: NOKEY
 # tracking_system: file-system
@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-09-09
+last_updated: 2026-09-10
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -92,11 +92,11 @@ development_status:
   epic-3-retrospective: optional
 
   # --- Epic 4: Operate the proxy in production — structured logs and read-only loopback /metrics ---
-  epic-4: in-progress
+  epic-4: done
   4-1-structured-logs-and-loopback-metrics: done
   4-2-graceful-shutdown-deny-on-live-loop: done
   4-3-graceful-shutdown-drain: done
-  4-4-relay-timeout-round: in-progress
+  4-4-relay-timeout-round: done
   epic-4-retrospective: optional
 
   # --- Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker ---
