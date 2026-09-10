@@ -1,6 +1,7 @@
 package smpp.companion.proxy.config;
 
 import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
@@ -15,7 +16,12 @@ import org.springframework.stereotype.Component;
  * <p>Detection is structural: the warning fires iff the selected branch is
  * {@code companion.reverse.mode-a} — the internet-leg TLS listener that PRESENTS a cert but never
  * validates the peer (one-way TLS; no trust store on that cell by design).
+ *
+ * <p>Since Story 5.1 (T3, the parked stream decision resolved) the banner rides the logback
+ * stream as ONE WARN JSON line on the shipped LogstashEncoder — never {@code System.err} — so a
+ * packaged boot keeps stdout pure JSON-lines and stderr carries no plain text.
  */
+@Slf4j
 @Component
 public final class CompanionModeAWarning {
 
@@ -42,7 +48,7 @@ public final class CompanionModeAWarning {
             return;
         }
         if (reverse.modeA() != null) {
-            System.err.println(MODE_A_WARNING);
+            log.warn(MODE_A_WARNING);
         }
     }
 }

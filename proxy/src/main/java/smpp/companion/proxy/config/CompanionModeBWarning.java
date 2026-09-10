@@ -1,6 +1,7 @@
 package smpp.companion.proxy.config;
 
 import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
@@ -16,7 +17,12 @@ import org.springframework.stereotype.Component;
  * <p>Detection is structural: the warning fires iff the selected branch is
  * {@code companion.reverse.mode-b} and it was acknowledged (which the validator already required to
  * start &mdash; so reaching {@code @PostConstruct} on that branch implies ack was true).
+ *
+ * <p>Since Story 5.1 (T3, the parked stream decision resolved) the banner rides the logback
+ * stream as ONE WARN JSON line on the shipped LogstashEncoder — never {@code System.err} — so a
+ * packaged boot keeps stdout pure JSON-lines and stderr carries no plain text.
  */
+@Slf4j
 @Component
 public final class CompanionModeBWarning {
 
@@ -44,7 +50,7 @@ public final class CompanionModeBWarning {
         }
         var modeB = reverse.modeB();
         if (modeB != null && modeB.acknowledged()) {
-            System.err.println(MODE_B_WARNING);
+            log.warn(MODE_B_WARNING);
         }
     }
 }
