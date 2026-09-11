@@ -2,7 +2,7 @@
 title: 'Story 5.2 — the distroless Docker deploy shape'
 type: 'feature'
 created: '2026-09-11'
-status: 'ready-for-dev'
+status: 'in-progress'
 route: 'dispatch'
 baseline_commit: 6ebab69a284f385c1ae6e28f5daf3d2c4382bb79
 review_loop_iteration: 0
@@ -47,7 +47,7 @@ context:
 | Missing / unreadable secret file | Mounted path absent, or perms deny the non-root UID | Non-zero exit at startup validation, before any listener binds (DEPLOY-009) | No partial start |
 | Metrics exposure | Any run | Endpoint binds literal 127.0.0.1 INSIDE the container; reachable only via in-container exec; no publishable host key exists (DEPLOY-011) | A `-p 9090` publish finds nothing listening |
 | Flag parity | `docker inspect` ENTRYPOINT vs `OPERATOR_JVM_FLAGS` | Identical set, verbatim | Drift = review finding + parity row RED |
-| Module floor dropped | jlink image built minus a floor module | Module-set test RED at build time (DEPLOY-001) | Never reaches the image |
+| Module floor dropped | jlink image built minus a floor module | The image RUN is the gate (owner, 2026-09-11: "image run is gate, no extra test is required" — the no-Docker module-set test row was dropped): T3's Docker E2E boot/relay round REDs — missing `jdk.crypto.ec` → TLS handshake, `jdk.crypto.cryptoki` → PKCS12 trust-store load, `java.management` → binders (DEPLOY-001) | Never reaches a passing run |
 
 ## Decisions (planning, 2026-09-11)
 
@@ -79,7 +79,7 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] **T1 — Gradle jlink runtime image** — `proxy/build.gradle.kts` (+ a small buildSrc/task class if warranted): task explodes the built boot jar (BOOT-INF/classes + lib), resolves the module set via `jdeps --print-module-deps` against it, adds the crypto floor (`jdk.crypto.ec`, `jdk.crypto.cryptoki`, `java.management`), and runs `jlink` into `proxy/build/jlink-image/` (strip-debug, no-man-pages; runtime `bin/java` boots). Module-set test (runs in `check`/`test`, no Docker): derived set is non-empty, contains the floor, and the FLOOR is load-bearing — mutation: floor module removed from the task's inputs → row RED (DEPLOY-001). Rationale: epic-named "Gradle jlink packaging config"; runtime testable without Docker.
+- [x] **T1 — Gradle jlink runtime image** — `proxy/build.gradle.kts` (+ a small buildSrc/task class if warranted): task explodes the built boot jar (BOOT-INF/classes + lib), resolves the module set via `jdeps --print-module-deps` against it, adds the crypto floor (`jdk.crypto.ec`, `jdk.crypto.cryptoki`, `java.management`), and runs `jlink` into `proxy/build/jlink-image/` (strip-debug, no-man-pages; runtime `bin/java` boots). ~~Module-set test (runs in `check`/`test`, no Docker)~~ **owner-dropped 2026-09-11 ("image run is gate, no extra test is required")** — the floor's bite moved to T3's Docker E2E image run; the task keeps its own fail-closed (empty derived set, jdeps/jlink failure) and records the pre-floor derived set (`build/jlink-derived-modules.txt`) as derivation evidence. Rationale: epic-named "Gradle jlink packaging config"; runtime testable without Docker.
 - [ ] **T2 — Dockerfile + image wiring** — New `proxy/src/docker/Dockerfile` (or `proxy/Dockerfile` — pick one, document): `FROM gcr.io/distroless/base-debian12:nonroot`; `COPY` the jlink runtime + `proxy.jar` (build-context wiring in Gradle: a `dockerImage`-style task or documented context assembly); exec-form `ENTRYPOINT` `[<jre>/bin/java, --enable-preview, -XX:+UseZGC, -XX:MaxDirectMemorySize=6442450944, -Djava.net.preferIPv4Stack=true, -jar, /opt/proxy.jar]` + `CMD` cell-args pass-through; `USER nonroot` (65532); no secret material anywhere in the image (SEC-098 build half). Parity test assertion source: `docker inspect` ENTRYPOINT vs `OPERATOR_JVM_FLAGS` (DEPLOY-003/004 flag halves, DEPLOY-006 exec-form half).
 - [ ] **T3 — Docker boot+smoke+parity suite** — Testcontainers (`disabledWithoutDocker`), building the image from the Dockerfile (image as test input — incremental trap: rebuild when jar/runtime/Dockerfile change): happy boot on the reverse-B cell (secrets mounted) asserting `startup_summary` + budget interlock under the ENTRYPOINT flags; one bind→relay round via published port against host-side `MockSmsc`; `docker stop` → ordered AD-22 drain → exit 143 (DEPLOY-005/006, OBS-015 process-exit); in-container metrics scrape via `docker exec` + cp'd helper on 127.0.0.1:9090 (DEPLOY-011 Docker arm) incl. binder gauges; ZGC gc-identity arm — forced GC then scrape asserts the ZGC `jvm_gc_*` timer families exist (deterministic after a forced cycle; DEPLOY-004's deferred introspection arm); IPv4 egress arm (relay round over Inet4 + `preferIPv4Stack` in the ENTRYPOINT, DEPLOY-012 Docker arm); preview-API arm rides the successful boot itself (DEPLOY-003 Docker half — the app IS preview-compiled).
 - [ ] **T4 — Docker secrets E2E (DEP-1)** — Same rig: (a) mounted `/run/secrets` files readable by UID 65532 → reaches ready (DEPLOY-007); (b) secret value injected into the container env → INERT (owner stance 2026-09-11): the container runs solely on the mounted file-path secrets, the value is honored nowhere, and it appears in no stdout/log line (DEPLOY-008 structural arm, amended); SEC-077 Docker arm: with a correctly-configured run, `docker inspect` Env carries no secret material (only paths); (c) missing file AND unreadable-perms file → both non-zero pre-bind, no listener (DEPLOY-009); (d) image-layer scan: no cert/key material in any layer (SEC-098 arm — `docker save`/history scan).
@@ -95,7 +95,15 @@ context:
 
 ## Implementation Notes
 
+- **T1 landed 2026-09-11** — `buildSrc/src/main/kotlin/smpp/deploy/JlinkRuntimeImageTask.kt` (cacheable task: explode BOOT-INF → `jdeps --print-module-deps --ignore-missing-deps --recursive --multi-release 25` with app classes as the sole root + lib jars on the class path → floor union → `jlink --strip-debug --no-man-pages`), registered as `:proxy:jlinkRuntimeImage` in `proxy/build.gradle.kts` with the 5.1 test-wiring pattern (`dependsOn` + image dir & derived-modules file as test inputs). Measured: 12 jdeps-derived modules, 15 add-modules (floor = 3), 20 resolved in `release`, image 97 MB (`du`, `build/jlink-image/` — recorded, not gated; spine's ~45–66 MB targets the runtime, full-image actuals land at T5).
+- **jdeps flags are load-bearing, not cosmetic** (T1 findings): `--multi-release` is mandatory (commons-logging is an MR jar — jdeps exits 2 without it); naming lib jars as analysis ROOTS hard-fails on `io.netty.codec.marshalling` → `org.jboss.marshalling` (roots stay app-classes-only; `--ignore-missing-deps` covers the optional requires).
+- **Builder JDK resolves from the toolchain, never PATH**: asdf shims resolve per-CWD — probes from `/tmp` silently used the global-default JDK 21. `builderJdkHome` = `JavaToolchainService.launcherFor(java.toolchain)`; the test's `version "25` assertion outs a wrong-JDK-built image. `builderJdkHome` is deliberately `@Internal` (DEPLOY-014 major-pin stance); a major bump still invalidates via the `multiReleaseVersion` `@Input`.
+- **DEPLOY-001 mutation verified 2026-09-11 (dispatching session, not just the implementer's report)**: `jdk.crypto.ec` removed from `cryptoFloor` → task re-ran (not UP-TO-DATE), image rebuilt at 14 modules, row RED exactly on the floor `containsAll` ("could not find: [jdk.crypto.ec]" — also proving jdeps never derives it); restored → re-ran → GREEN (1 test / 0 failures, `cleanTest` first per the source-scan UP-TO-DATE trap).
+- **Module-set test owner-dropped 2026-09-11** ("image run is gate, no extra test is required"): `JlinkRuntimeImageTest.java` deleted AFTER its mutation cycle was verified (above). The floor's bite is T3's Docker E2E image run; the task's own fail-closed (empty derived set, jdeps/jlink non-zero) still gates every build via `test` `dependsOn(jlinkRuntimeImage)`; `build/jlink-derived-modules.txt` stays as derivation evidence (no test consumer).
+
 ## Spec Change Log
+
+- **2026-09-11 (owner, mid-implementation):** T1's no-Docker module-set test dropped — "image run is gate, no extra test is required." DEPLOY-001's floor bite moves to T3's Docker E2E (missing `jdk.crypto.ec` → TLS handshake; `jdk.crypto.cryptoki` → PKCS12 trust-store load; `java.management` → binders). Gradle: the row's image/derived-file test-input declarations removed; `test` keeps `dependsOn(jlinkRuntimeImage)` so the task's own fail-closed still runs in every build. Matrix row amended in place (dated).
 
 ## Review Triage Log
 

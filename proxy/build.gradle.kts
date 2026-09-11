@@ -1,6 +1,9 @@
 // Runnable Spring Boot 4.1 proxy application. NO embedded web server (AD-16). Owns config / DI /
 // lifecycle / Micrometer; Netty is driven directly. Depends INWARD on the pure `codec` module.
 
+import org.gradle.jvm.toolchain.JavaToolchainService
+import smpp.deploy.JlinkRuntimeImageTask
+
 plugins {
     id("smpp.java-conventions")
     id("smpp.null-safety")
@@ -84,6 +87,33 @@ tasks.bootJar {
     archiveFileName.set("proxy.jar")
 }
 
+// Story 5.2 T1 (DEPLOY-001) — the Gradle jlink runtime image: the SAME boot jar above, packaged
+// over a jlink-built modular runtime into `proxy/build/jlink-image/` (never a second compile —
+// FR-DEPLOY-1's one-artifact/two-shapes rule). The module set is resolved by the task from the
+// ACTUAL jar (explode BOOT-INF, `jdeps --print-module-deps`, --recursive) with the crypto floor
+// (`jdk.crypto.ec` + `jdk.crypto.cryptoki` — security-provider loaded, statically invisible to
+// jdeps — plus `java.management`) added ON TOP; a wholly hand-written --add-modules list is the
+// drift DEPLOY-001 forbids. The builder JDK is the javaToolchains-resolved toolchain JVM (the
+// environment-supplied asdf pin, DEPLOY-014's precondition stance) — NOT the `jdeps`/`jlink` on
+// PATH, which asdf resolves per-CWD (a build started outside the repo would otherwise use the
+// global-default JDK). The runtime boots without Docker; Story 5.2 T2's Dockerfile stays a thin
+// COPY of this directory. The task records the pre-floor jdeps set beside the image
+// (`build/jlink-derived-modules.txt`) as DEPLOY-001's derivation evidence.
+val toolchainLauncher = the<JavaToolchainService>().launcherFor(java.toolchain)
+val jlinkRuntimeImage = tasks.register<JlinkRuntimeImageTask>("jlinkRuntimeImage") {
+    group = "build"
+    description =
+        "Story 5.2 T1 (DEPLOY-001): jlink the toolchain JDK over the jdeps-derived module set + " +
+            "crypto floor into build/jlink-image/ — the distroless Docker runtime (bootable without Docker)"
+    dependsOn(tasks.bootJar)
+    bootJar.set(tasks.bootJar.flatMap { it.archiveFile })
+    cryptoFloor.set(listOf("jdk.crypto.ec", "jdk.crypto.cryptoki", "java.management"))
+    imageDirectory.set(layout.buildDirectory.dir("jlink-image"))
+    derivedModulesFile.set(layout.buildDirectory.file("jlink-derived-modules.txt"))
+    builderJdkHome.set(toolchainLauncher.map { it.metadata.installationPath })
+    multiReleaseVersion.set(toolchainLauncher.map { it.metadata.languageVersion.toString() })
+}
+
 tasks.named("test") {
     dependsOn("compileJmhJava")
     // A1CarrierPlanDocsTest reads this doc at runtime — declare it as a test input so a docs-only edit
@@ -96,6 +126,12 @@ tasks.named("test") {
     // incremental run executes the smoke against a stale jar).
     dependsOn(tasks.bootJar)
     inputs.file(tasks.bootJar.flatMap { it.archiveFile })
+    // Story 5.2 T1 (DEPLOY-001, owner-amended 2026-09-11: "image run is gate, no extra test is
+    // required" — the module-set test row was dropped): the jlink task stays in the test graph
+    // so its own fail-closed checks (empty jdeps-derived set, jdeps/jlink failure) run in every
+    // build. NO image/derived-file inputs are declared — nothing in `test` reads them anymore;
+    // T3's Docker wiring carries its own inputs for the stale-image trap (spec Design Notes).
+    dependsOn(jlinkRuntimeImage)
 }
 
 // SEC-091: OWASP dependency-check CI lane. Deliberately NOT wired into `check`, so `./gradlew build`
