@@ -200,6 +200,15 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   Decide app-wide at the architecture/deploy tier (Epic 5): refuse lazy init, or document it as an
   operator-accepted deviation. Not cell-scoped hardening — pinning only the self-check bean eager would
   leave the AD-17 matrix equally bypassed.
+  **✅ RESOLVED 2026-09-10 (Story 5.1 T2, commit `4b69a43`) — decision: DOCUMENTED OPERATOR-ACCEPTED
+  DEVIATION, no runtime guard.** The Epic-5 decision landed on the flag-contract page:
+  `docs/operator-jvm-flag-contract.md` § "Lazy initialization — documented deviation, no runtime guard"
+  records the owner decision (2026-09-10) and names exactly what defers to first use under
+  `spring.main.lazy-initialization=true` (the AD-30 self-check and the AD-17 bind-time matrix — even a
+  zero-branch config boot silently succeeds), with the operator who enables it accepting the deviation.
+  No runtime guard exists; a behavioral deferral test was offered and owner-declined the same date
+  (spec 5-1 change log). Fail-closed stays the default — the deviation is opt-in and documented at the
+  single flag-contract home every `java -jar` launch is contractually launched with.
 
 - **`DirectMemoryBudgetValidator.validate()` silently passes negative-equal inputs** (e.g. `validate(-1,-1)`)
   [`proxy/.../relay/netty/DirectMemoryBudgetValidator.java` — the `validate(long, long)` method] — latent: the sole
@@ -705,9 +714,11 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `4-1-structured-logs-and-loopback-metrics.md`
   summary: The Epic-1 `System.err` mode-warning banners (`CompanionModeAWarning`/`CompanionModeBWarning`, multi-line plain text via `System.err.println`) are the one remaining non-JSON stream in a "stdout is pure JSON-lines" deployment — container/deploy shapes that merge stdout+stderr get boot-time plain-text blocks a JSON-lines shipper chokes on; `StructuredLogTest.fullBootEmitsPureJsonLinesStdout` swaps only `System.out`, so stderr is structurally untested.
   evidence: Code review 2026-09-03 (blind-hunter layer, source-verified at `CompanionModeAWarning.java:45`, `CompanionModeBWarning.java:47` — named in the story's own Code Map, untouched by the diff). Deferred: pre-existing Epic-1 surface, not caused by this story; the banners are boot-time-once and bounded. Natural home: the Epic-5 deploy-shapes story (decide stderr posture — route through logback as WARN-level JSON, or document the split-stream contract for shippers).
+  **✅ RESOLVED 2026-09-10 (Story 5.1 T3, commit `60cd03d`) — the "route through logback as WARN-level JSON" arm of this entry's own fork.** `CompanionModeAWarning`/`CompanionModeBWarning` no longer touch `System.err`: each emits ONE WARN-level JSON line on the logback stream via `@Slf4j`. `CompanionModeBannerTest` captures a full context boot and asserts the JSON line lands with zero plain-text stderr, and the packaged smoke re-proves it in the deployed shape (the Mode B banner arrives as a WARN JSON line on the packaged stdout — `PackagedBootSmokeTest`, Story 5.1 T5, commit `69697c1`). No split-stream contract remains to document: the banners ride the same stdout JSON-lines stream as everything else.
 - source_spec: `4-1-structured-logs-and-loopback-metrics.md`
   summary: The scraped registry carries no JVM/process metrics — `ObservabilityConfig` builds a bare `PrometheusMeterRegistry` and, with Actuator purity-banned, nothing binds `JvmMemoryMetrics`/`JvmGcMetrics`/`ProcessorMetrics`/`UptimeMetrics`, so a scrape shows only the relay counters + the two custom gauges (no memory/GC/uptime/thread view); `ResourceMetrics`' javadoc even reasons about `jvm_threads_*` as if bound.
   evidence: Code review 2026-09-03 (blind-hunter layer, repo-wide grep — no binder anywhere in main; `ResourceMetrics.java:26`). Deferred: the story's ratified metric surface (frozen block) enumerates exactly the relay counters + resource gauges; binder binding is deliberate new scope. The misleading javadoc wording is being patched in this review; the binder decision (bind the non-web Micrometer binders vs. record the exclusion in the spine) is an Epic-4-later/Epic-5 candidate.
+  **✅ RESOLVED 2026-09-10 (Story 5.1 T4, commit `d4daa99`) — the bind arm of the entry's own fork.** The standard JVM binder set is bound on the one registry: `ObservabilityConfig` now contributes `JvmMemoryMetrics`, `JvmGcMetrics`, `JvmThreadMetrics`, `ProcessorMetrics`, and `UptimeMetrics` beans beside the `PrometheusMeterRegistry`, and `ResourceMetrics`' "deliberate exclusion" javadoc is amended to match. `MetricsEndpointTest`'s scrape asserts the binder gauge families (`jvm_memory_used_bytes`, `jvm_gc_live_data_size_bytes`, `jvm_threads_live`, `system_cpu_count`, `process_uptime_seconds`) beside the custom relay/resource gauges, and `PackagedBootSmokeTest` re-asserts them on the real jar's `/metrics` (Story 5.1 T5, commit `69697c1`).
 
 - source_spec: `/home/ildar/Documents/smpp-bmad/_bmad-output/implementation-artifacts/4-2-graceful-shutdown-deny-on-live-loop.md`
   summary: The shutdown walk's step-4 AD-10 effects (release()'s provider-client close + client-secret zeroize) are observed by no test — deleting both lines keeps every suite GREEN.

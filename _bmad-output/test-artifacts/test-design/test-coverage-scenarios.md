@@ -12,6 +12,8 @@
 > **Split note (2026-08-28, Story 3.4 T5):** the couple unit `RelayHandler` was SPLIT into the per-leg `RelayIngressHandler`/`RelayEgressHandler` over the abstract base `CoupledRelayHandler` (D3, owner checkpoint same date; `RelayHandlerTest` split likewise into the two per-leg suites). Rows below naming `RelayHandler` as the couple unit read as `RelayEgressHandler` post-split; the flip/couple trigger is unchanged. Live row text stays.
 >
 > **Row-additions note (2026-09-09, Story 4.4 T6):** two RELAY rows were authored AS-LANDED for the relay-timeout round — **RELAY-027** (the armed adjudication deadline, Story 4.4 T3) and **RELAY-028** (the pre-couple idle watchdog, Story 4.4 T4) — plus a dated blackhole amendment inside RELAY-020. The catalog counts **253 scenarios** since (the §1.1/§1.2 tallies amended in step); the 251 above remains the Step-4 critic-reconciliation count.
+>
+> **Row-additions note (2026-09-10, Story 5.1 T6):** one DEPLOY row authored AS-LANDED — **DEPLOY-015** (the packaged JAR boot+smoke, Story 5.1 T5) — plus dated Status markers on DEPLOY-003/004 (the JAR halves landed as contract + smoke, technique amended; the Docker halves stay open) and DEPLOY-014 (owner-decision record: the exact-build refusal arm dropped 2026-09-10 before implementation). The catalog counts **254 scenarios** since (the §1.1/§1.2 tallies amended in step).
 
 ---
 
@@ -25,10 +27,10 @@
 | RELAY | 27 | 13 | 12 | 2 | 0 |
 | SEC | 98 | 52 | 26 | 18 | 2 |
 | OBS | 43 | 0 | 14 | 29 | 0 |
-| DEPLOY | 14 | 0 | 5 | 9 | 0 |
+| DEPLOY | 15 | 0 | 6 | 9 | 0 |
 | PERF | 29 | 0 | 16 | 13 | 0 |
 | E2E | 1 | 0 | 1 | 0 | 0 |
-| **TOTAL** | **253** | **65** | **114** | **72** | **2** |
+| **TOTAL** | **254** | **65** | **115** | **72** | **2** |
 
 - **Coverage core** (risk_threshold = p1): every one of the 18 P0/P1 risks has ≥1 explicit passing scenario. P0 concentration is in SEC (52: the fail-closed / trust-anchoring / credential-free-at-rest crown jewels) and RELAY (12 at reconciliation — the five decomposed R5 concurrency seams; 13 since Story 4.4 added RELAY-027's armed pre-couple deadline, 2026-09-09).
 - **Reconciliation delta vs. the 242-scenario designer output:** +12 additions (SEC-093/094/095/096/097/098/099, RELAY-025/026, E2E-001, CODEC-041, OBS-043), −3 dedup removals (RELAY-016, PERF-041, PERF-042), +4 in-place reframes/fixes (SEC-037 rewritten, SEC-048/049 reframed, SEC-089 blocked-on-config, OBS-015 scope-reduced).
@@ -41,10 +43,10 @@
 | RELAY | 5 | 1 | 13 | 6 | 2 | 0 | 27 |
 | SEC | 60 | 0 | 38 | 0 | 0 | 0 | 98 |
 | OBS | 13 | 0 | 28 | 1 | 0 | 1 | 43 |
-| DEPLOY | 0 | 0 | 6 | 0 | 0 | 8 | 14 |
+| DEPLOY | 0 | 0 | 6 | 0 | 0 | 9 | 15 |
 | PERF | 1 | 0 | 0 | 0 | 28 | 0 | 29 |
 | E2E | 0 | 0 | 0 | 0 | 0 | 1 | 1 |
-| **TOTAL** | **108** | **5** | **89** | **11** | **30** | **10** | **253** |
+| **TOTAL** | **108** | **5** | **89** | **11** | **30** | **11** | **254** |
 
 ### 1.3 Critic-fix application map (what changed and why)
 
@@ -1374,12 +1376,14 @@ Level: e2e · Priority: P1 · Risks: R12, R9 · NFR: FR-DEPLOY-1, COMP-2
 - Technique: runtime JVM-arg introspection + preview-API instantiate across both packaged shapes (parity).
 - Tooling: Launch java -jar (JAR shape) AND docker run (Docker shape); assert RuntimeMXBean.getInputArguments() contains '--enable-preview' in BOTH and that a StructuredTaskScope (JEP 505 preview) instantiates without PreviewFeatureException in the Docker shape.
 - Notes: STS requires --enable-preview process-wide (AD-5). Drift: the Docker entrypoint omits the flag → the Docker shape throws PreviewFeatureException where the JAR shape works. JDK 25 build-pin (R9) is DEPLOY-014; this asserts the flag is threaded identically into both launchers.
+- **Status (Story 5.1, 2026-09-10): the JAR half LANDED as contract + smoke (technique amended per the 2026-09-10 owner amendments); the Docker half stays OPEN.** `docs/operator-jvm-flag-contract.md` (Story 5.1 T2, commit `4b69a43`) is the operator-facing definition of the ONE flag set; `PackagedBootSmokeTest.OPERATOR_JVM_FLAGS` (T5, commit `69697c1`) is its executable twin — a Java-side launch constant, since by owner rule (2026-09-10) nothing in the repository parses the page and page↔constant coherence is a review-time duty of every flag-change story. `packagedBootRelaysOneRoundAndDrainsOnSigterm` `java -jar`s the real boot jar (pinned main class + stable `proxy.jar`, T1 commit `8c5311f`) with the set and asserts all four flags verbatim on the live `/proc/<pid>/cmdline` (`RuntimeMXBean.getInputArguments` adapted to the subprocess); `packagedBootWithoutEnablePreviewRefusesHard` is the automated refusal arm — the identical launch minus `--enable-preview` exits 1 with `UnsupportedClassVersionError` naming the flag and no `startup_summary` (fail-closed; the manifest deliberately carries NO preview marking, owner amendment at T1: the temurin 25.0.3+9 launcher reads Add-Exports/Add-Opens/Enable-Native-Access from manifests but has no Enable-Preview arm — proven inert and dropped). The preview-API-instantiate arm and the `docker run` half land with the later Epic-5 Docker story, which pins entrypoint parity against the same page↔constant pair.**
 
 **DEPLOY-004** — -XX:+UseZGC and -XX:MaxDirectMemorySize are set at runtime in BOTH shapes
 Level: e2e · Priority: P1 · Risks: R12 · NFR: FR-DEPLOY-1, COMP-2, PERF-2, SEC-2
 - Technique: runtime JVM-arg + GC introspection across both packaged shapes (parity).
 - Tooling: Launch both shapes; assert RuntimeMXBean.getInputArguments() contains -XX:+UseZGC and -XX:MaxDirectMemorySize=<AD-30 formula value> in BOTH, and GarbageCollectorMXBean name contains 'ZGC' in BOTH.
 - Notes: Distinct consequences per flag: omitting -XX:+UseZGC → GC behavior diverges between shapes; omitting -XX:MaxDirectMemorySize → Netty defaults to an unbounded-ish direct budget → OOM at scale where the JAR shape survives. MaxDirectMemorySize value must equal the AD-30 named formula (compile-time shared-constant guard now = RELAY-026).
+- **Status (Story 5.1, 2026-09-10): the JAR half LANDED in the same contract + smoke rows; the Docker half stays OPEN.** The packaged-smoke happy row asserts `-XX:+UseZGC` and `-XX:MaxDirectMemorySize=6442450944` verbatim on the `/proc/<pid>/cmdline` launch, and the MaxDirectMemorySize half is additionally BEHAVIORAL: the smoke passes no `companion.memory.*` args, so the child boots on the shipped yml trio and the `startup_summary` line pins `memory_budget_bytes == direct_memory_ceiling_bytes == 6,442,450,944` (the AD-30 derivation 65536 × 64 × 1024 × 1.5 — reaching ready at all IS the `budget-check: fail` pass, and retuning either side without the other turns the row RED, exactly the operator retune rule the contract page states). The GarbageCollectorMXBean 'ZGC'-name introspection arm of the original technique is not reachable from outside a subprocess (no management port) and folds into the Docker-half parity row, where the full runtime-introspection family returns.**
 
 **DEPLOY-005** — Two-shape behavioral parity: identical config surface, modes A/B/C, and auth paths (ROPC-JWT allow, introspection, DENY) yield identical observable outcomes in the runnable-JAR and distroless-Docker shapes
 Level: e2e · Priority: P1 · Risks: R12 · NFR: FR-DEPLOY-1, FR-DEPLOY-2, COMP-1
@@ -1440,6 +1444,13 @@ Level: integration · Priority: P2 · Risks: R36, R9 · NFR: COMP-2
 - Technique: Gradle javaToolchains + JavaVersion pin assertion CI gate.
 - Tooling: Gradle buildsrc/failure build assertion: toolchain resolves to JDK 25 (vendor+version pin, e.g. exact 25.0.x), and a build-time task fails (or a loud CI gate trips) if LanguageVersion or vendor diverges from the pin; fence --enable-preview/STS preview shape to the pinned build.
 - Notes: The build-pin that backs R9 (STS preview-API drift across JDK 25 builds) and the COMP-2 JDK-25 floor. Without it, a CI runner with a different JDK 25 build can silently change STS preview semantics process-wide. Positive control = SEC-099 (applies to the CVE gate family). Pin the exact build, not just the major version.
+- **Status (Story 5.1, 2026-09-10): the exact-build refusal arm DROPPED by owner decision before implementation — the standing mechanism is the major-25 toolchain pin + the asdf environment pin (technique amended accordingly).** Owner words: "asdf pin is enough, no additional jdk/jre version check is needed" (spec 5-1 Decisions, commit `112a599`). `buildSrc/src/main/kotlin/smpp.java-conventions.gradle.kts` keeps the major-version-only `languageVersion = 25` toolchain pin — header citing this row / SEC-085, the JDK an environment-supplied precondition since the 2026-07-25 story-1-1 vendor-pin relaxation; toolchain resolution still refuses any other MAJOR, but the build deliberately performs NO build-time JDK version comparison. The exact-build pin lives in `.tool-versions` (`java temurin-25.0.3+9.0.LTS`) and is read by nothing in the build. R9's exact-build concern (STS preview drift across 25.0.x builds) is carried by the environment pin, not a build gate.**
+
+**DEPLOY-015** — Packaged boot+smoke: `java -jar` the real boot jar with the contract flag set → startup_summary at the yml-default AD-30 budget, one real-socket bind→relay round, SIGTERM → the ordered AD-22 drain before a clean exit (authored as-landed, Story 5.1)
+Level: integration · Priority: P1 · Risks: R12 · NFR: FR-DEPLOY-1
+- Technique: subprocess integration test — the built boot jar runs as a bare `java -jar` child (the production main, application.yml defaults overridable by run args — never an ApplicationContextRunner stand-in for the shape being proven) against loopback satellites (the MockSmsc + an immediate-allow token stand-in); assertions pin stream literals (startup_summary fields, the WARN banner line, the drain WARN) and wire literals (bind_resp ROK, opaque PDU bodies byte-exact both legs).
+- Tooling: `PackagedBootSmokeTest` (Story 5.1 T5, commit `69697c1`): `packagedBootRelaysOneRoundAndDrainsOnSigterm` (boot → couple → one INGRESS + one EGRESS relay round → `/metrics` scrape with the binder + custom gauges and per-leg PDU counters → SIGTERM → exit 143 with startup_summary < bind_accept < the OBS-020 drain WARN ordered on the stream) and `packagedBootWithoutEnablePreviewRefusesHard` (the identical launch minus `--enable-preview`: exit 1, `UnsupportedClassVersionError` naming the flag, no startup_summary — DEPLOY-003's automated refusal arm). `proxy/build.gradle.kts` wires `bootJar` as both a test DEPENDENCY and a test INPUT (no stale-jar incremental run).
+- Notes: The JAR-shape behavioral spine the DEPLOY-003/004 markers cite: the flag set asserted verbatim on the child's live `/proc/<pid>/cmdline` (`RuntimeMXBean.getInputArguments` adapted to subprocess form); the AD-30 interlock pinned no-fork (the smoke passes NO `companion.memory.*` args — startup_summary carries `memory_budget_bytes` == `direct_memory_ceiling_bytes` == the constant's 6,442,450,944, so retuning yml or the flag without the other turns the row RED); exit 143 discriminates the hook-completed SIGTERM walk from a crash (1) and the rig's own forcible kill (137). The mode banners (T3) and JVM binder gauges (T4) are re-proven here in the PACKAGED shape. Docker-shape parity stays with the DEPLOY-005 family (later Epic-5 story).
 
 ---
 
