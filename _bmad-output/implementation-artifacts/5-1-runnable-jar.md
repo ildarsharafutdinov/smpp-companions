@@ -2,7 +2,7 @@
 title: 'Story 5.1 — the runnable JAR deploy shape'
 type: 'feature'
 created: '2026-09-10'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 baseline_commit: b6de4929ae2930556125da1efb1569e00a396a50
 review_loop_iteration: 0
