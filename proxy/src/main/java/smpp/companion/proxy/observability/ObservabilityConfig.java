@@ -28,9 +28,14 @@ import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
  * bind {@code MeterBinder} beans automatically, so the registry bean binds every {@link MeterBinder}
  * bean itself at construction &mdash; the whole surface is registered before the endpoint lifecycle
  * starts serving scrapes (the same construction-time contract {@link ResourceMetrics} keeps). Every
- * binder family is eager at {@code bindTo} except {@code jvm_gc_pause}: {@link JvmGcMetrics} creates
- * that family lazily on the first GC notification, so an operator should expect it to appear only
- * after the first collection.
+ * binder family is eager at {@code bindTo} except {@link JvmGcMetrics}' timer families ({@code
+ * jvm_gc_pause}, and {@code jvm_gc_concurrent_phase_time} &mdash; the latter exists at all only on
+ * concurrent collectors): both are created lazily on the first GC notification, so an operator
+ * should expect them to appear only after the first collection ({@code
+ * jvm_gc_memory_promoted_bytes_total}, likewise, exists only on generational collectors). The set
+ * is deliberately the five-family core above &mdash; Boot's {@code ClassLoaderMetrics} and {@code
+ * FileDescriptorMetrics} stay unbound (no operator demand recorded; binding them is open scope,
+ * not an oversight &mdash; review round 1, [B10]).
  *
  * <p>{@link PrometheusConfig#DEFAULT} &mdash; the registry's own defaults (no yml surface; the only
  * operator input is {@code companion.metrics.port}). Spring's inferred destroy ({@code close()}) is
@@ -63,10 +68,12 @@ public class ObservabilityConfig {
     /**
      * GC gauges/counters ({@code jvm_gc_live/max_data_size_bytes}, {@code
      * jvm_gc_memory_allocated/promoted_bytes_total}, {@code jvm_gc_cpu_time}; the {@code
-     * jvm_gc_pause} timers appear on the first GC notification). A bean &mdash; not an inline
-     * {@code bindTo} &mdash; deliberately: it is {@code AutoCloseable}, and Spring's inferred destroy
-     * calls {@code close()} at context stop, removing the JVM-wide GC notification listeners this
-     * binder registers (no listener leak across test boots or restarts).
+     * jvm_gc_pause} and {@code jvm_gc_concurrent_phase_time} timers appear on the first GC
+     * notification &mdash; the concurrent family on concurrent collectors only). A bean
+     * &mdash; not an inline {@code bindTo} &mdash; deliberately: it is {@code AutoCloseable}, and
+     * Spring's inferred destroy calls {@code close()} at context stop, removing the JVM-wide GC
+     * notification listeners this binder registers (no listener leak across test boots or
+     * restarts).
      */
     @Bean
     public JvmGcMetrics jvmGcMetrics() {

@@ -2,6 +2,18 @@
 
 <!-- Compiled from planning artifacts. Edit freely. Regenerate with compile-epic-context if planning docs change. -->
 
+> **Amended 2026-09-11 (Story 5.1 review round 1) — two passages below predate same-day owner
+> decisions and are SUPERSEDED in place, not regenerated:**
+> (1) Technical Decisions' "Exact JDK 25 build pinned (toolchain-level refusal/warning off-pin)" —
+> the exact-build refusal arm was DROPPED 2026-09-10 before implementation (owner words: "asdf pin
+> is enough, no additional jdk/jre version check is needed"). The standing mechanism is the
+> major-25 toolchain pin (`smpp.java-conventions.gradle.kts`) + the asdf `.tool-versions`
+> environment pin — see the DEPLOY-014 Status marker and the spec 5-1 Decisions block.
+> (2) The Goal/Stores "Epic 5 is next, still backlog with no stories sliced" / "tracker holds only
+> `epic-5: backlog`" — the tracker has since flipped: story 5-1 (the runnable JAR deploy shape)
+> exists and is in review at amendment time. Regenerate this file when the next Epic-5 story is
+> created.
+
 ## Goal
 
 Make the proxy shippable in two first-class, feature-equivalent forms: a standalone runnable JAR (`java -jar`) and a distroless Docker image that packages that same JAR over a jlink modular runtime (~45–66 MB). Identical config surface, modes A/B/C, both roles, and auth paths in either shape — parity proven, not assumed. Certificates are provisioned at deploy time (CI/pipeline bake; no runtime ACME/SPIFFE enrollment; rotation = re-deploy), and the Docker secrets contract is validated end-to-end in the Docker shape: secrets injected as mounted files a non-root JVM can read, env-var secret values rejected. This is a packaging epic — no main source package is owned; it mounts everything Epics 1–4 built. Status: Epics 1–4 done; Epic 5 is next, still backlog with no stories sliced.

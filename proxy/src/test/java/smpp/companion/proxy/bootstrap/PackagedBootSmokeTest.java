@@ -183,6 +183,12 @@ class PackagedBootSmokeTest {
             assertThat(lineContaining(output(rig.stdout), MODE_B_BANNER_MARKER))
                     .as("the mode banner rides the packaged stdout as a WARN JSON line")
                     .contains("\"level\":\"WARN\"");
+            // (2b) …and the banner's stderr half (T3's AC, proven here in the DEPLOYED shape): the
+            // banner text never lands on the child's raw stderr. Absence-of-marker, not isBlank() —
+            // a JVM launched with JDK_JAVA_OPTIONS legitimately prints "Picked up ..." there.
+            assertThat(output(rig.stderr))
+                    .as("the mode banner leaves the packaged stderr alone (T3's second half)")
+                    .doesNotContain(MODE_B_BANNER_MARKER);
 
             // (3) DEPLOY-003/004's JAR halves: the whole contract set, verbatim, on the LIVE
             // launch (RuntimeMXBean.getInputArguments, adapted to the subprocess via /proc).
@@ -401,7 +407,7 @@ class PackagedBootSmokeTest {
                     .redirectError(stderr.toFile())
                     .start();
             return new Rig(smsc, idp, process, stdout, stderr, bindPort, metricsPort);
-        } catch (RuntimeException | Error e) {
+        } catch (RuntimeException | Error | IOException e) {
             // a rig that fails to build must not strand what it already created (the
             // GracefulShutdownRacesTest rig rule) — the caller's try-with-resources never engages
             // when launch() never returns.

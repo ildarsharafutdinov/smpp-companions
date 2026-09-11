@@ -55,7 +55,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 class MetricsEndpointTest {
 
     @Test
-    @DisplayName("row 1: GET /metrics -> 200 Prometheus text; a second scrape is byte-identical (read-only)")
+    @DisplayName("row 1: GET /metrics -> 200 Prometheus text; a second scrape moves no series and "
+            + "no stable value (read-only)")
     void scrapeServesReadonlyPrometheusText(@TempDir Path dir) throws IOException {
         int port = RelayTestFixtures.freePort();
         try (ConfigurableApplicationContext ctx = bootForwardA(dir, port)) {
@@ -86,14 +87,21 @@ class MetricsEndpointTest {
             // scrape carries live gauges — uptime, CPU usage, thread counts legitimately move
             // between two scrapes and raw byte-identity is no longer the read-only contract. The
             // SHAPE is (see scrapeShape): a scrape may not create, remove, or rename a series —
-            // that is how a scrape counter would betray itself — and the value-level check below
-            // pins that it moves no counter.
+            // how a lazily-CREATED scrape counter betrays itself — and the VALUE-level check below
+            // (stableSamples) catches the pre-registered form: this repo's own idiom registers
+            // meters ahead of use, so a scrape incremented per request moves a value, not the
+            // series set.
             String second = exchange(port, get(MetricsHttpHandler.SCRAPE_PATH));
             assertThat(second).as("row 1: the second scrape is still a 200").startsWith("HTTP/1.1 200");
             assertThat(scrapeShape(second))
                     .as("row 1: idempotent — a scrape creates/removes/renames no series "
                             + "(not even a scrape counter)")
                     .isEqualTo(scrapeShape(first));
+            assertThat(stableSamples(second))
+                    .as("row 1: and it moves no value — every non-live series is byte-identical "
+                            + "between the two scrapes (a scrape-side increment betrays itself here, "
+                            + "pre-registered or lazily created)")
+                    .isEqualTo(stableSamples(first));
             assertThat(second)
                     .as("row 1: and it moves no counter — the probe still reads exactly 3.0")
                     .contains("story41_endpoint_probe_total 3.0");
@@ -163,8 +171,10 @@ class MetricsEndpointTest {
             String body = exchange(port, get(MetricsHttpHandler.SCRAPE_PATH));
             // One deterministic family per binder, present on ANY collector (incl. the operator
             // contract's ZGC): JvmGcMetrics registers the data-size gauges EAGERLY at bindTo, while
-            // its jvm_gc_pause timers are created lazily on the first GC notification — asserting
-            // those would flake on a quiet JVM. Removing any binder bean (ObservabilityConfig) drops
+            // its jvm_gc_pause / jvm_gc_concurrent_phase_time timers are created lazily on the
+            // first GC notification (the concurrent family exists at all only on concurrent
+            // collectors) — asserting those would flake on a quiet JVM. Removing any binder bean
+            // (ObservabilityConfig) drops
             // its whole family -> this row goes RED (the T4 mutation arm).
             assertThat(body)
                     .as("JvmMemoryMetrics")
@@ -361,15 +371,18 @@ class MetricsEndpointTest {
      * The scrape SHAPE — the exposition body with live sample values stripped: {@code # HELP/# TYPE}
      * lines verbatim, sample lines reduced to their series name + labels, sorted. Two scrapes of a
      * read-only registry have IDENTICAL shapes (Story 5.1 T4 made byte-identity impossible: the JVM
-     * binder gauges are live); any series the scrape itself created (a scrape counter) would widen
-     * the shape. {@code jvm_gc_pause} lines are excluded on both sides: JvmGcMetrics registers that
-     * family lazily on the first GC notification, so a collection between two scrapes legitimately
-     * adds series (every other family is bound eagerly at construction).
+     * binder gauges are live); any series the scrape itself created (a lazily-created scrape
+     * counter) would widen the shape. The JvmGcMetrics timer families are excluded on both sides —
+     * {@code jvm_gc_pause} and {@code jvm_gc_concurrent_phase_time} (concurrent collectors only)
+     * are both registered lazily on the first GC notification, so a collection between two scrapes
+     * legitimately adds series; the shape gap for the lazily-created form is closed value-level by
+     * {@link #stableSamples}, which excludes the whole {@code jvm_gc_} prefix.
      */
     private static List<String> scrapeShape(String response) {
         int separator = response.indexOf("\r\n\r\n");
         return (separator >= 0 ? response.substring(separator + 4) : response).lines()
-                .filter(line -> !line.contains("jvm_gc_pause"))
+                .filter(line -> !line.contains("jvm_gc_pause")
+                        && !line.contains("jvm_gc_concurrent_phase_time"))
                 .map(line -> {
                     if (line.startsWith("#")) {
                         return line; // HELP/TYPE text is static per series
@@ -377,6 +390,36 @@ class MetricsEndpointTest {
                     int value = line.lastIndexOf(' ');
                     return value > 0 ? line.substring(0, value) : line; // drop the live sample value
                 })
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Series-name prefixes that legitimately MOVE between two back-to-back scrapes of an idle
+     * context: the whole live JVM-binder surface (Story 5.1 T4) — the GC families (lazy timers,
+     * live data size), memory pools and buffer pools ({@code JvmMemoryMetrics} binds both; a
+     * buffer alloc/free between scrapes moves {@code jvm_buffer_}), thread counts, CPU usage
+     * percentages, load average, uptime, and accumulated process CPU time. Everything else —
+     * counters, static gauges, the pre-registered close grid — must be byte-stable, which is
+     * exactly what a PRE-REGISTERED scrape counter incremented per request violates (this repo's
+     * own meter idiom: {@code MeteredRelayObserver} registers its grid ahead of use, so the shape
+     * comparison cannot see the mutation — only the value can; review round 1, [E3+V1+B9]).
+     */
+    private static final List<String> LIVE_SERIES_PREFIXES = List.of(
+            "jvm_gc_", "jvm_memory_", "jvm_buffer_", "jvm_threads_", "system_cpu_usage",
+            "system_load_average", "process_cpu_usage", "process_cpu_time", "process_uptime_seconds");
+
+    /**
+     * The scrape's STABLE sample lines — sample lines of every series outside {@link
+     * #LIVE_SERIES_PREFIXES}, WITH their values, sorted. Two scrapes of a read-only registry have
+     * identical stable samples; a scrape that increments any pre-existing meter (the pre-registered
+     * scrape-counter regression) differs here even though its series set is unchanged.
+     */
+    private static List<String> stableSamples(String response) {
+        int separator = response.indexOf("\r\n\r\n");
+        return (separator >= 0 ? response.substring(separator + 4) : response).lines()
+                .filter(line -> !line.startsWith("#"))
+                .filter(line -> LIVE_SERIES_PREFIXES.stream().noneMatch(line::startsWith))
                 .sorted()
                 .toList();
     }

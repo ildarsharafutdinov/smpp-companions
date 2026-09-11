@@ -25,6 +25,15 @@ path is ordinary Spring/cell configuration (args or env), not part of this contr
 java --enable-preview -XX:+UseZGC -XX:MaxDirectMemorySize=6442450944 -Djava.net.preferIPv4Stack=true -jar proxy.jar
 ```
 
+This is a **minimum set**: every launch must carry all four flags. If you add any further JVM flag
+(heap sizing — `-Xmx`/`-XX:SoftMaxHeapSize`, GC tuning, …), the SAME addition must ride BOTH deploy
+shapes — this JAR launch and the (later) Docker entrypoint — or be added to neither:
+per-deploy-shape flag divergence is exactly the drift FR-DEPLOY-1 forbids, and the obvious next
+knob (heap sizing on a ZGC instance) is precisely the one that would silently fork the shapes.
+
+The artifact itself is `proxy/build/libs/proxy.jar`, built by `./gradlew :proxy:bootJar` (the
+version-free name is pinned; the version travels inside the manifest).
+
 ## Why each flag
 
 **`--enable-preview` — load-bearing.** The proxy's classes are compiled with JDK 25 preview
