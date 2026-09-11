@@ -2,6 +2,7 @@
 // lifecycle / Micrometer; Netty is driven directly. Depends INWARD on the pure `codec` module.
 
 import org.gradle.jvm.toolchain.JavaToolchainService
+import smpp.deploy.DockerImageTask
 import smpp.deploy.JlinkRuntimeImageTask
 
 plugins {
@@ -112,6 +113,31 @@ val jlinkRuntimeImage = tasks.register<JlinkRuntimeImageTask>("jlinkRuntimeImage
     derivedModulesFile.set(layout.buildDirectory.file("jlink-derived-modules.txt"))
     builderJdkHome.set(toolchainLauncher.map { it.metadata.installationPath })
     multiReleaseVersion.set(toolchainLauncher.map { it.metadata.languageVersion.toString() })
+}
+
+// Story 5.2 T2 (DEPLOY-003/004/006 Docker halves + the DEP-1 posture) — the distroless image
+// wiring: `proxy/src/docker/Dockerfile` (the image definition — distroless base-debian12:nonroot,
+// the jlink runtime + proxy.jar COPYs, exec-form ENTRYPOINT carrying the ONE operator flag set
+// verbatim, `CMD []` cell-args pass-through, USER nonroot 65532, no secret material in any layer)
+// plus this build task. `dockerImage` assembles the CLOSED three-entry context (Dockerfile +
+// jlink-image/ + proxy.jar) into `build/docker-image/` and runs the docker build (tag
+// smpp-proxy:local) — see the task class for why it is deliberately NOT wired into
+// build/check/test and not cacheable: the image lives in the Docker daemon, invisible to Gradle,
+// and daemon-less builds must stay GREEN. T3/T4's Testcontainers suites build from the SAME
+// Dockerfile with their own test inputs (the stale-image trap), so both paths share one image
+// definition.
+tasks.register<DockerImageTask>("dockerImage") {
+    group = "build"
+    description =
+        "Story 5.2 T2 (DEPLOY-003/004/006, DEP-1): assemble the closed docker context " +
+            "(Dockerfile + jlink runtime + proxy.jar) and build the distroless image (tag smpp-proxy:local)"
+    dependsOn(jlinkRuntimeImage)
+    dependsOn(tasks.bootJar)
+    dockerfile.set(layout.projectDirectory.file("src/docker/Dockerfile"))
+    runtimeImage.set(jlinkRuntimeImage.flatMap { it.imageDirectory })
+    bootJar.set(tasks.bootJar.flatMap { it.archiveFile })
+    imageTag.set("smpp-proxy:local")
+    contextDirectory.set(layout.buildDirectory.dir("docker-image"))
 }
 
 tasks.named("test") {
