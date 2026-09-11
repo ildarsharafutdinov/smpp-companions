@@ -101,7 +101,7 @@ development_status:
 
   # --- Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker ---
   epic-5: in-progress
-  5-1-runnable-jar: review
+  5-1-runnable-jar: done
   epic-5-retrospective: optional
 
   # --- Epic 6: Validate all performance and deliver the operator docs surface ---
