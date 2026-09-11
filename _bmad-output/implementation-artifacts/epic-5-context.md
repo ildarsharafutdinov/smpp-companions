@@ -13,6 +13,11 @@
 > `epic-5: backlog`" — the tracker has since flipped: story 5-1 (the runnable JAR deploy shape)
 > exists and is in review at amendment time. Regenerate this file when the next Epic-5 story is
 > created.
+>
+> Update 2026-09-11 (planning): 5-1 flipped to done (commit `6ebab69`, review round 1 closed);
+> story 5-2 (the distroless Docker deploy shape) spec created today. Full regeneration of this
+> file is 5-2 task T5 — until then, the "not yet sliced" passages above remain superseded by
+> this block.
 
 ## Goal
 
