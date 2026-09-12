@@ -768,3 +768,12 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   folded — the triplicated parked-IdP / reverseBProperties / respond / drain / realmBase fixtures
   live in `testsupport/` (`TokenIdpStandIn` + `RelayTestFixtures`, five consumer suites),
   consolidated before the fourth consumer landed.
+
+## Deferred from: Story 5.2 close-out (2026-09-12)
+
+- source_spec: `5-2-distroless-docker.md`
+  summary: Packaged-shape e2e covers the reverse-B allow journey only — mode A/C cells and auth-DENY journeys have no e2e row in EITHER shape. The Docker parity claim (DEPLOY-005) rests on the smoke journeys plus structural sameness (one jar, one arg channel, one flag set); DENY-adjacent outcomes in the Docker shape are pinned only as startup refusals (DEPLOY-009, the AD-17 zero-branch refusal), never as an in-session auth-deny relay round.
+  evidence: 5.2 T3/T4 suite scope (`DockerImageBootSmokeTest`, `DockerSecretsE2eTest` — both launch the reverse-B cell); the DEPLOY-005/015 catalog markers' scope-honesty notes (2026-09-12). Same scope in the JAR shape since 5.1 (`PackagedBootSmokeTest`). Epic 6 owns the final conformance run on the packaged shapes — natural home for widening the journey matrix if wanted.
+- source_spec: `5-2-distroless-docker.md`
+  summary: `:proxy:dockerImage` is deliberately OUTSIDE the `build`/`check` graph — the image lives in the Docker daemon, invisible to Gradle, so a tracked output would UP-TO-DATE-skip after a `docker rmi`/daemon restart and silently skip rebuilds; docker's own layer cache is the incrementality. The E2E suites build the image themselves via Testcontainers `ImageFromDockerfile` from the same assembled context (`:proxy:assembleDockerContext`, cacheable, daemon-free — that one IS wired into `test`).
+  evidence: 5.2 T2/T3 spec Implementation Notes; `buildSrc/src/main/kotlin/smpp/deploy/DockerImageTask.kt` (not cacheable, no task wiring) vs `AssembleDockerContextTask.kt`. Recorded so a future story does not "fix" this into `check` (a daemon-less CI would break) — if release/publish tooling ever lands (explicitly untouched, owner 2026-09-11), it owns the decision of when the image builds.
