@@ -1161,7 +1161,7 @@ Level: unit · Priority: P2 · Risks: R10 · NFR: OBS-1, PERF-2
 Level: integration · Priority: P2 · Risks: R10, R28 · NFR: OBS-1, PERF-1
 - Technique: wiring assertion: resolve both the metrics SmartLifecycle bean's EventLoopGroup and the relay ServerBootstrap's child EventLoopGroup from the Spring context; assert they are distinct instances (identity !=); assert no handler in the metrics pipeline is attached to the relay group; (secondary) block the metrics loop briefly and assert relay throughput is unaffected.
 - Tooling: JUnit5 + Spring Boot test context; AssertJ identity check on the two EventLoopGroup beans; optional capturing RelayHandler throughput probe.
-- Notes: AD-19 isolation invariant. Formal throughput-while-scraped proof lives in Epic 6 (PERF-1) — this asserts the structural isolation. Blind spot: isolation is partly convention — assert the wiring mechanically.
+- Notes: AD-19 isolation invariant. Formal throughput-while-scraped proof lives in Epic 7 (PERF-1; re-pointed from Epic 6 at the 2026-09-12 split) — this asserts the structural isolation. Blind spot: isolation is partly convention — assert the wiring mechanically.
 
 **OBS-013** — No Actuator/Tomcat/WebFlux/Reactor runtime dependency is on the classpath serving /metrics
 Level: unit · Priority: P2 · Risks: R10, R16 · NFR: OBS-1, SEC-2
@@ -1474,7 +1474,7 @@ Level: integration · Priority: P1 · Risks: R12 · NFR: FR-DEPLOY-1
 
 ## 7. PERF — Performance, resource & methodology
 
-Owns R6 (targets unmet/overclaimed — methodology IS the bar), R25 (load-gen coordinated omission / open-vs-closed model), R26 (JMH harness pitfalls), R27 (direct-memory budget — shared with RELAY), R28 (event-loop blocking — shared with RELAY), R29 (bind-rate ceiling hidden by mock IdP), R30 (GC/backpressure cliffs). The from-scratch open-model harness is itself a deliverable (Epic 6) with explicit methodology gates. PERF-041 and PERF-042 were merged into RELAY-015 / RELAY-017 (see §9).
+Owns R6 (targets unmet/overclaimed — methodology IS the bar), R25 (load-gen coordinated omission / open-vs-closed model), R26 (JMH harness pitfalls), R27 (direct-memory budget — shared with RELAY), R28 (event-loop blocking — shared with RELAY), R29 (bind-rate ceiling hidden by mock IdP), R30 (GC/backpressure cliffs). The from-scratch open-model harness is itself a deliverable (Epic 7 — re-pointed from Epic 6 at the 2026-09-12 split) with explicit methodology gates. PERF-041 and PERF-042 were merged into RELAY-015 / RELAY-017 (see §9).
 
 ### 7.1 Codec JMH microbenchmarks (R26, PERF-4)
 

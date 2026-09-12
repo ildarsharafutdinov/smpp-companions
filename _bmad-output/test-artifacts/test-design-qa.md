@@ -131,7 +131,7 @@ mode: 'System-Level'
 3. **Spring Boot test slices + `@ConfigurationProperties` fail-fast fixtures** — Epic E1
    - The finite role×mode × required/optional/forbidden matrix (SEC-050..061, SEC-096/097). Pure config-validation unit tests — instant and exhaustive.
 
-4. **Open-model load harness** (Epic 6 deliverable) — Epic E6
+4. **Open-model load harness** (Epic 7 deliverable — re-pointed from Epic 6 at the 2026-09-12 split) — Epic E7
    - From-scratch (no OSS SMPP load tool exists). Open-model, load-gen pinned to separate cores, coordinated-omission check (PERF-010). The harness is itself a deliverable with methodology gates (PERF-070/071).
 
 5. **Test environments** — Epic E1

@@ -339,11 +339,11 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **FR-OBS-1** → Epic 4 — read-only `/metrics` (loopback IPv4); `observability/` Micrometer impl.
 - **FR-OBS-2** → Epic 4 — structured JSON-lines logging; PDU-body TRACE-only, off by default.
 
-**All 19 FRs mapped exactly once.** Epic 6 is NFR-driven (performance validation + docs) and carries no FR.
+**All 19 FRs mapped exactly once.** Epics 6 and 7 are NFR-driven (correctness/docs and performance validation respectively) and carry no FR. *(Re-scoped 2026-09-12: the former combined Epic 6 split — see the Epic 6/7 sections.)*
 
 ## Epic List
 
-**Dependency chain:** Epic 1 → Epic 2 → Epic 3 → Epic 4 → Epic 5 → Epic 6 (linear DAG; no forward references; every epic standalone). Risk boundaries drive the split: Epic 2 retires the A-1 statelessness assumption; Epic 3 isolates the fragile ROPC + preview-STS dependencies; Epic 6 retires the performance bets.
+**Dependency chain:** Epic 1 → Epic 2 → Epic 3 → Epic 4 → Epic 5 → {Epic 6, Epic 7} (linear spine through Epic 5, then two independent successors — re-scoped 2026-09-12 from the former single Epic 6; no forward references; every epic standalone). Risk boundaries drive the split: Epic 2 retires the A-1 statelessness assumption; Epic 3 isolates the fragile ROPC + preview-STS dependencies; Epic 6 retires the real-stack correctness + docs bets; Epic 7 retires the performance bets.
 
 ### Epic 1: Foundation — build substrate, pure SMPP 3.4 codec, and fail-fast configuration
 
@@ -360,7 +360,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 **Goal:** The operator runs a stateless relay that accepts legacy SMPP 3.4 binds, relays framed PDUs bidirectionally to the SMSC, returns DLRs (`deliver_sm`) via the same coupled channel pair (session affinity), and passes the conformance suite on BOTH legs. Assumption A-1 (carrier allows multiple concurrent binds per `system_id` + DLR affinity) is smoke-tested against the in-JVM mock SMSC — the earliest genuine risk checkpoint; if A-1 is false the design escalates to stateful per AD-9 BEFORE any security investment. *(wording: "splices framed PDUs" → "relays framed PDUs", Story 3.4 T4, 2026-08-28)*
 
 - **FRs covered:** FR-TRANSIT-1, FR-TRANSIT-2, FR-TRANSIT-3
-- **NFRs:** REL-1, REL-2, REL-4, SEC-2, MAINT-4, COMP-1 *(PERF-4 sub-ms relay latency is a design invariant of the event-loop relay; formal measurement in Epic 6)*
+- **NFRs:** REL-1, REL-2, REL-4, SEC-2, MAINT-4, COMP-1 *(PERF-4 sub-ms relay latency is a design invariant of the event-loop relay; formal measurement in Epic 7 — re-pointed from Epic 6 at the 2026-09-12 split)*
 - **Key ADs:** AD-1, AD-2, AD-3, AD-8, AD-9, AD-14, AD-15, AD-21, AD-24 (relay), AD-25, AD-27 (contracts + triggers), AD-30 (budget), AD-32 (pre-couple non-bind PDU close policy + AD-25 transition carve-out)
 - **Depends on:** Epic 1
 - **Packages owned:** `proxy/relay/` (full); `proxy/security/` (**contract seed only** — `BindCredentialVerifier` port + `Verdict` sealed interface + `BindCredential` record + always-allow stub; shape fixed by AD-12); `proxy/observability/` (**contract seed only** — `RelayObserver` interface (renamed from `SpliceObserver`, Story 3.4 T4, 2026-08-28) + noop impl; shape fixed by AD-27); `proxy/src/test` (in-JVM mock SMSC, relay conformance suite, jSMPP interop, A-1 fixture)
@@ -382,7 +382,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 **Goal:** The operator scrapes a read-only Prometheus `/metrics` endpoint (loopback IPv4 only, cardinality bounded by the routing table), reads structured JSON-lines logs (startup/config-resolved, bind accept/reject with `system_id`, errors; full PDU/body TRACE-only and off by default), and triggers a clean graceful shutdown validated end-to-end. There is NO management API (no query/drain/reload/rotate at runtime).
 
 - **FRs covered:** FR-OBS-1, FR-OBS-2
-- **NFRs:** OBS-1, OBS-2, OBS-3, PRIV-1 (metrics cardinality) *(+ end-to-end AD-22 graceful-shutdown check; PERF-1's "don't stall the relay" is satisfied by AD-19's dedicated-loop design — formal throughput-while-scraped proof is in Epic 6)*
+- **NFRs:** OBS-1, OBS-2, OBS-3, PRIV-1 (metrics cardinality) *(+ end-to-end AD-22 graceful-shutdown check; PERF-1's "don't stall the relay" is satisfied by AD-19's dedicated-loop design — formal throughput-while-scraped proof is in Epic 7 — re-pointed from Epic 6 at the 2026-09-12 split)*
 - **Key ADs:** AD-8 (metrics), AD-19, AD-21 (metric), AD-22 (end-to-end), AD-27 (impl), AD-28 (metrics loop)
 - **Depends on:** Epic 2, Epic 3
 - **Packages owned:** `proxy/observability/` (full impl — swaps Epic 2's noop `RelayObserver` impl (renamed from `SpliceObserver`, Story 3.4 T4, 2026-08-28) behind the **unchanged** AD-27 interface via Spring DI; `relay/` is NOT modified. Epic 2's noop seed already carries the full 4-method shape incl. `onConnectionClosed`, so the interface is genuinely unchanged here.)
@@ -397,16 +397,30 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **Depends on:** Epic 4
 - **Packages owned:** no main source package — Docker packaging (Dockerfile, distroless + jlink runtime image), Gradle jlink/shadow config, release/ship tooling, boot + smoke validation
 
-### Epic 6: Validate all performance and deliver the operator docs surface
+### Epic 6: Correct and document the proxy — the Kannel sandbox, composed conformance, and the operator docs surface
 
-**Goal:** The operator validates every locked performance bet via a reproducible load-test harness — a no-crypto baseline (to attribute relay cost vs. crypto cost) and the final mTLS-both-legs numbers: ≥10,000 `submit_sm`/sec (stretch ~25K) with a published p50/p90/p99/p99.9 percentile table, 10,000 idle socket pairs in <1 GB heap / <1 vCPU, sub-ms per-PDU relay latency, and codec JMH microbench bands — and reads the complete docs surface (config reference, per-mode A/B/C deployment guide, runbooks, A-1 real-carrier test plan, cipher-allowlist policy, Mode B warning text). The portfolio "craft is the headline" claim is proven with published evidence.
+*(RE-SCOPED 2026-09-12, owner direction: the performance half of the former Epic 6 split into Epic 7 — "epic 7 focuses on performance measurement" — and the Kannel docker-compose sandbox (example: the pre-project `/home/ildar/Documents/smpp-sandbox` playground) joined as the new first story. The "honest exception" clause moved with the perf half.)*
+
+**Goal:** The proxy is proven CORRECT against a real unmodified third-party SMPP stack and fully DOCUMENTED for operators. Correctness: a repo-local docker-compose sandbox launches Kannel 1.5.0 on both sides of the chain (front: smsbox HTTP → sqlbox → bearerbox SMPP-transceiver client; SMSC side: opensmppbox SMPP server → bearerbox → fakesmsc, pgsql DLR store) with the packaged proxy wedged between as the reverse.mode-b cell — a reproducible debugging playground plus correctness-proof journeys (happy send + DLR round trip, `deliver_sm` affinity, `enquire_link` crossing, fail-closed deny journeys); the composed two-instance forward↔reverse flow (E2E-001) and the packaged-shape journey matrix run their final conformance (COMP-1, REL-3). Documentation: the complete operator surface ships per AD-31 — config reference, per-mode A/B/C deployment guide, runbooks, cipher-allowlist policy, Mode B warning text.
 
 - **FRs covered:** *(none — NFR-driven epic)*
-- **NFRs:** PERF-1, PERF-2, PERF-3, PERF-4 (all final, incl. no-crypto baseline), COMP-1 (final conformance on packaged shapes), REL-3 (packaged-shape shutdown), OPS-1, OPS-2, MAINT-5
-- **Key ADs:** AD-21 (load-test allocator choice), AD-23, AD-24 (perf harness + first-of-kind scope), AD-29 (packaged), AD-30 (memory formula), AD-31 (docs as operator surface)
+- **NFRs:** COMP-1 (final conformance incl. the real-stack sandbox tier), REL-3 (packaged-shape shutdown), OPS-1, OPS-2, MAINT-5
+- **Key ADs:** AD-24 (conformance toolchain), AD-29 (packaged), AD-31 (docs as operator surface), AD-18 (sandbox secrets-as-files), AD-32/AD-33 (the deny journeys' wire contracts)
 - **Depends on:** Epic 5
-- **Packages owned:** no main source package — perf harness in `proxy/src/test/` (JMH codec bench, end-to-end relay percentile harness, idle-CPU-at-N demo), the published perf report, `docs/` (full — config reference, per-mode deployment guide, runbooks, A-1 test plan, cipher policy, Mode B warning). *Honest exception: if final PERF-1 validation exposes a genuine hot-path defect, the fix returns to the owning epic (relay/ Epic 2 or codec/ Epic 1), not patched here.*
+- **Packages owned:** no main source package — `sandbox/` (docker-compose Kannel rig + Keycloak + conf + README), testsupport consolidation + packaged-shape conformance suites, `docs/` (full operator surface — the perf-report page excepted, Epic 7 authors it)
 - **Carry-forward (from the party-mode ROPC review):** the deployment guide (OPS-1) must state plainly that v1 authenticates via ROPC (Direct Access Grants) — a grant on a removal track (RFC 9700 / OAuth 2.1) — and that operators must pin their Keycloak build.
+
+### Epic 7: Validate all performance — the measurement harness and the published evidence
+
+*(SPLIT from Epic 6 2026-09-12, owner direction — the performance-measurement half unchanged in substance.)*
+
+**Goal:** Every locked performance bet is validated via a reproducible load-test harness — a no-crypto baseline (to attribute relay cost vs. crypto cost) and the final measured numbers: ≥10,000 `submit_sm`/sec (stretch ~25K) with a published p50/p90/p99/p99.9 percentile table, 10,000 idle socket pairs in <1 GB heap / <1 vCPU, sub-ms per-PDU relay latency, and codec JMH microbench bands — measured on the packaged shapes, published under the disclosure/report gates (PERF-070/071). The portfolio "craft is the headline" claim is proven with published evidence. *Note (2026-09-12): PERF-1's "mTLS both legs" anchor predates the [B] topology (the SMSC leg is plaintext by design, one TLS leg per instance) — the published mTLS number is the Mode-C cell, the baseline isolates crypto cost; see `epic-7-context.md`.*
+
+- **FRs covered:** *(none — NFR-driven epic)*
+- **NFRs:** PERF-1, PERF-2, PERF-3, PERF-4 (all final, incl. no-crypto baseline)
+- **Key ADs:** AD-21 (load-test allocator choice), AD-23, AD-24 (perf harness + first-of-kind scope), AD-29 (packaged), AD-30 (memory formula)
+- **Depends on:** Epic 5 *(independent of Epic 6 — either order or parallel; Epic 7 authors its own perf-report page)*
+- **Packages owned:** no main source package — perf harness in `proxy/src/test/` (open-model load rig, end-to-end relay percentile harness, idle-CPU-at-N demo), the JMH bench publication, the published perf report. *Honest exception: if final PERF-1 validation exposes a genuine hot-path defect, the fix returns to the owning epic (relay/ Epic 2 or codec/ Epic 1), not patched here.*
 
 <!-- Repeat for each epic in epics_list (N = 1, 2, 3...) -->
 

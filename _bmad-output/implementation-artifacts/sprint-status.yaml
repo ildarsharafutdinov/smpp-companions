@@ -42,6 +42,9 @@
 #
 # PROJECT-SPECIFIC NOTE (2026-07-24):
 # - epics.md defines 6 concrete epics (Epic 1..6, linear DAG E1->E2->E3->E4->E5->E6).
+#   AMENDED 2026-09-12 (owner direction): 7 epics — the former Epic 6 split into Epic 6
+#   (Kannel sandbox + composed conformance + operator docs) and Epic 7 (performance
+#   measurement); the spine stays linear through Epic 5, then two independent successors.
 # - epics.md leaves stories as templated placeholders (### Story {{N}}.{{M}}), so story keys
 #   are appended here as each story file is created in _bmad-output/implementation-artifacts/.
 #   Re-run `bmad-sprint-planning` to auto-detect created story files and upgrade their status.
@@ -105,9 +108,15 @@ development_status:
   5-2-distroless-docker: done
   epic-5-retrospective: optional
 
-  # --- Epic 6: Validate all performance and deliver the operator docs surface ---
-  epic-6: backlog
+  # --- Epic 6: Correct and document the proxy — Kannel sandbox, composed conformance, operator docs ---
+  epic-6: in-progress
+  6-3-kannel-sandbox: ready-for-dev
   epic-6-retrospective: optional
+
+  # --- Epic 7: Validate all performance — the measurement harness and published evidence ---
+  epic-7: in-progress
+  7-1-perf-validation-harness: ready-for-dev
+  epic-7-retrospective: optional
 
 action_items:
   - epic: 1
