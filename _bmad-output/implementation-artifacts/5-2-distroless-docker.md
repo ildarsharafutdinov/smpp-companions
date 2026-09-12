@@ -2,7 +2,7 @@
 title: 'Story 5.2 — the distroless Docker deploy shape'
 type: 'feature'
 created: '2026-09-11'
-status: 'in-progress'
+status: 'in-review'
 route: 'dispatch'
 baseline_commit: 6ebab69a284f385c1ae6e28f5daf3d2c4382bb79
 review_loop_iteration: 0
@@ -116,6 +116,38 @@ context:
 - **2026-09-12 (owner, mid-implementation):** the "Module floor dropped" matrix row's predicted failure mechanisms are empirically vacuous on the current path — T3's Docker E2E stays GREEN on a runtime built without `jdk.crypto.ec` (dispatching session, first-hand), and without `jdk.crypto.cryptoki` / without both (implementer). The RSA-fixture handshake and the PKCS12 trust-store load complete on JDK 25 without SunEC/cryptoki. Row amended in place (dated): the floor closes as DEFENSE-IN-DEPTH (Gradle-input bite + forward defense for EC certs / HSM profiles), not a load-bearing runtime gate of the current test path; T5's DEPLOY-001 catalog marker records the finding.
 
 ## Review Triage Log
+
+**Round 1 (2026-09-12).** Layers: blind-hunter (BH1–15), edge-case-hunter (EC1–6), verification-gap (VG1–3 + VG-O1–3). Every claim re-verified against the code by the dispatching session before verdicting.
+
+- EC1 `AssembleDockerContextTask.kt:97` — **low** — verified: `context.deleteRecursively()` ignores the returned Boolean (silent failure on a locked/permission-denied entry → stale context files can ride the image); `copyRecursively`'s default `onError` throws, so only the delete half is silent — **patch**.
+- EC2 `JlinkRuntimeImageTask.kt:113` — **low** — verified: same unchecked `deleteRecursively()` on the exploded BOOT-INF; a stale `lib/` jar from a removed dependency would skew the jdeps set — **patch** (groups with EC1: one root cause).
+- EC3 `DockerImageTask.kt:93-96` — **low** — verified: `canExecute()` accepts a searchable DIRECTORY named `docker` on PATH → raw `ProcessBuilder` IOException instead of the fail-closed `GradleException` — **patch**.
+- EC4 `DockerImageBootSmokeTest.java:455` — **low** — verified: T3's rig writes the mounted secrets with `Files.writeString` (no explicit modes) while T4's sets `r--r--r--` explicitly (`DockerSecretsE2eTest.java:522-527`); a 077 umask lands them 0600 → UID 65532 refuses → happy-boot row spuriously RED — **patch**.
+- EC5 `DockerContainerProbe.java:141-147` — **low** — verified: the attach reply read blocks with no receive deadline (the 10 s deadline covers only the socket appearing; `scrape` sets `SoTimeout`, `force-gc` doesn't) — bounded eventually by the class `@Timeout`, but with no crisp exit — **patch**.
+- EC6 `DockerSecretsE2eTest.java:803` — **low** — verified: `new byte[(int) size]` truncates >2 GiB entries; unreachable in this rig (it scans this repo's own ~137 MiB image) — folded into the gzip-path group with BH3 — **patch**.
+- BH1 `JlinkRuntimeImageTask.kt:16-17,51,62-66` — **low** — verified: three comment blocks still teach the empirically-refuted "the floor's BITE is the image run — T3's boot fails without it" (the 2026-09-12 owner amendment + three GREEN mutation arms say the opposite) — **patch**.
+- BH2 `proxy/src/docker/Dockerfile:6-7,22` — **low** — verified: names `:proxy:dockerImage` for context assembly and mode normalization; both moved to `:proxy:assembleDockerContext` in T3 (`DockerImageTask.kt:52` says "already NORMALIZED there") — **patch**.
+- BH3 `DockerSecretsE2eTest.java:794-805` — **low** — verified: the gzip branch holds the whole blob in one heap array while the row javadoc claims streaming ("a ~101 MB layer is never held in memory"); the plain path streams 64 KiB windows; this daemon saves uncompressed blobs so the branch is cold — **patch** (groups with EC6).
+- BH4 `DockerImageBootSmokeTest.java:238-241` — **medium** — verified: the DEPLOY-011 "no 9090 mapping" assertion reads the RUN's port bindings, which are configured solely by the rig's own `withExposedPorts(bindPort)` (:460) — nothing in image or app can turn it RED (an `EXPOSE 9090` regression wouldn't); the catalog marker cites it as the structural pin — **patch**.
+- BH5 spec `## Verification` — **rejected** — the `--tests '*Jlink*'` selector matches nothing since `JlinkRuntimeImageTest` was deleted (a `--tests` filter with no match fails the task); the fix edits this build's spec, which triage rejects — noted: re-verification runs `*Docker*` + the new suite names.
+- BH6 `Dockerfile:18` — **low → defer** — base image pinned by the mutable `nonroot` tag only; digest pinning trades CVE-freshness for reproducibility — an owner policy decision riding with the release-tooling stance, not this story's direct correction.
+- BH7 both Docker suites — **low → defer** — `DockerRig` duplicated (~200 lines) and already drifting (T4 grew `isRunning`/`exitCode`; T3 still `container.isRunning()`); repo precedent consolidates in `testsupport/` before the NEXT consumer (Epic 6's conformance run).
+- BH8 `DockerContainerProbe.java:96` — **low** — verified: `InetAddress.getLoopbackAddress()` is v4/v6 platform-dependent against an endpoint that binds the `127.0.0.1` literal — the exact dual-stack trap DEPLOY-011 exists to prevent (passes on this box) — **patch**.
+- BH9 context `bin/java` executability unguarded — **rejected (maybe-false)** — Gradle's build-cache format carries POSIX modes, so a cache-hit restore returns the normalized modes; any real mode loss surfaces as the E2E boot's `permission denied` (caught downstream); would settle by stat-ing `bin/java` after a `--build-cache` restore — would-be low.
+- BH10 `DockerSecretsE2eTest.java:185,738` — **medium** — verified: `FIXTURE_MATERIAL` is a hand-maintained list with no completeness check against `keycloak/certs/` — a forgotten fixture silently narrows the SEC-098 scan (this story itself hand-added the `docker-host` pair); the tally fence bounds only gross vacuity — **patch**.
+- BH11 parity row USER/env-fork sub-assertions lack recorded mutations — **rejected (low)** — they are equality pins on `docker inspect` output; the recorded ZGC→G1 mutation already proved this row re-runs and REDs on Dockerfile mutation via the same path a `USER root` edit would take; no everyday defect to meet.
+- BH12 `DockerSecretsE2eTest.java:309-312` — **low** — verified: `hasSize(1)` after `awaitCapturedForm` REDs a non-defect if a second token fetch lands in the window; contents-based assertions keep the bite without the exactly-once fragility — **patch**.
+- BH13 `readProcStatus` needs a local daemon — **rejected (low)** — host-`/proc/<pid>` read breaks under `DOCKER_HOST=tcp/ssh`; the everyday environment is the verified local daemon, and a locality guard adds branches — re-open if a remote/CI daemon ever lands.
+- BH14 `proxy/build.gradle.kts:170-174` — **low** — verified: the T1 comment says "NO image/derived-file inputs are declared — nothing in `test` reads them anymore" while :184-185 declare the Dockerfile + image-dir inputs the suites read — **patch**.
+- BH15 operator `docker run` recipe absent — **low → defer** — the canonical run (mounts, perms, published port, exit semantics) lives only in test code and notes; Epic 6 owns the operator docs surface — carried via the ledger.
+- VG1 SEC-076's all-Paths scan does not exist — **medium (pre-verified)** — `grep`: SEC-076 appears only as javadoc/description text; no test enumerates the `companion.*` secret keys' Path-ness; the SEC-075/DEPLOY-008 markers and the T4 javadoc lean on the absent mechanism, so the ratified structural stance can regress silently (demonstrated: a value field lands GREEN) — **patch**: land the daemon-free scan (the row's own technique), which also makes the markers' text true.
+- VG2 assembled context not a `test` input — **medium (pre-verified)** — `build.gradle.kts:183-185` declare Dockerfile + jlink image but not `assembleDockerContext.contextDirectory`; a buildSrc change to the assembly re-assembles a different context while `test` stays UP-TO-DATE (the repo's documented trap; demonstration: neutered `normalizeRuntimeModes` ships a broken context undetected until `clean`) — **patch** (one input line).
+- VG3 crypto floor pinned by nothing automated — **medium (pre-verified)** — the AC "with the crypto floor present" is enforced by no test; the amendment's stated bite (Gradle-input drift) causes a REBUILD, never a failure — three GREEN floor-removal mutation runs prove it — **patch**: a narrow daemon-free floor-subset assertion (floor ⊆ the built runtime's modules). NOT the owner-dropped set-equality module-set row: presence-only, no derived-list diff.
+- VG-O1 stale `*Jlink*` selector — **rejected** — duplicate of BH5; the fix edits this build's spec.
+- VG-O2 `:proxy:dockerImage` untested — **rejected (low)** — the posture and rationale are already carried by the 5.2 close-out deferred-work entry; the task is human-invoked and fail-closed by design.
+- VG-O3 layer scan blind to jar-interior / no `src/main` PKI scan — **rejected (low)** — the jar-deflate blindness is documented plainly in the marker (a T4 finding); a `src/main` scan is a new guard beyond any demonstrated defect — candidate for a future hardening story, noted here.
+
+**Routing:** no `intent_gap`, no `bad_spec` → no loopback. 15 patch entries (EC1+EC2, EC6+BH3 grouped by root cause), 3 defers (BH6, BH7, BH15), 9 rejections. Patches dispatched to the step-03 implementer; defers appended to `deferred-work.md`.
 
 ## Design Notes
 

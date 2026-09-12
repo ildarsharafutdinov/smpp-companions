@@ -4,13 +4,13 @@ import java.io.IOException;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import com.github.dockerjava.api.command.InspectImageResponse;
-import com.github.dockerjava.api.model.ExposedPort;
 import com.sun.net.httpserver.HttpsServer;
 
 import org.junit.jupiter.api.DisplayName;
@@ -66,7 +66,8 @@ import static org.assertj.core.api.Assertions.fail;
  * against {@link DockerContainerProbe} (compiled test code, {@code docker cp}d in at container
  * create &mdash; the spec's Decision). DEPLOY-011's Docker arm: the endpoint binds the literal
  * 127.0.0.1 INSIDE the container (the yml default 9090 &mdash; this row passes NO metrics port),
- * is reachable ONLY by that in-container exec, and the run publishes no 9090 mapping.
+ * is reachable ONLY by that in-container exec, and the image declares no exposed port at all
+ * (nothing exists to publish).
  *
  * <p><b>The AD-30 interlock, asserted not assumed</b> (same stance as the JAR row): the container
  * carries NO {@code companion.memory.*} args, so the app boots on the shipped yml trio against
@@ -232,13 +233,21 @@ class DockerImageBootSmokeTest {
                     .contains("relay_pdus_total{direction=\"INGRESS\"} 1.0")
                     .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0");
 
-            // (4b) …and the run publishes exactly the SMPP listener: no 9090 mapping exists — a
-            // `-p 9090` would find nothing listening (the structural half of DEPLOY-011: no host
-            // key can misconfigure the endpoint into exposure).
-            assertThat(rig.container.getContainerInfo().getNetworkSettings().getPorts().getBindings())
-                    .as("only the SMPP listener is published; the metrics port is not")
-                    .containsKey(ExposedPort.tcp(rig.bindPort))
-                    .doesNotContainKey(ExposedPort.tcp(METRICS_PORT));
+            // (4b) …and the IMAGE side carries no exposed-ports declaration at all — the bite is
+            // image text, not run config (the run's port bindings only mirror this rig's own
+            // withExposedPorts, so they could never go RED on an image change): an `EXPOSE 9090`
+            // regression in the Dockerfile turns this RED. Structurally, nothing in the image
+            // offers a publishable surface — the endpoint binds the 127.0.0.1 literal INSIDE the
+            // container and no host key exists to widen it (DEPLOY-011: a `-p 9090` finds
+            // nothing listening even if published).
+            InspectImageResponse image = DockerClientFactory.instance()
+                    .client()
+                    .inspectImageCmd(IMAGE.get())
+                    .exec();
+            assertThat(image.getConfig().getExposedPorts())
+                    .as("the image declares NO exposed ports — the metrics endpoint (and every "
+                            + "listener) is reachable only in-container")
+                    .isNullOrEmpty();
 
             // (5) docker stop (SIGTERM to PID 1 — the exec-form ENTRYPOINT) → the AD-22 walk:
             // acceptor stop → deny (no-op) → the drain body polls the live pair to the 2s deadline
@@ -450,10 +459,19 @@ class DockerImageBootSmokeTest {
             // to this JVM's loopback — the satellites stay exactly where the JAR-shape rig puts them)
             org.testcontainers.Testcontainers.exposeHostPorts(smsc.port(), idp.getAddress().getPort());
 
+            // The mounted secret material: explicit world-readable modes (umask-independent —
+            // a 077 umask would land Files.writeString's default 0600 and the non-root-UID
+            // container would spuriously refuse at startup validation; DockerSecretsE2eTest's
+            // rig is the reference). docker cp preserves the modes through the tar.
             Path secrets = dir.resolve("secrets");
             Files.createDirectories(secrets);
-            Files.writeString(secrets.resolve("oidc-client-secret"), "docker-smoke-secret\n");
-            RelayTestFixtures.idpTrustStoreFixture(secrets.resolve("idp-truststore.p12"));
+            Path clientSecret = Files.writeString(
+                    secrets.resolve("oidc-client-secret"), "docker-smoke-secret\n");
+            Files.setPosixFilePermissions(
+                    clientSecret, PosixFilePermissions.fromString("r--r--r--"));
+            Path trustStore = RelayTestFixtures.idpTrustStoreFixture(secrets.resolve("idp-truststore.p12"));
+            Files.setPosixFilePermissions(
+                    trustStore, PosixFilePermissions.fromString("r--r--r--"));
 
             container = new GenericContainer<>(IMAGE)
                     .withAccessToHost(true)

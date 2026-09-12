@@ -13,8 +13,11 @@
 //      `java.management` rides the floor explicitly (jdeps omits it from --print-module-deps as
 //      an already-implied root of jdk.management). The floor is additive — the jdeps output
 //      stays the base and is recorded (pre-floor) beside the image as the derivation evidence.
-//      The floor's BITE is the image run (owner decision 2026-09-11: no module-set test row) —
-//      Story 5.2 T3's Docker E2E boot fails without it (TLS handshake, trust-store load, binders);
+//      The floor is DEFENSE-IN-DEPTH (2026-09-12 owner amendment, spec Change Log): T3's Docker
+//      E2E stays GREEN without jdk.crypto.ec/cryptoki on the current RSA-fixture/JDK-25 path
+//      (the predicted TLS-handshake/trust-store mechanisms do not fire), so the floor's real
+//      bite is Gradle-input drift — a floor change re-runs this task, re-jlinks, and re-runs
+//      the suites against the rebuilt image — plus forward defense for EC certs / HSM profiles;
 //   4. `jlink --strip-debug --no-man-pages` into the image dir. The runtime is bootable and
 //      testable WITHOUT Docker; the distroless Dockerfile (Story 5.2 T2) stays a thin COPY.
 //
@@ -48,7 +51,10 @@ import java.util.zip.ZipFile
 /**
  * Gradle task behind Story 5.2 T1. Registered in `proxy/build.gradle.kts` as `jlinkRuntimeImage`
  * (kept in the `test` graph there so this task's fail-closed checks run in every build); the
- * floor's bite is the image run — Story 5.2 T3's Docker E2E (owner decision 2026-09-11).
+ * floor is DEFENSE-IN-DEPTH (2026-09-12 owner amendment): T3's Docker E2E stays GREEN without
+ * jdk.crypto.ec/cryptoki on the current RSA-fixture/JDK-25 path — the floor's real bite is
+ * Gradle-input drift (a floor change re-runs this task, re-jlinks, and re-runs the suites
+ * against the rebuilt image) plus forward defense for EC certs / HSM profiles.
  */
 @CacheableTask
 abstract class JlinkRuntimeImageTask : DefaultTask() {
@@ -61,9 +67,12 @@ abstract class JlinkRuntimeImageTask : DefaultTask() {
     /**
      * The DEPLOY-001 crypto floor added on top of the jdeps-derived set. Still a load-bearing
      * `@Input`: removing a floor module re-runs this task and rebuilds WITHOUT it (the derived
-     * set never carries `jdk.crypto.ec`/`jdk.crypto.cryptoki`), and the rebuilt image then fails
-     * the run that boots it (T3's Docker E2E — the gate, per the owner's 2026-09-11 decision
-     * that the image run, not a module-set test row, carries DEPLOY-001).
+     * set never carries `jdk.crypto.ec`/`jdk.crypto.cryptoki`). The floor is DEFENSE-IN-DEPTH
+     * (2026-09-12 owner amendment): T3's Docker E2E stays GREEN on a runtime built without it —
+     * the RSA-fixture handshake and the PKCS12 load need no SunEC/cryptoki on JDK 25 — so this
+     * `@Input`'s bite is Gradle-input drift (floor change → re-jlink → the suites re-run against
+     * the rebuilt image, and the floor-presence row fails if a module went missing) plus forward
+     * defense for EC certs / HSM profiles.
      */
     @get:Input
     abstract val cryptoFloor: ListProperty<String>
@@ -108,9 +117,15 @@ abstract class JlinkRuntimeImageTask : DefaultTask() {
         val jdeps = requireTool(jdkBin, "jdeps")
         val jlink = requireTool(jdkBin, "jlink")
 
-        // (1) explode BOOT-INF (jdeps cannot read the nested fat jar directly).
+        // (1) explode BOOT-INF (jdeps cannot read the nested fat jar directly). The stale-tree
+        // wipe fails CLOSED: a silently-surviving leftover (locked/permission-denied entry) would
+        // leave removed-dependency lib jars in the analysis set and skew the jdeps resolution.
         val exploded = temporaryDir.resolve("exploded")
-        exploded.deleteRecursively()
+        if (exploded.exists() && !exploded.deleteRecursively()) {
+            throw GradleException(
+                "could not delete the stale exploded tree $exploded — refusing to run jdeps over " +
+                    "leftover BOOT-INF content (stale lib jars would skew the derived module set)")
+        }
         explodeBootInf(jar, exploded)
         val classesDir = exploded.resolve("BOOT-INF/classes")
         val libJars = exploded.resolve("BOOT-INF/lib")

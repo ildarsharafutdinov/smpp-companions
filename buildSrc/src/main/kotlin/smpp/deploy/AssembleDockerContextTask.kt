@@ -88,13 +88,19 @@ abstract class AssembleDockerContextTask : DefaultTask() {
         }
 
         // (1) assemble the closed context FRESH: exactly three entries, no secret material ever.
-        // Kotlin's copyTo/copyRecursively do NOT carry POSIX modes (observed: jlink's 0775
-        // bin/java landed 0664 — the image then dies `permission denied` at exec), and mirroring
-        // the source modes verbatim would make the image depend on the BUILD USER's umask (a 077
+        // The stale-context wipe fails CLOSED — a silently-surviving leftover (locked/
+        // permission-denied entry) could ride the image context as a fourth entry. Kotlin's
+        // copyTo/copyRecursively do NOT carry POSIX modes (observed: jlink's 0775 bin/java
+        // landed 0664 — the image then dies `permission denied` at exec), and mirroring the
+        // source modes verbatim would make the image depend on the BUILD USER's umask (a 077
         // umask would ship a runtime only root can read — the container runs as UID 65532).
         // The modes are therefore NORMALIZED, below, deterministically.
         val context = contextDirectory.get().asFile
-        context.deleteRecursively()
+        if (context.exists() && !context.deleteRecursively()) {
+            throw GradleException(
+                "could not delete the stale docker context $context — refusing to assemble over " +
+                    "leftover entries (stale files could ride the image build context)")
+        }
         dockerfileFile.copyTo(context.resolve("Dockerfile"), overwrite = true)
         runtime.copyRecursively(context.resolve("jlink-image"), overwrite = true)
         jar.copyTo(context.resolve("proxy.jar"), overwrite = true)

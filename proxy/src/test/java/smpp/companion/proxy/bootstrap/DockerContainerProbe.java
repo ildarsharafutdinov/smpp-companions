@@ -91,9 +91,16 @@ public final class DockerContainerProbe {
         System.out.println("readable " + file + " perms=" + perms + " size=" + size);
     }
 
-    /** Raw-socket GET /metrics on the container's own loopback (no HTTP client on the runtime). */
+    /**
+     * Raw-socket GET /metrics on the container's own loopback (no HTTP client on the runtime).
+     * The address is the IPv4 literal 127.0.0.1 pinned BY BYTES, never {@code
+     * InetAddress.getLoopbackAddress()} — that helper's v4/v6 choice is platform-dependent, and
+     * the endpoint deliberately binds the 127.0.0.1 literal (the exact dual-stack trap DEPLOY-011
+     * exists to prevent: a ::1-loopback probe could false-fail or, worse, silently test another
+     * stack than the one the app bound).
+     */
     private static void scrape(int port) throws IOException {
-        try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
+        try (Socket socket = new Socket(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port)) {
             socket.setSoTimeout(10_000);
             socket.getOutputStream().write(
                     ("GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n"
@@ -130,20 +137,38 @@ public final class DockerContainerProbe {
         }
         try (SocketChannel channel = SocketChannel.open(UnixDomainSocketAddress.of(socketPath))) {
             channel.setOption(StandardSocketOptions.SO_LINGER, -1);
+            // NIO exposes no SO_RCVTIMEO (java.net.Socket's arm only — SocketChannel's
+            // StandardSocketOptions set lacks it), so the reply read is bounded by POLLING in
+            // non-blocking mode under the same 10s deadline: a wedged attach listener fails with
+            // a crisp error instead of blocking the exec forever.
+            channel.configureBlocking(false);
             ByteArrayOutputStream request = new ByteArrayOutputStream();
             writeNulString(request, "1");        // protocol version
             writeNulString(request, "jcmd");     // the jcmd command family
             writeNulString(request, "GC.run");   // the argument: force a full GC
             writeNulString(request, "");         // v1 always carries three arguments
             writeNulString(request, "");
-            channel.write(ByteBuffer.wrap(request.toByteArray()));
+            ByteBuffer out = ByteBuffer.wrap(request.toByteArray());
+            while (out.hasRemaining()) {
+                channel.write(out);
+            }
             channel.shutdownOutput();
             ByteBuffer buf = ByteBuffer.allocate(8192);
             ByteArrayOutputStream reply = new ByteArrayOutputStream();
+            long replyDeadline = System.nanoTime() + 10_000_000_000L;
             int n;
-            while ((n = channel.read(buf)) != -1) {
-                reply.write(buf.array(), 0, n);
-                buf.clear();
+            while ((n = channel.read(buf)) >= 0) {
+                if (n > 0) {
+                    reply.write(buf.array(), 0, n);
+                    buf.clear();
+                } else if (System.nanoTime() > replyDeadline) {
+                    System.err.println("no attach reply within the 10s deadline on " + socketPath
+                            + " — the target's attach listener accepted the request but never "
+                            + "answered (wedged?)");
+                    System.exit(2);
+                } else {
+                    Thread.sleep(25);
+                }
             }
             String text = reply.toString(StandardCharsets.UTF_8).strip();
             System.out.println("attach-reply " + text);

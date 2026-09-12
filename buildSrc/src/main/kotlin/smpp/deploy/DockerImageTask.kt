@@ -91,7 +91,10 @@ abstract class DockerImageTask : DefaultTask() {
         for (dir in (System.getenv("PATH") ?: "").split(File.pathSeparator)) {
             if (dir.isNotBlank()) {
                 val candidate = File(dir, "docker")
-                if (candidate.canExecute()) {
+                // isFile FIRST: a searchable PATH entry named `docker` (a directory) also reports
+                // canExecute() true, and handing it to ProcessBuilder dies as a raw IOException
+                // instead of this task's fail-closed message.
+                if (candidate.isFile && candidate.canExecute()) {
                     return candidate
                 }
             }

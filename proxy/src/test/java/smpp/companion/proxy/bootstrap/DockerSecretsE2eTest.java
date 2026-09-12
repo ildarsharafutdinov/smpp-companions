@@ -177,10 +177,18 @@ class DockerSecretsE2eTest {
     private static final long BOOT_DEADLINE_MILLIS = 90_000;
 
     /**
+     * The committed fixture PKI directory ({@code src/test/resources/keycloak/certs/}) &mdash;
+     * walked by row (d)'s completeness check against {@link #FIXTURE_MATERIAL}.
+     */
+    private static final Path FIXTURE_CERTS_DIR = Path.of("src", "test", "resources", "keycloak", "certs");
+
+    /**
      * The committed fixture PKI ({@code keycloak/certs/}, {@code generate.sh}) &mdash; every
      * cert/key/keystore file, whose EXACT BYTES are the layer-scan markers (row (d)). {@code
      * generate.sh} itself and the CA certs' .pem twins are covered by their p12/PEM bytes; the
-     * list is the directory's closed set of material files.
+     * list is the directory's closed set of material files, PINNED by row (d)'s completeness
+     * assertion (a new fixture file must join the scan; a deleted one must leave it &mdash; a
+     * hand-maintained list with no check would let the scan silently narrow).
      */
     private static final List<String> FIXTURE_MATERIAL = List.of(
             "ca-key.pem", "ca.pem",
@@ -307,15 +315,19 @@ class DockerSecretsE2eTest {
             RelayTestFixtures.writePdu(legacy, RelayTestFixtures.bindRequest(1, "legacy1", "pw123456"));
             assertRokBindResp(RelayTestFixtures.readPdu(legacy), 1);
             awaitCapturedForm(capturedTokenForms);
+            // CONTENT, not count: a second token fetch landing between the await and a size pin
+            // is a non-defect (renewal/retry under the admission cap), so an exactly-once pin
+            // would false-RED — the row's bite is that EVERY captured form carries the FILE's
+            // credential and none carries the decoy.
             assertThat(capturedTokenForms)
-                    .as("exactly one token exchange served the bind")
-                    .hasSize(1);
-            assertThat(capturedTokenForms.get(0))
-                    .as("the ROPC form's client_secret is the MOUNTED FILE's value")
-                    .contains("client_secret=" + FILE_SECRET_VALUE)
-                    .as("the env decoy is honored NOWHERE — not on the credential's one wire "
-                            + "surface")
-                    .doesNotContain(ENV_DECOY_VALUE);
+                    .as("at least one token exchange served the bind")
+                    .isNotEmpty();
+            assertThat(capturedTokenForms)
+                    .as("EVERY captured ROPC form's client_secret is the MOUNTED FILE's value")
+                    .allSatisfy(form -> assertThat(form).contains("client_secret=" + FILE_SECRET_VALUE));
+            assertThat(capturedTokenForms)
+                    .as("the env decoy is honored NOWHERE — on no captured form")
+                    .allSatisfy(form -> assertThat(form).doesNotContain(ENV_DECOY_VALUE));
 
             // (4) And in no stdout/log line either stream (the app never echoes its environment).
             assertThat(stdout(rig))
@@ -388,6 +400,25 @@ class DockerSecretsE2eTest {
             + "COPY layers")
     void noSecretMaterialRidesAnyImageLayer() throws Exception {
         assertContextAssembled();
+
+        // (0) Completeness of the marker list: FIXTURE_MATERIAL must be the certs directory's
+        // CLOSED set of material files (everything except generate.sh, the regeneration script
+        // this row re-derives its exclusions from) — a future fixture added without joining the
+        // list would silently narrow the scan.
+        List<String> directoryMaterial;
+        try (var entries = Files.list(FIXTURE_CERTS_DIR)) {
+            directoryMaterial = entries
+                    .filter(Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> !name.equals("generate.sh"))
+                    .sorted()
+                    .toList();
+        }
+        assertThat(directoryMaterial)
+                .as("FIXTURE_MATERIAL is the certs directory's closed material set — the scan "
+                        + "cannot silently narrow")
+                .containsExactlyElementsOf(FIXTURE_MATERIAL);
+
         DockerClient client = DockerClientFactory.instance().client();
         String image = IMAGE.get();
 
@@ -412,8 +443,9 @@ class DockerSecretsE2eTest {
         // (2) The save half: every entry of the exported image, byte-scanned for the repo's
         // secret material. The scan covers BOTH export formats (classic layer.tar and OCI
         // blobs/sha256 — this daemon hands over OCI with UNCOMPRESSED blobs; gzip magic is
-        // handled for daemons that compress), streaming with a rolling window (a ~101 MB layer
-        // is never held in memory).
+        // handled for daemons that compress). Plain entries stream through the rolling window;
+        // a gzipped entry is buffered compressed for inflation (bounded by the >2 GiB refusal —
+        // this image is ~137 MiB total).
         List<Marker> markers = secretMaterialMarkers();
         Path save = dir.resolve("image-save.tar");
         try (InputStream in = client.saveImageCmd(image).exec()) {
@@ -756,10 +788,11 @@ class DockerSecretsE2eTest {
     /**
      * Walks the exported image's outer tar (512-byte headers; classic {@code <id>/layer.tar} and
      * OCI {@code blobs/sha256/<digest>} layouts alike) and scans EVERY regular entry for the
-     * markers: gzip-magic entries are inflated to a spill file first (this daemon's blobs are
-     * uncompressed; compressed-blob daemons are covered), and each region is read through a
-     * rolling window so a ~101 MB layer is never held in memory. A marker hit FAILS the row
-     * naming the entry and the material.
+     * markers. Memory posture, trued: a PLAIN region streams through a rolling 64 KB window (a
+     * ~101 MB layer is never held in memory), while a gzip-magic entry is held COMPRESSED in
+     * memory for inflation (the mid-tar region cannot be random-access-inflated; bounded by the
+     * {@code >2 GiB} refusal in {@link #scanRegion} — this rig's whole image is ~137 MiB). A
+     * marker hit FAILS the row naming the entry and the material.
      */
     private static ScanTally scanImageSave(Path save, List<Marker> markers) throws IOException {
         int maxMarker = markers.stream().mapToInt(m -> m.bytes.length).max().orElseThrow();
@@ -798,6 +831,16 @@ class DockerSecretsE2eTest {
         readFully(channel, magic.clear(), start);
         boolean gzip = magic.array()[0] == 0x1f && magic.array()[1] == (byte) 0x8b;
         if (gzip) {
+            // The gzip path buffers the COMPRESSED blob in memory (GZIPInputStream needs the
+            // whole mid-tar region — no random-access inflation), so entries too large for a
+            // safe array fail CLOSED here: the plain `int` cast would silently truncate a >2 GiB
+            // blob and scan garbage. This rig's image is ~137 MiB total, so the guard never
+            // fires in practice; it exists to refuse a size surprise loudly.
+            if (size > Integer.MAX_VALUE - 8L) {
+                throw new IllegalStateException("gzipped image-save entry <" + name + "> is "
+                        + size + " bytes — too large to buffer for inflation; refusing rather "
+                        + "than truncate the scan");
+            }
             Path spill = Files.createTempFile("image-blob-", ".bin");
             try {
                 byte[] compressed = new byte[(int) size];

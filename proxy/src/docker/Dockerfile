@@ -3,11 +3,11 @@
 # packaging).
 #
 # LOCATION (spec: "pick one, document"): the image definition is VERSION-CONTROLLED SOURCE here,
-# under proxy/src/docker/, while the BUILD CONTEXT is assembled by :proxy:dockerImage into
-# proxy/build/docker-image/ — both COPY sources are build outputs, and a Dockerfile may only COPY
-# from its own context. That assembly is also fail-closed by construction: any context other than
-# the assembled one (e.g. a naive `docker build proxy/src/docker` or `docker build proxy/`) fails
-# at the first COPY below — no jlink-image/ or proxy.jar there — and can never produce a
+# under proxy/src/docker/, while the BUILD CONTEXT is assembled by :proxy:assembleDockerContext
+# into proxy/build/docker-image/ — both COPY sources are build outputs, and a Dockerfile may only
+# COPY from its own context. That assembly is also fail-closed by construction: any context other
+# than the assembled one (e.g. a naive `docker build proxy/src/docker` or `docker build proxy/`)
+# fails at the first COPY below — no jlink-image/ or proxy.jar there — and can never produce a
 # half-image. Build it with:  ./gradlew :proxy:dockerImage   (tag smpp-proxy:local).
 #
 # BASE: gcr.io/distroless/base-debian12:nonroot — glibc (matches the temurin-toolchain jlink
@@ -19,8 +19,9 @@ FROM gcr.io/distroless/base-debian12:nonroot
 
 # 5.2 T1's modular runtime (jdeps-derived module set + the DEPLOY-001 crypto floor
 # jdk.crypto.ec / jdk.crypto.cryptoki / java.management). Distroless has no chmod (spec Design
-# Notes: modes ride the copy), so :proxy:dockerImage NORMALIZES the copied modes — bin/ launchers
-# 0755, everything else 0644, dirs 0755: world-readable for the non-root UID, executable exactly
+# Notes: modes ride the copy), so :proxy:assembleDockerContext NORMALIZES the copied modes —
+# bin/ launchers 0755, everything else 0644, dirs 0755: world-readable for the non-root UID,
+# executable exactly
 # where the runtime needs it, deterministic across builder umasks. Copied FIRST: the runtime
 # changes only when the module set or toolchain changes, so its
 # layer stays cached across code-only jar rebuilds. /opt/jre is the ENTRYPOINT's <jre>.

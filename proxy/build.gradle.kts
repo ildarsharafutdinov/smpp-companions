@@ -170,19 +170,25 @@ tasks.named("test") {
     // Story 5.2 T1 (DEPLOY-001, owner-amended 2026-09-11: "image run is gate, no extra test is
     // required" — the module-set test row was dropped): the jlink task stays in the test graph
     // so its own fail-closed checks (empty jdeps-derived set, jdeps/jlink failure) run in every
-    // build. NO image/derived-file inputs are declared — nothing in `test` reads them anymore;
-    // T3's Docker wiring below carries its own inputs for the stale-image trap (spec Design Notes).
+    // build. HISTORICAL NOTE: this T1 block itself declares NO image/derived-file inputs (the
+    // T1-era module-set test that read them was owner-dropped); the T3 block below carries the
+    // image inputs the Docker suites actually read (the stale-image trap, spec Design Notes).
     dependsOn(jlinkRuntimeImage)
     // Story 5.2 T3 — the Docker boot+smoke+parity suite builds the image ITSELF (Testcontainers
     // docker-build API) from the assembled context, so the context is both a DEPENDENCY (it must
     // exist before tests run) and a set of INPUTS (the stale-image trap, spec Design Notes: a
     // Dockerfile/jlink-runtime/jar change must re-run the suite against the rebuilt image — the
-    // 5.1 `inputs.file(bootJar)` pattern extended to everything the image bakes). The
-    // daemon-free assembly keeps daemon-less builds GREEN; the suite skips per
-    // disabledWithoutDocker.
+    // 5.1 `inputs.file(bootJar)` pattern extended to everything the image bakes). The ASSEMBLED
+    // CONTEXT DIRECTORY itself is an input too, closing the buildSrc trap: a change to the
+    // assembly logic (e.g. AssembleDockerContextTask's mode normalization in buildSrc) can
+    // produce a DIFFERENT context from unchanged sources — naming the output dir makes the
+    // suites re-run against that re-assembled context instead of staying UP-TO-DATE on the
+    // three source declarations alone. The daemon-free assembly keeps daemon-less builds GREEN;
+    // the suite skips per disabledWithoutDocker.
     dependsOn(assembleDockerContext)
     inputs.file(layout.projectDirectory.file("src/docker/Dockerfile"))
     inputs.dir(jlinkRuntimeImage.flatMap { it.imageDirectory })
+    inputs.dir(assembleDockerContext.flatMap { it.contextDirectory })
 }
 
 // SEC-091: OWASP dependency-check CI lane. Deliberately NOT wired into `check`, so `./gradlew build`
