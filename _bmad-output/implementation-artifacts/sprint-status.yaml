@@ -61,7 +61,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-09-11
+last_updated: 2026-09-12
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -100,9 +100,9 @@ development_status:
   epic-4-retrospective: optional
 
   # --- Epic 5: Ship both deploy shapes — runnable JAR and distroless Docker ---
-  epic-5: in-progress
+  epic-5: done
   5-1-runnable-jar: done
-  5-2-distroless-docker: in-progress
+  5-2-distroless-docker: done
   epic-5-retrospective: optional
 
   # --- Epic 6: Validate all performance and deliver the operator docs surface ---

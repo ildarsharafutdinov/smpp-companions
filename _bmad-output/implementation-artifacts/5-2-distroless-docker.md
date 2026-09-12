@@ -2,7 +2,7 @@
 title: 'Story 5.2 — the distroless Docker deploy shape'
 type: 'feature'
 created: '2026-09-11'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 baseline_commit: 6ebab69a284f385c1ae6e28f5daf3d2c4382bb79
 review_loop_iteration: 0
