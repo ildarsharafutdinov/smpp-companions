@@ -99,7 +99,8 @@ public final class OidcDiscoveryStandIn {
     private static String start() {
         try {
             HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
-            server.setHttpsConfigurator(new HttpsConfigurator(serverSslContext()));
+            server.setHttpsConfigurator(new HttpsConfigurator(
+                    serverSslContext("/keycloak/certs/server.pem", "/keycloak/certs/server-key.pem")));
             String base = "https://localhost:" + server.getAddress().getPort();
             server.createContext(DISCOVERY_PATH, discoveryHandler(base));
             server.start();
@@ -149,17 +150,23 @@ public final class OidcDiscoveryStandIn {
      */
     public static SSLContext fixtureServerSslContext() {
         try {
-            return serverSslContext();
+            return serverSslContext("/keycloak/certs/server.pem", "/keycloak/certs/server-key.pem");
         } catch (IOException e) {
             throw new IllegalStateException("could not build the fixture server SSLContext", e);
         }
     }
 
-    /** Server-side TLS context from the fixture's PEM cert + PKCS#8 key; no client auth. */
-    private static SSLContext serverSslContext() throws IOException {
+    /**
+     * Server-side TLS context from ANY fixture PEM cert + PKCS#8 key pair under {@code
+     * /keycloak/certs/} (no client auth). Story 5.2 T3: the container&rarr;host TLS hop serves the
+     * {@code docker-host} pair (SAN {@code host.testcontainers.internal}) through this factory
+     * &mdash; a WIDER CERT, never a weakened context, per the spec's "parameterize or re-point"
+     * design note.
+     */
+    static SSLContext serverSslContext(String certResource, String keyResource) throws IOException {
         try {
-            PrivateKey key = readPrivateKey("/keycloak/certs/server-key.pem");
-            X509Certificate cert = readCertificate("/keycloak/certs/server.pem");
+            PrivateKey key = readPrivateKey(keyResource);
+            X509Certificate cert = readCertificate(certResource);
             KeyStore store = KeyStore.getInstance("PKCS12");
             store.load(null, null);
             store.setKeyEntry("stand-in-server", key, KEY_PASSWORD, new X509Certificate[] {cert});

@@ -20,6 +20,11 @@
 #   foreign-ca*.pem, smpp-foreign-client*.pem — Story 3.3 review: a SECOND, DISJOINT self-signed CA and a client
 #                                     cert chained to it (CN=smpp-foreign-client). The mode-c REQUIRE listener must refuse
 #                                     this peer — AC4's "unanchored one" arm (presented but not chained to the anchor).
+#   docker-host.pem / docker-host-key.pem
+#                                   — Story 5.2 T3: the host-side stand-in IdP's server cert for the CONTAINER→host TLS
+#                                     hop (SAN host.testcontainers.internal + host.docker.internal, signed by the CA
+#                                     above) — the containerized reverse-B cell's ROPC dial verifies it against the
+#                                     same truststore.p12 anchor.
 #
 # IMPORTANT: every cert here is self-signed TEST material for a local Docker Keycloak — NOT a production secret.
 # Regenerating changes the CA and invalidates any committed truststore; the committed artifacts + this script
@@ -110,14 +115,30 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in smpp-foreign-client.csr -CA foreign-ca.pem -CAkey foreign-ca-key.pem -CAcreateserial -out smpp-foreign-client.pem -days 825 -sha256 \
   -extfile <(printf "extendedKeyUsage=clientAuth\nbasicConstraints=critical,CA:FALSE") 2>/dev/null
 
+# --- 11. Docker-gateway server cert (Story 5.2 T3, the container→host TLS hop) ------------------
+# The host-side stand-in token IdP the CONTAINERized reverse-B cell dials during the Docker E2E:
+# the container resolves host.testcontainers.internal (Testcontainers' host-access name) to the
+# host, so the served cert must carry THAT name as a SAN — the fixture server cert's fixed
+# localhost/127.0.0.1 SANs would fail hostname verification, and the fix is a wider cert, NEVER a
+# weakened SSLContext (spec 5.2 Design Notes: "parameterize or re-point rather than weakening TLS
+# verification"). Signed by the SAME test CA (section 1), so the EXISTING truststore.p12 (the
+# cell's mounted IdP trust anchor) verifies the chain unchanged. host.docker.internal rides along
+# for Docker Desktop environments. Test-only material like everything else here.
+openssl req -newkey rsa:2048 -nodes \
+  -keyout docker-host-key.pem -out docker-host.csr \
+  -subj "/CN=host.testcontainers.internal/O=smpp-companions-test" 2>/dev/null
+openssl x509 -req -in docker-host.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out docker-host.pem -days 825 -sha256 \
+  -extfile <(printf "subjectAltName=DNS:host.testcontainers.internal,DNS:host.docker.internal\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE") 2>/dev/null
+
 # tidy CSR/serial intermediates
-rm -f server.csr client.csr smpp-reverse-server.csr smpp-forward-client.csr smpp-foreign-client.csr ca.srl .srl foreign-ca.srl
+rm -f server.csr client.csr smpp-reverse-server.csr smpp-forward-client.csr smpp-foreign-client.csr docker-host.csr ca.srl .srl foreign-ca.srl
 
 echo "Generated test PKI:"
 ls -1 ca.pem ca-key.pem server.pem server-key.pem client.pem client-key.pem \
       truststore.p12 client-keystore.p12 keycloak-truststore.pem \
       smpp-reverse-server.pem smpp-reverse-server-key.pem \
       smpp-forward-client.pem smpp-forward-client-key.pem smpp-truststore.p12 \
-      foreign-ca.pem foreign-ca-key.pem smpp-foreign-client.pem smpp-foreign-client-key.pem
+      foreign-ca.pem foreign-ca-key.pem smpp-foreign-client.pem smpp-foreign-client-key.pem \
+      docker-host.pem docker-host-key.pem
 echo "Client cert subject DN (the test JVM's transport identity):"
 openssl x509 -in client.pem -noout -subject

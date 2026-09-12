@@ -8,6 +8,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import javax.net.ssl.SSLContext;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
@@ -29,6 +31,14 @@ import com.sun.net.httpserver.HttpsServer;
  * {@code com.sun.net.httpserver} never appears in {@code src/main}).
  */
 public final class TokenIdpStandIn {
+
+    /**
+     * The host-side name a CONTAINER resolves to the test host (Testcontainers' host-access
+     * extra-host entry; {@code GenericContainer#INTERNAL_HOST_HOSTNAME}). The Docker E2E cells dial
+     * their host-side satellites — this stand-in family and the loopback {@code MockSmsc} — through
+     * it (Story 5.2 T3).
+     */
+    public static final String DOCKER_GATEWAY_HOST = "host.testcontainers.internal";
 
     /** The pinned-Keycloak realm token path every stand-in IdP here serves (the T3 fixture idiom). */
     public static final String TOKEN_PATH = "/realms/smpp-companions/protocol/openid-connect/token";
@@ -52,7 +62,8 @@ public final class TokenIdpStandIn {
      */
     public static HttpsServer parkedTokenIdp(CountDownLatch tokenReceived, CountDownLatch hold, String threadName)
             throws IOException {
-        return tokenEndpointIdp(tokenReceived, hold, true, 10, 401, "{}", 4, threadName);
+        return tokenEndpointIdp(tokenReceived, hold, true, 10, 401, "{}", 4, threadName,
+                OidcDiscoveryStandIn.fixtureServerSslContext(), "localhost");
     }
 
     /**
@@ -67,15 +78,43 @@ public final class TokenIdpStandIn {
     public static HttpsServer allowIdp(CountDownLatch tokenReceived, CountDownLatch hold, boolean park,
             String threadName) throws IOException {
         return tokenEndpointIdp(tokenReceived, hold, park, 15, 200,
-                "{\"access_token\":\"aa.bb.cc\",\"token_type\":\"Bearer\"}", 6, threadName);
+                "{\"access_token\":\"aa.bb.cc\",\"token_type\":\"Bearer\"}", 6, threadName,
+                OidcDiscoveryStandIn.fixtureServerSslContext(), "localhost");
+    }
+
+    /**
+     * The DOCKER-REACHABLE variant of the IMMEDIATE-allow stand-in (Story 5.2 T3): same handler
+     * behavior, but the server presents the fixture CA's {@code docker-host} cert (SAN
+     * {@value #DOCKER_GATEWAY_HOST}) and the realm base advertises that name, so a CONTAINERized
+     * reverse cell (whose provider-url must name the HOST, not localhost) passes full TLS hostname
+     * verification against the same {@code truststore.p12} anchor every other fixture uses. The
+     * binding itself stays on the host loopback — Testcontainers' host-access portal forwards
+     * {@code host.testcontainers.internal:<port>} to the test host's loopback, so {@link
+     * MockSmsc}-style loopback satellites stay untouched (spec Design Notes: "parameterize or
+     * re-point rather than weakening TLS verification").
+     */
+    public static HttpsServer dockerHostAllowIdp(CountDownLatch tokenReceived, CountDownLatch hold,
+            boolean park, String threadName) throws IOException {
+        return tokenEndpointIdp(tokenReceived, hold, park, 15, 200,
+                "{\"access_token\":\"aa.bb.cc\",\"token_type\":\"Bearer\"}", 6, threadName,
+                OidcDiscoveryStandIn.serverSslContext(
+                        "/keycloak/certs/docker-host.pem", "/keycloak/certs/docker-host-key.pem"),
+                "127.0.0.1");
+    }
+
+    /** The provider-url base a CONTAINERized cell must dial for this stand-in family (the host). */
+    public static String dockerHostRealmBase(HttpsServer server) {
+        return "https://" + DOCKER_GATEWAY_HOST + ":" + server.getAddress().getPort()
+                + "/realms/smpp-companions";
     }
 
     /** The shared body: TLS stand-in server, daemon pool, the realm token context (park, then answer). */
     private static HttpsServer tokenEndpointIdp(
             CountDownLatch tokenReceived, CountDownLatch hold, boolean park, int parkSeconds,
-            int status, String body, int poolSize, String threadName) throws IOException {
-        HttpsServer server = HttpsServer.create(new InetSocketAddress("localhost", 0), 0);
-        server.setHttpsConfigurator(new HttpsConfigurator(OidcDiscoveryStandIn.fixtureServerSslContext()));
+            int status, String body, int poolSize, String threadName,
+            SSLContext serverSslContext, String bindHost) throws IOException {
+        HttpsServer server = HttpsServer.create(new InetSocketAddress(bindHost, 0), 0);
+        server.setHttpsConfigurator(new HttpsConfigurator(serverSslContext));
         server.setExecutor(Executors.newFixedThreadPool(poolSize, r -> {
             Thread t = new Thread(r, threadName);
             t.setDaemon(true);

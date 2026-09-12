@@ -2,6 +2,7 @@
 // lifecycle / Micrometer; Netty is driven directly. Depends INWARD on the pure `codec` module.
 
 import org.gradle.jvm.toolchain.JavaToolchainService
+import smpp.deploy.AssembleDockerContextTask
 import smpp.deploy.DockerImageTask
 import smpp.deploy.JlinkRuntimeImageTask
 
@@ -115,29 +116,43 @@ val jlinkRuntimeImage = tasks.register<JlinkRuntimeImageTask>("jlinkRuntimeImage
     multiReleaseVersion.set(toolchainLauncher.map { it.metadata.languageVersion.toString() })
 }
 
-// Story 5.2 T2 (DEPLOY-003/004/006 Docker halves + the DEP-1 posture) — the distroless image
-// wiring: `proxy/src/docker/Dockerfile` (the image definition — distroless base-debian12:nonroot,
-// the jlink runtime + proxy.jar COPYs, exec-form ENTRYPOINT carrying the ONE operator flag set
-// verbatim, `CMD []` cell-args pass-through, USER nonroot 65532, no secret material in any layer)
-// plus this build task. `dockerImage` assembles the CLOSED three-entry context (Dockerfile +
-// jlink-image/ + proxy.jar) into `build/docker-image/` and runs the docker build (tag
-// smpp-proxy:local) — see the task class for why it is deliberately NOT wired into
-// build/check/test and not cacheable: the image lives in the Docker daemon, invisible to Gradle,
-// and daemon-less builds must stay GREEN. T3/T4's Testcontainers suites build from the SAME
-// Dockerfile with their own test inputs (the stale-image trap), so both paths share one image
-// definition.
-tasks.register<DockerImageTask>("dockerImage") {
+// Story 5.2 T2 -> T3 — the assembled Docker build context (daemon-free): exactly three entries
+// (Dockerfile + jlink-image/ + proxy.jar, runtime modes NORMALIZED — see the task class) under
+// `build/docker-image/`. Extracted from `dockerImage` in T3 so `:proxy:test` can consume the SAME
+// context as a plain dependency + test input: the T3 Testcontainers suite builds the image itself
+// via the docker-build API from these three entries, so the suite and the manual `dockerImage`
+// task can never drift onto two image definitions, while daemon-less builds stay GREEN (the
+// assembly touches only the local filesystem; the suite itself skips per disabledWithoutDocker).
+val assembleDockerContext = tasks.register<AssembleDockerContextTask>("assembleDockerContext") {
     group = "build"
     description =
-        "Story 5.2 T2 (DEPLOY-003/004/006, DEP-1): assemble the closed docker context " +
-            "(Dockerfile + jlink runtime + proxy.jar) and build the distroless image (tag smpp-proxy:local)"
+        "Story 5.2 T2/T3: assemble the closed docker context (Dockerfile + jlink runtime + proxy.jar, " +
+            "modes normalized) into build/docker-image/ — shared by :proxy:dockerImage and the T3 suite"
     dependsOn(jlinkRuntimeImage)
     dependsOn(tasks.bootJar)
     dockerfile.set(layout.projectDirectory.file("src/docker/Dockerfile"))
     runtimeImage.set(jlinkRuntimeImage.flatMap { it.imageDirectory })
     bootJar.set(tasks.bootJar.flatMap { it.archiveFile })
-    imageTag.set("smpp-proxy:local")
     contextDirectory.set(layout.buildDirectory.dir("docker-image"))
+}
+
+// Story 5.2 T2 (DEPLOY-003/004/006 Docker halves + the DEP-1 posture) — the distroless image
+// wiring: `proxy/src/docker/Dockerfile` (the image definition — distroless base-debian12:nonroot,
+// the jlink runtime + proxy.jar COPYs, exec-form ENTRYPOINT carrying the ONE operator flag set
+// verbatim, `CMD []` cell-args pass-through, USER nonroot 65532, no secret material in any layer)
+// plus this build task. `dockerImage` builds over the assembled context (tag smpp-proxy:local) —
+// see the task class for why it is deliberately NOT wired into build/check/test and not
+// cacheable: the image lives in the Docker daemon, invisible to Gradle, and daemon-less builds
+// must stay GREEN. T3/T4's Testcontainers suites build from the SAME assembled context with their
+// own declared test inputs (the stale-image trap), so both paths share one image definition.
+tasks.register<DockerImageTask>("dockerImage") {
+    group = "build"
+    description =
+        "Story 5.2 T2 (DEPLOY-003/004/006, DEP-1): docker-build the assembled context into the " +
+            "distroless image (tag smpp-proxy:local) and fail closed on inspect"
+    dependsOn(assembleDockerContext)
+    contextDirectory.set(assembleDockerContext.flatMap { it.contextDirectory })
+    imageTag.set("smpp-proxy:local")
 }
 
 tasks.named("test") {
@@ -156,8 +171,18 @@ tasks.named("test") {
     // required" — the module-set test row was dropped): the jlink task stays in the test graph
     // so its own fail-closed checks (empty jdeps-derived set, jdeps/jlink failure) run in every
     // build. NO image/derived-file inputs are declared — nothing in `test` reads them anymore;
-    // T3's Docker wiring carries its own inputs for the stale-image trap (spec Design Notes).
+    // T3's Docker wiring below carries its own inputs for the stale-image trap (spec Design Notes).
     dependsOn(jlinkRuntimeImage)
+    // Story 5.2 T3 — the Docker boot+smoke+parity suite builds the image ITSELF (Testcontainers
+    // docker-build API) from the assembled context, so the context is both a DEPENDENCY (it must
+    // exist before tests run) and a set of INPUTS (the stale-image trap, spec Design Notes: a
+    // Dockerfile/jlink-runtime/jar change must re-run the suite against the rebuilt image — the
+    // 5.1 `inputs.file(bootJar)` pattern extended to everything the image bakes). The
+    // daemon-free assembly keeps daemon-less builds GREEN; the suite skips per
+    // disabledWithoutDocker.
+    dependsOn(assembleDockerContext)
+    inputs.file(layout.projectDirectory.file("src/docker/Dockerfile"))
+    inputs.dir(jlinkRuntimeImage.flatMap { it.imageDirectory })
 }
 
 // SEC-091: OWASP dependency-check CI lane. Deliberately NOT wired into `check`, so `./gradlew build`
