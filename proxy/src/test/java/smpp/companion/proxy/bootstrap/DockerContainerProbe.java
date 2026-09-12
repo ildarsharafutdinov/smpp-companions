@@ -11,6 +11,7 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 
 /**
  * Story 5.2 T3 &mdash; the {@code docker cp}-able in-container probe for the distroless boot+smoke
@@ -25,6 +26,13 @@ import java.nio.file.Path;
  *   <li>{@code scrape <port>} &mdash; GET {@code /metrics} on the literal 127.0.0.1 inside the
  *       container (DEPLOY-011's Docker arm: the loopback-metrics endpoint is reachable ONLY
  *       in-container) and print the raw response. Exit 0 only on a complete read.</li>
+ *   <li>{@code readable <path>} &mdash; stat {@code path} AS THE CONTAINER'S OWN USER ({@code
+ *       docker exec} runs the probe under the image's non-root UID 65532, so {@code
+ *       Files.isReadable} is the real access(2) of the non-root JVM &mdash; DEPLOY-007's
+ *       load-bearing half, "the mounted secret is readable by this UID"). Prints {@code
+ *       readable <path> perms=<posix> size=<n>} and exits 0 when readable; prints the same
+ *       line prefixed {@code unreadable} and exits 3 when the UID cannot read it (the
+ *       distroless base has no ls/stat to ask).</li>
  *   <li>{@code prepare-attach <pid>} &mdash; create {@code /tmp/.attach_pid<pid>}, the file whose
  *       presence makes the target JVM's SIGQUIT handler start its (lazy) attach listener instead of
  *       only dumping threads.</li>
@@ -47,11 +55,12 @@ public final class DockerContainerProbe {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.err.println("usage: DockerContainerProbe scrape|prepare-attach|force-gc <arg>");
+            System.err.println("usage: DockerContainerProbe scrape|readable|prepare-attach|force-gc <arg>");
             System.exit(64);
         }
         switch (args[0]) {
             case "scrape" -> scrape(Integer.parseInt(args[1]));
+            case "readable" -> readable(args[1]);
             case "prepare-attach" -> prepareAttach(args[1]);
             case "force-gc" -> forceGc(args[1]);
             default -> {
@@ -59,6 +68,27 @@ public final class DockerContainerProbe {
                 System.exit(64);
             }
         }
+    }
+
+    /**
+     * Stats {@code path} as this process's UID (the container's non-root user): the accessibility
+     * half of the DEP-1 mounted-secrets contract, observed from inside. A path that is not a
+     * regular file exits 2; an unreadable one exits 3 (the T4 refusal row's in-container twin).
+     */
+    private static void readable(String path) throws IOException {
+        Path file = Path.of(path);
+        if (!Files.isRegularFile(file)) {
+            System.err.println("not a regular file: " + file);
+            System.exit(2);
+        }
+        String perms = PosixFilePermissions.toString(Files.getPosixFilePermissions(file));
+        long size = Files.size(file);
+        if (!Files.isReadable(file)) {
+            System.out.println("unreadable " + file + " perms=" + perms + " size=" + size);
+            System.err.println("the current UID cannot read " + file + " (perms=" + perms + ")");
+            System.exit(3);
+        }
+        System.out.println("readable " + file + " perms=" + perms + " size=" + size);
     }
 
     /** Raw-socket GET /metrics on the container's own loopback (no HTTP client on the runtime). */

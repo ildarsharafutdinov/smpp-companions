@@ -63,7 +63,7 @@ public final class TokenIdpStandIn {
     public static HttpsServer parkedTokenIdp(CountDownLatch tokenReceived, CountDownLatch hold, String threadName)
             throws IOException {
         return tokenEndpointIdp(tokenReceived, hold, true, 10, 401, "{}", 4, threadName,
-                OidcDiscoveryStandIn.fixtureServerSslContext(), "localhost");
+                OidcDiscoveryStandIn.fixtureServerSslContext(), "localhost", null);
     }
 
     /**
@@ -79,7 +79,7 @@ public final class TokenIdpStandIn {
             String threadName) throws IOException {
         return tokenEndpointIdp(tokenReceived, hold, park, 15, 200,
                 "{\"access_token\":\"aa.bb.cc\",\"token_type\":\"Bearer\"}", 6, threadName,
-                OidcDiscoveryStandIn.fixtureServerSslContext(), "localhost");
+                OidcDiscoveryStandIn.fixtureServerSslContext(), "localhost", null);
     }
 
     /**
@@ -95,11 +95,27 @@ public final class TokenIdpStandIn {
      */
     public static HttpsServer dockerHostAllowIdp(CountDownLatch tokenReceived, CountDownLatch hold,
             boolean park, String threadName) throws IOException {
+        return dockerHostAllowIdp(tokenReceived, hold, park, threadName, null);
+    }
+
+    /**
+     * The FORM-CAPTURING variant of {@link #dockerHostAllowIdp} (Story 5.2 T4): every token
+     * request's decoded form body is appended to {@code capturedRequestForms} before the response
+     * is written (program order in the handler thread, so a caller that observed the response
+     * observes the capture). The Docker secrets E2E reads the ONE wire place the ROPC client
+     * credential surfaces — the token request's {@code client_secret} form field — to prove the
+     * credential the adapter used is the MOUNTED FILE's value, never a container-env decoy
+     * (DEPLOY-008 as amended, the "runs solely on the file-path secrets" half). Caller-owned,
+     * thread-safe list; {@code null} keeps the discard behavior.
+     */
+    public static HttpsServer dockerHostAllowIdp(CountDownLatch tokenReceived, CountDownLatch hold,
+            boolean park, String threadName, java.util.List<String> capturedRequestForms)
+            throws IOException {
         return tokenEndpointIdp(tokenReceived, hold, park, 15, 200,
                 "{\"access_token\":\"aa.bb.cc\",\"token_type\":\"Bearer\"}", 6, threadName,
                 OidcDiscoveryStandIn.serverSslContext(
                         "/keycloak/certs/docker-host.pem", "/keycloak/certs/docker-host-key.pem"),
-                "127.0.0.1");
+                "127.0.0.1", capturedRequestForms);
     }
 
     /** The provider-url base a CONTAINERized cell must dial for this stand-in family (the host). */
@@ -108,11 +124,16 @@ public final class TokenIdpStandIn {
                 + "/realms/smpp-companions";
     }
 
-    /** The shared body: TLS stand-in server, daemon pool, the realm token context (park, then answer). */
+    /**
+     * The shared body: TLS stand-in server, daemon pool, the realm token context (park, then
+     * answer). {@code capturedRequestForms} (nullable) receives every token request's decoded form
+     * body BEFORE the response is written — the T4 capture seam; {@code null} discards.
+     */
     private static HttpsServer tokenEndpointIdp(
             CountDownLatch tokenReceived, CountDownLatch hold, boolean park, int parkSeconds,
             int status, String body, int poolSize, String threadName,
-            SSLContext serverSslContext, String bindHost) throws IOException {
+            SSLContext serverSslContext, String bindHost,
+            java.util.List<String> capturedRequestForms) throws IOException {
         HttpsServer server = HttpsServer.create(new InetSocketAddress(bindHost, 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(serverSslContext));
         server.setExecutor(Executors.newFixedThreadPool(poolSize, r -> {
@@ -122,7 +143,10 @@ public final class TokenIdpStandIn {
         }));
         server.createContext(TOKEN_PATH, ex -> {
             tokenReceived.countDown();
-            drain(ex);
+            String form = drain(ex);
+            if (capturedRequestForms != null) {
+                capturedRequestForms.add(form);
+            }
             try {
                 if (park) {
                     hold.await(parkSeconds, TimeUnit.SECONDS);   // park: the adjudication is in-flight
@@ -147,7 +171,8 @@ public final class TokenIdpStandIn {
         }
     }
 
-    private static void drain(HttpExchange exchange) throws IOException {
-        exchange.getRequestBody().readAllBytes();
+    /** Drains the request body, returning it decoded (the form capture's source). */
+    private static String drain(HttpExchange exchange) throws IOException {
+        return new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
     }
 }
