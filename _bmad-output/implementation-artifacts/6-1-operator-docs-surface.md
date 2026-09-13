@@ -2,7 +2,7 @@
 title: 'Story 6.1 — the operator docs surface: config reference, per-mode deployment guide, runbooks, cipher policy (AD-31/OPS-1)'
 type: 'feature'
 created: '2026-09-12'
-status: 'in-progress'
+status: 'review'
 route: 'dispatch'
 baseline_commit: e30862d2a92996e82650a87432d571c672b73286
 review_loop_iteration: 0
