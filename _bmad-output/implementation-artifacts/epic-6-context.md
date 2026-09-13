@@ -8,6 +8,10 @@
      item 3 is literally this proxy). The three 5.2-closure defers re-homed here stay here (journey-widening,
      DockerRig consolidation, docker-run recipe). Same-date execution order set: docs → conformance → sandbox
      (the sandbox story, created first as 6.1, renumbered to 6.3 — see Stories). -->
+<!-- Regenerated to as-built 2026-09-13 (Story 6.1 T4): 6.1 is DONE — the AD-31 surface exists under docs/
+     (README.md indexes configuration.md, deployment-guide.md, runbooks.md, cipher-allowlist-policy.md beside
+     the flag-contract page; a-1-carrier-test-plan.md refreshed in place); the 5.2 defers it carried are
+     ledgered (BH15 authored + BH6 documented = resolved; journey-widening + BH7 visibly re-homed to 6.2). -->
 
 ## Goal
 
@@ -20,7 +24,8 @@ jSMPP); the composed two-instance forward↔reverse flow (E2E-001) and the packa
 their final conformance. Documentation: the complete operator surface per AD-31/OPS-1 — config reference,
 per-mode A/B/C deployment guide (carrying the ROPC removal-track warning and the `docker run` recipe),
 runbooks, cipher-allowlist policy, Mode B warning text. Status: Epics 1–5 done (`2f2b0e8`); Epic 7
-(performance) split out the same day — independent of this epic.
+(performance) split out the same day — independent of this epic; **Story 6.1 (the docs half) done
+2026-09-13 — the operator surface exists as-built under `docs/` (see Stories)**.
 
 ## Stories
 
@@ -31,6 +36,14 @@ renumbered 6.1→6.3 so number = execution order, the repo convention.)*
   `docker run` recipe seed, BH15), runbooks, cipher-allowlist policy page, Mode B warning text; the
   base-image digest-pin policy decision (BH6); `docs/a-1-carrier-test-plan.md` already exists
   (OBS-035/036/037) — refresh, don't re-author. The perf-report page is NOT this story's — Epic 7 authors it.
+  **DONE 2026-09-13 (docs-only, four tasks): `docs/configuration.md` (every live `companion.*` key, the
+  AD-17 matrix, the retired keys), `docs/deployment-guide.md` (per-cell walkthroughs both shapes, the
+  canonical `docker run` recipe, the ROPC three-parter + DAG prerequisite, the BH6 DOCUMENT arm),
+  `docs/runbooks.md` + `docs/cipher-allowlist-policy.md` (the deny surface, log/metrics references, Mode A
+  ACL isolation, JFR hygiene; the AD-34 defaults + tuning envelope), `docs/README.md` (the index), and the
+  A-1 plan refreshed against as-built with the legacy `A1CarrierPlanDocsTest` GREEN. Catalog rows
+  OBS-029..034/SEC-065/SEC-049 closed OWNER-AMENDED (page = deliverable, per the 2026-09-10 no-Java-over-md
+  rule); nothing in the repo parses any page.**
 - 6.2 — composed + packaged-shape conformance: E2E-001 (two-real-instance forward↔reverse Mode C composed
   flow, weekly/manual tier), the DockerRig consolidation into testsupport/ BEFORE this story's third consumer
   (deferred-work BH7), the packaged-shape journey-widening decision (mode A/C cells + auth-DENY journeys —
@@ -86,10 +99,13 @@ renumbered 6.1→6.3 so number = execution order, the repo convention.)*
 - **Depends on Epic 5 (done):** the packaged jar + operator flag contract (the sandbox launches the real
   artifact), the Docker shape for the optional compose-side variant.
 - **Execution order is 6.1 → 6.2 → 6.3** (owner 2026-09-12: docs first — the as-built system documented
-  while fresh; the sandbox last as the capstone). 6.1's deployment guide carries the three 5.2 defers
-  (journey-widening evidence pointer, DockerRig note, docker-run recipe) and the ROPC removal-track warning
-  (the party-mode carry-forward, catalog :1297); its runbooks write the deny-surface/debugging content from
-  test evidence (the sandbox arrives after — a dated addendum story may follow if its observations earn one).
+  while fresh; the sandbox last as the capstone). 6.1 (done) carried the three 5.2 defers as routed — the
+  `docker run` recipe AUTHORED in its deployment guide (BH15 resolved), the BH6 base-image policy DOCUMENTED
+  (the mutable-tag arm, resolved), and the journey-widening evidence POINTER + the BH7 DockerRig note both
+  visibly re-homed to 6.2 in the deferred-work ledger (the decisions remain 6.2's) — plus the ROPC
+  removal-track warning (the party-mode carry-forward, catalog row OBS-033); its runbooks wrote the
+  deny-surface/debugging content from test evidence (the sandbox arrives after — a dated addendum story may
+  follow if its observations earn one).
 - **Epic 7 (performance) is independent** — split out 2026-09-12; it authors its own perf-report page, so
   6.1 never waits on numbers.
 - The test-design catalog's E2E-001 row is the AC-level source for 6.2; the sandbox journeys land as dated

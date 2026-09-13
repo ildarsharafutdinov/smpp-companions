@@ -2,8 +2,11 @@
 
 > **Status:** authored by Story 2.2 T9 (2026-08-16) — the NON-CI half of retiring assumption A-1
 > (*"a carrier accepts multiple concurrent binds under one `system_id` and returns each DLR on the
-> socket that submitted the MO/MT"*). Executed before any production cutover; owned by operations
-> with the carrier's integration/lab contact. Not a CI job.
+> socket that submitted the MO/MT"*). Refreshed in place by Story 6.1 T4 (2026-09-13): every claim
+> re-checked against as-built (config keys, the observability surface, the TLS posture, the
+> couple/relay vocabulary); the falsifiable shape — the PASS/FAIL criteria, the DLR-affinity
+> procedure, the oracle exclusion — is unchanged. Executed before any production cutover; owned
+> by operations with the carrier's integration/lab contact. Not a CI job.
 
 ## 1. Oracle — the real carrier (or a conformance SMSC), never the in-JVM mock
 
@@ -22,16 +25,29 @@ genuinely falsifiable against a carrier we do not control.
 ## 2. Preconditions
 
 - The proxy deployed as `companion.reverse.mode-b` against the carrier's endpoint
-  (`companion.reverse.mode-b.smsc` = the carrier lab host:port), plaintext per the carrier's lab
-  policy (TLS is Epic 3; the affinity behavior under test is transport-independent).
-- Two or more test ESME client connections available (two shells running the legacy test client, or
-  two socket handles from `smpp-tools`), each able to submit `submit_sm`.
+  (`companion.reverse.mode-b.smsc.host` / `companion.reverse.mode-b.smsc.port` = the carrier lab
+  host:port; Mode B additionally requires the `companion.reverse.mode-b.acknowledged=true`
+  opt-in and boots with the plaintext-mode WARN banner). The SMSC leg is plaintext in EVERY
+  reverse cell (the [B] topology: the mode describes the internet leg; the SMSC leg is always
+  the trusted plaintext dial), so the lab deployment needs no carrier-side TLS regardless of
+  cell — and the affinity behavior under test is transport-independent. The full launch
+  walkthrough, both packaged shapes (JAR and the canonical `docker run`), is the
+  [deployment guide](deployment-guide.md)'s.
+- Two or more test ESME client connections available — any SMPP 3.4 client capable of holding
+  two concurrent `bind_transceiver` sessions and submitting `submit_sm` on each (two shells,
+  two client processes). No specific client tool is prescribed; the repo's Kannel sandbox rig
+  (Story 6.3) will offer one when it exists, but the oracle is the carrier, not the client.
 - Approval from the carrier for concurrent binds under ONE shared test `system_id` (the point of
   A-1 — state this explicitly in the lab request; some carriers reject it by policy, which is
   itself a FAIL result, see §4).
 - Packet capture on the proxy host (`tcpdump -i any -w a1.pcap port <carrier-port>`) or the
-  carrier's own message traces, plus the proxy's own logs (the SpliceObserver counters land with
-  Epic 4; today the relay logs + pcap are the evidence).
+  carrier's own message traces, plus the proxy's own observability surface: the `bind_accept` /
+  `bind_reject` JSON log lines (each names the `system_id`; a reject carries the verdict) and
+  the `/metrics` counters — on a reverse cell the accept counter is
+  `relay_binds_unknown_total` (the `relay_binds_accepted_total` series is forward-only),
+  beside `relay_pdus_total{direction}` and `relay_connections_closed_total{direction,reason}`.
+  The full log-event and metrics reference is [runbooks.md](runbooks.md); the scrape endpoint is
+  loopback-only (in the Docker shape, in-container via `docker exec` of the image's own java).
 
 ## 3. PASS criterion (explicit, measurable)
 
@@ -79,13 +95,18 @@ For binds A and B (same `system_id`, both ROK, both coupled through the proxy):
 4. Cross-check neither direction ever observes the other's marker (zero cross-bleed).
 
 The proxy must be IN the path for both binds (both connections are proxy↔carrier legs of two
-coupled pairs) — the assertion exercises the full chain: legacy client → proxy splice → carrier
-socket affinity → DLR → proxy splice → the originating legacy client.
+coupled pairs) — the assertion exercises the full chain: legacy client → the proxy's coupled
+pair → carrier socket affinity → DLR → the same coupled pair → the originating legacy client.
 
 ## 6. Evidence + records
 
 - The pcap (or carrier trace) showing: both `bind_transceiver`/`bind_transceiver_resp` ROK pairs
   with the same `system_id`, and each DLR's TCP stream matching its submit's stream.
+- The proxy's own log/metrics for the run window: the two `bind_accept` couple lines (one per
+  pair, naming the shared `system_id`), `relay_pdus_total{direction}` advancing on both legs per
+  submit/DLR round, and — should any bind deny — the `bind_reject` line with its verdict and the
+  close counters (the deny-surface table in [runbooks.md](runbooks.md) names where each flavor
+  surfaces: wire vs. log vs. metric).
 - Timestamps, the shared test `system_id`, the carrier lab endpoint, proxy version/commit.
 - The PASS/FAIL verdict recorded against this plan (dated) in the run's ops log; on FAIL, the
   §4 escalation.

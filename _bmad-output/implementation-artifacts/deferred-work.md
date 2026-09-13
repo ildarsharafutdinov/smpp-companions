@@ -774,18 +774,48 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `5-2-distroless-docker.md`
   summary: Packaged-shape e2e covers the reverse-B allow journey only — mode A/C cells and auth-DENY journeys have no e2e row in EITHER shape. The Docker parity claim (DEPLOY-005) rests on the smoke journeys plus structural sameness (one jar, one arg channel, one flag set); DENY-adjacent outcomes in the Docker shape are pinned only as startup refusals (DEPLOY-009, the AD-17 zero-branch refusal), never as an in-session auth-deny relay round.
   evidence: 5.2 T3/T4 suite scope (`DockerImageBootSmokeTest`, `DockerSecretsE2eTest` — both launch the reverse-B cell); the DEPLOY-005/015 catalog markers' scope-honesty notes (2026-09-12). Same scope in the JAR shape since 5.1 (`PackagedBootSmokeTest`). Epic 6 owns the final conformance run on the packaged shapes — natural home for widening the journey matrix if wanted.
+  **↳ 2026-09-13 (Story 6.1 T4): VISIBLY RE-HOMED to 6.2 — no journey was widened by 6.1.** The
+  evidence POINTER the 6.1 deployment guide owed is landed:
+  `docs/deployment-guide.md` § "What is machine-proven about these shapes" states the exact scope
+  (DEPLOY-015/005 reverse-B allow-path + the DEPLOY-009 startup refusals; "mode A and mode C
+  cells have no e2e row in either shape, and neither do auth-DENY journeys") and names the
+  widening itself as "Story 6.2's explicit decision to make (deferred-work, the 5.2 close-out)".
+  The decision now lives nowhere else — 6.2 takes it or explicitly drops it.
 - source_spec: `5-2-distroless-docker.md`
   summary: `:proxy:dockerImage` is deliberately OUTSIDE the `build`/`check` graph — the image lives in the Docker daemon, invisible to Gradle, so a tracked output would UP-TO-DATE-skip after a `docker rmi`/daemon restart and silently skip rebuilds; docker's own layer cache is the incrementality. The E2E suites build the image themselves via Testcontainers `ImageFromDockerfile` from the same assembled context (`:proxy:assembleDockerContext`, cacheable, daemon-free — that one IS wired into `test`).
   evidence: 5.2 T2/T3 spec Implementation Notes; `buildSrc/src/main/kotlin/smpp/deploy/DockerImageTask.kt` (not cacheable, no task wiring) vs `AssembleDockerContextTask.kt`. Recorded so a future story does not "fix" this into `check` (a daemon-less CI would break) — if release/publish tooling ever lands (explicitly untouched, owner 2026-09-11), it owns the decision of when the image builds.
 - source_spec: `5-2-distroless-docker.md`
   summary: The distroless base image is pinned only by the mutable tag `gcr.io/distroless/base-debian12:nonroot` — no digest pin and no dated owner policy on base-image drift; everything else in the deploy shape is deliberately pinned (JDK via asdf/toolchain, flags via the contract page, module set via jdeps), but a rebuild after an upstream push can change glibc, the base env, and the recorded size/cold-start actuals silently.
   evidence: 5.2 review round 1 (BH6, 2026-09-12): `proxy/src/docker/Dockerfile:18`. Digest pinning trades CVE-freshness (distroless base updates) for reproducibility — an owner decision that belongs with the release/publish-tooling stance (explicitly out of scope, owner 2026-09-11), not a direct correction of a demonstrated defect.
+  **✅ RESOLVED 2026-09-13 (Story 6.1 T2 authored the policy; marker added at T4): the DOCUMENT
+  arm — the ratified default, no dispatch-time owner amendment existed in this run.**
+  `docs/deployment-guide.md` § "Base-image policy — mutable tag, documented (BH6)" records the
+  dated owner decision (2026-09-12): keep the mutable tag, document the CVE-freshness vs
+  rebuild-reproducibility tradeoff inline, and name the release/publish tooling (owner stance
+  2026-09-11: untouched) as the future home of any digest pin — with the interim operator
+  remediation (pin the digest in your own pipeline, knowingly giving up the freshness half).
+  No digest was pinned; the Dockerfile is unchanged.
 - source_spec: `5-2-distroless-docker.md`
   summary: The `DockerRig` inner class (~200 lines: close/connectLegacy/cellArgs/launchReverseBCell/assertContextAssembled/awaitStartupSummary/stdout/stderr/execProbe/assertRokBindResp) is duplicated wholesale between `DockerImageBootSmokeTest` and `DockerSecretsE2eTest` and has already drifted (T4 grew a live-inspect `isRunning`/`exitCode` pair; T3 still calls `container.isRunning()`).
   evidence: 5.2 review round 1 (BH7, 2026-09-12). The repo's own precedent (the 4.2 fixture triplication, resolved 2026-09-05) consolidates into `testsupport/` before the NEXT consumer — Epic 6's conformance run on the packaged shapes would be the third; fold it there.
+  **↳ 2026-09-13 (Story 6.1 T4): VISIBLY RE-HOMED to 6.2 (per the story's routing — 6.1 owns a
+  pointer, not the consolidation).** The deployment guide's evidence section names it as 6.2's:
+  "6.2 also owns the DockerRig test-fixture consolidation (BH7) before its third consumer."
+  6.1 authored zero test code and consolidated nothing (docs-only story); the duplication and
+  its drift stand exactly as this entry records them until 6.2.
 - source_spec: `5-2-distroless-docker.md`
   summary: No operator-facing `docker run` recipe exists for the Docker shape — the canonical invocation (world-readable-or-65532-owned `/run/secrets` mounts, published SMPP port only, no-args → AD-17 refusal, `docker stop` → exit 143) lives only in test code and story/catalog notes; the flag-contract page covers flags and build invocation but not the run itself.
   evidence: 5.2 review round 1 (BH15, 2026-09-12): `docs/operator-jvm-flag-contract.md` (trued for flags/artifacts only) vs the rigs' `launchReverseBCell` mounts. Epic 6 owns the operator docs surface — carry this there as the deploy-guide seed.
+  **✅ RESOLVED 2026-09-13 (Story 6.1 T2 authored the recipe; marker added at T4): the canonical
+  `docker run` recipe EXISTS as operator commands — `docs/deployment-guide.md` § "Shape 2 — the
+  canonical `docker run` recipe"** (the `/run/secrets` read-only mounts with the UID-65532
+  readability rule and the SEC-060 refusal texts for wrong perms/missing/typo'd mounts, the
+  published SMPP port only with the no-`-p 9090` rationale, the no-args AD-17 zero-branch
+  refusal quoted, `docker stop --timeout 30` → exit 143 with the 137 explanation, no
+  `--memory` cap below the AD-30 budget, no env flag-fork). Written with no Testcontainers and
+  no Java, and PROVEN not transcribed: T2's zero→running mutation executed the page's own text
+  live on the dev box (boot to `startup_summary` + the Mode B WARN, `docker port` showing only
+  2775, exit 143), including four refusal arms executed live.
 
 ## Deferred from: owner note during the docs/ru translation round (2026-09-13)
 
