@@ -817,6 +817,12 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   live on the dev box (boot to `startup_summary` + the Mode B WARN, `docker port` showing only
   2775, exit 143), including four refusal arms executed live.
 
+## Deferred from: code review of 6-1-operator-docs-surface (2026-09-13)
+
+- source_spec: `6-1-operator-docs-surface.md`
+  summary: ru configuration page — the retired-keys section inverts the fail-closed causality («Несмотря на `ignoreUnknownFields = false`» = "despite", vs the original's because-of claim at `docs/configuration.md:307-310`) and drops two normative sentences ("not a deprecation cycle — there are no transition shims and no dual-bind windows"; "speculative" in the typo'd/speculative/retired triad).
+  evidence: Review round 1, finding #3 (medium, verified against the EN original and the ru page :308-311 by all four layers independently). The fix was deliberately left unapplied at the owner's direction ("fix all except 3"); the story then closed with the item outstanding ("flip the story", 2026-09-13) — the ru wording is owner-governed terminology per the docs/ru glossary workflow.
+
 ## Deferred from: owner note during the docs/ru translation round (2026-09-13)
 
 - source_spec: none

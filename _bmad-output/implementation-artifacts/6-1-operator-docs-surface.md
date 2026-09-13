@@ -2,7 +2,7 @@
 title: 'Story 6.1 — the operator docs surface: config reference, per-mode deployment guide, runbooks, cipher policy (AD-31/OPS-1)'
 type: 'feature'
 created: '2026-09-12'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 baseline_commit: e30862d2a92996e82650a87432d571c672b73286
 review_loop_iteration: 0
@@ -104,7 +104,7 @@ context:
 
 - [x] [Review][Patch] **[medium]** Stale ru A-1 translation contradicts the refreshed normative original — the pre-T4 claims still live while the English page moved on: the retired compound key `companion.reverse.mode-b.smsc` (startup refusal if copied), "TLS — Epic 3", the nonexistent `smpp-tools` client, "счётчики SpliceObserver приедут с Epic 4", the "splice прокси" vocabulary, and the missing §6 evidence bullet; `docs/README.md` indexes the page as a current translation [docs/ru/a-1-carrier-test-plan.md:28-38] — re-translate §2/§5/§6 against the refreshed original (originals normative).
 - [x] [Review][Patch] **[medium]** Story record under-reports its own change-set — the File List names nine files while the range delivers twelve content files: `docs/ru/configuration.md`, `docs/ru/a-1-carrier-test-plan.md`, `docs/ru/operator-jvm-flag-contract.md` (all created in the T1 commit) and the new readability section in `deferred-work.md` are unlisted; the Verification command's expected set omits `sprint-status.yaml`, which the story-range diff contains (the tracker flip landed with T1) [6-1-operator-docs-surface.md:111-112,135-146] — record them (this omission is how the stale ru A-1 page escaped the sweep).
-- [ ] [Review][Patch] **[medium]** ru configuration page inverts the retired-keys causality and drops two normative sentences — «Несмотря на `ignoreUnknownFields = false`» ("despite") vs the original's because-of claim; "not a deprecation cycle — there are no transition shims and no dual-bind windows" and "speculative" in the typo'd/speculative/retired triad are absent [docs/ru/configuration.md:308-311] — fix the causality word, restore the dropped content.
+- [x] [Review][Patch] **[medium]** ru configuration page inverts the retired-keys causality and drops two normative sentences — «Несмотря на `ignoreUnknownFields = false`» ("despite") vs the original's because-of claim; "not a deprecation cycle — there are no transition shims and no dual-bind windows" and "speculative" in the typo'd/speculative/retired triad are absent [docs/ru/configuration.md:308-311] — fix the causality word, restore the dropped content. **Deferred to owner at story close (2026-09-13, "fix all except 3" + "flip the story") — the ru wording is owner-governed terminology; deferred-work entry added.**
 - [x] [Review][Patch] **[low]** Docker-shape expected-observation paragraph enumerates `startup_summary` before the Mode B banner — reversed from the JAR section's pinned "in this order" (banner first, the ordering T2's live execution corrected) [docs/deployment-guide.md:211-212].
 - [x] [Review][Patch] **[low]** Exit-code table lacks `130` — SIGINT (Ctrl+C) runs the same graceful walk and the JVM exits 128+2; no explicit exit code exists in main, so 130 is what an operator sees, undocumented beside 143/1/137 [docs/runbooks.md:285-291].
 - [x] [Review][Patch] **[low]** Config channel 4 lists `./application.yml` and `./config/application.yml` without their relative precedence — conflicting keys silently resolve to `./config/` [docs/configuration.md:46].
