@@ -10,8 +10,9 @@
 > by owner decision (the docs/ru round is a separate later effort).
 
 The proxy is headless — documentation IS the operator surface (OPS-1): no UI, no management API,
-no dashboard. Six pages, one fact per home: every page states what it does NOT cover and
-cross-links the owning page instead of duplicating it, which is what keeps six pages coherent
+no dashboard. Six pages, one fact per home: pages cross-link the owning page instead of
+duplicating it (and state what they do NOT cover where a wrong home would mislead), which is
+what keeps six pages coherent
 when nothing in the repository parses them (owner rule 2026-09-10: no Java test's oracle is a
 markdown page — page↔reality coherence is a review-time duty; a change to anything these pages
 document goes through a story that touches the code AND the page).

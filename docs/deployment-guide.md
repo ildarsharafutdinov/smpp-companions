@@ -108,6 +108,10 @@ $ keytool -importcert -noprompt -alias idp-ca -file <your-idp-ca.pem> \
 $ chmod 0444 secrets/oidc-client-secret secrets/idp-truststore.p12
 ```
 
+`0444` is what the Docker shape's UID-65532 read requires (see the mount rationale in the
+Docker section below). On the JAR shape the service user owns these files, so owner-only `0400`
+is the tighter posture there — prefer it on a multi-user host.
+
 The store password protects the PKCS12's integrity only — the material inside is public
 certificates. A trust store NEVER falls back to JDK `cacerts` (AD-13): the path is required, a
 store that will not load refuses startup, and so does one with zero trusted entries (SEC-050).
@@ -208,8 +212,9 @@ $ docker run -d --name smpp-proxy \
       --companion.reverse.mode-b.oidc.max-in-flight=64
 ```
 
-Expected observations, with `docker logs smpp-proxy`: the same two lines as the JAR shape — the
-`startup_summary` line (here naming `"smpp_bind_host":"0.0.0.0"`) and the Mode B WARN banner.
+Expected observations, with `docker logs smpp-proxy`: the same two lines as the JAR shape, in
+the same order — the Mode B WARN banner, then the `startup_summary` line (here naming
+`"smpp_bind_host":"0.0.0.0"`).
 Then:
 
 ```console

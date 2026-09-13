@@ -43,7 +43,9 @@ Five supply channels, in Spring Boot's precedence order (highest first):
    `client-secret-path`, `trust-store.path`, `cert-path`, `key-path` — so no value key exists for
    an environment variable to bind (owner decision 2026-09-11, "env is accepted" as a channel:
    a secret VALUE placed in the environment is inert by construction, honored nowhere).
-4. **An `application.yml` beside the jar** (`./application.yml`, `./config/application.yml`).
+4. **An `application.yml` beside the jar** (`./application.yml`, `./config/application.yml` —
+   the `config/` subdirectory wins if both exist, so a key present in both silently resolves to
+   the `./config/` file).
 5. **The jar's own `application.yml`** — lowest precedence; it ships the common-key defaults
    below. Its branch templates are *commented documentation*: an uncommented branch key inside
    the jar would bind that branch for every deployment of that jar, so the shipped file never
@@ -117,7 +119,7 @@ well above the legitimate cold path and the 4s deadline, well below "forever".
 | `companion.memory.max-inbound-depth` | int | `64` | ≥ 1 (AD-30) |
 | `companion.memory.concurrent-pairs` | int | `1024` | ≥ 1 (AD-30) |
 | `companion.memory.safety-factor` | double | `1.5` | finite and ≥ 1.0 (AD-30; `@DecimalMin` plus an explicit Infinity refusal) |
-| `companion.memory.budget-check` | enum `fail` \| `warn` | `fail` | unknown enum tokens refuse the bind; any non-`warn` value (including absent) is treated as `fail` |
+| `companion.memory.budget-check` | enum `fail` \| `warn` | `fail` | unknown enum tokens refuse the bind; any non-`warn` bound value — a null/absent bind included — is treated as `fail` |
 
 Netty allocates every SMPP PDU buffer off-heap; the direct-memory cap is **derived**, not
 free-standing:
@@ -252,10 +254,12 @@ WARN lines (since Story 5.1 T3).
 ### The `TrustStore` sub-record (every trust-store key, all cells)
 
 `path` required, `password` optional. The store must load as a real trust store at bind time —
-the 5-state PKIX refusal matrix: blank path / not-a-path / missing / directory / unreadable /
-empty (zero bytes) / wrong format or wrong password / zero `trustedCertEntry` entries each refuse
-startup (SEC-050, message naming the path; **PKCS12 is expected on JDK 9+ — JKS is not
-supported**). The trust store **never falls back to JDK `cacerts`** (AD-13/AD-26): use a minimal
+the 5-state PKIX refusal matrix (SEC-050, decision D5), every state refusing startup with the
+path named: **(1) absent/blank** path; **(2) wrong path** — not a valid path, missing,
+unreadable, or a directory; **(3) empty** (zero bytes); **(4) load failure** — wrong format or
+wrong password at the real `KeyStore.load` (a directory lands here too — it passes exists and
+isReadable, then fails the load); **(5) zero `trustedCertEntry` entries** (**PKCS12 is expected
+on JDK 9+ — JKS is not supported**). The trust store **never falls back to JDK `cacerts`** (AD-13/AD-26): use a minimal
 single-purpose store holding your issuing-CA roots. Trusting public PKI for a peer is an explicit
 opt-in with a loud warning, never the default — the runbook entry lives in
 [`runbooks.md`](runbooks.md).

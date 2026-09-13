@@ -8,7 +8,7 @@
      item 3 is literally this proxy). The three 5.2-closure defers re-homed here stay here (journey-widening,
      DockerRig consolidation, docker-run recipe). Same-date execution order set: docs → conformance → sandbox
      (the sandbox story, created first as 6.1, renumbered to 6.3 — see Stories). -->
-<!-- Regenerated to as-built 2026-09-13 (Story 6.1 T4): 6.1 is DONE — the AD-31 surface exists under docs/
+<!-- Regenerated to as-built 2026-09-13 (Story 6.1 T4): 6.1 is implemented (in code review) — the AD-31 surface exists under docs/
      (README.md indexes configuration.md, deployment-guide.md, runbooks.md, cipher-allowlist-policy.md beside
      the flag-contract page; a-1-carrier-test-plan.md refreshed in place); the 5.2 defers it carried are
      ledgered (BH15 authored + BH6 documented = resolved; journey-widening + BH7 visibly re-homed to 6.2). -->
@@ -24,8 +24,9 @@ jSMPP); the composed two-instance forward↔reverse flow (E2E-001) and the packa
 their final conformance. Documentation: the complete operator surface per AD-31/OPS-1 — config reference,
 per-mode A/B/C deployment guide (carrying the ROPC removal-track warning and the `docker run` recipe),
 runbooks, cipher-allowlist policy, Mode B warning text. Status: Epics 1–5 done (`2f2b0e8`); Epic 7
-(performance) split out the same day — independent of this epic; **Story 6.1 (the docs half) done
-2026-09-13 — the operator surface exists as-built under `docs/` (see Stories)**.
+(performance) split out the same day — independent of this epic; **Story 6.1 (the docs half)
+implemented 2026-09-13, in code review — the operator surface exists as-built under `docs/`
+(see Stories)**.
 
 ## Stories
 
@@ -36,7 +37,7 @@ renumbered 6.1→6.3 so number = execution order, the repo convention.)*
   `docker run` recipe seed, BH15), runbooks, cipher-allowlist policy page, Mode B warning text; the
   base-image digest-pin policy decision (BH6); `docs/a-1-carrier-test-plan.md` already exists
   (OBS-035/036/037) — refresh, don't re-author. The perf-report page is NOT this story's — Epic 7 authors it.
-  **DONE 2026-09-13 (docs-only, four tasks): `docs/configuration.md` (every live `companion.*` key, the
+  **IMPLEMENTED 2026-09-13, in code review (docs-only, four tasks): `docs/configuration.md` (every live `companion.*` key, the
   AD-17 matrix, the retired keys), `docs/deployment-guide.md` (per-cell walkthroughs both shapes, the
   canonical `docker run` recipe, the ROPC three-parter + DAG prerequisite, the BH6 DOCUMENT arm),
   `docs/runbooks.md` + `docs/cipher-allowlist-policy.md` (the deny surface, log/metrics references, Mode A

@@ -58,6 +58,7 @@ Two wire contracts govern everything below, and they are deliberately different:
 | Retry-bind while a handshake is in flight | proxy | the generic deny answering the RETRY's sequence, then close | nothing at default level | close `{direction="INGRESS",reason="BIND_REJECTED"}` |
 | Pre-couple non-bind PDU on the client leg (pipelined `submit_sm`, `enquire_link`, …) | proxy | **no PDU** — bare close | nothing at default level | close `{direction="INGRESS",reason="PRE_COUPLE_NON_BIND_PDU"}` on the violating leg |
 | Pre-couple non-bind PDU on the SMSC leg (e.g. a `deliver_sm` before `bind_resp`) | proxy | the SMSC leg closes bare; the client leg then receives the generic `0x0000000D` deny (the bind died unanswered — the collapse) | nothing at default level | close `{direction="EGRESS",reason="PRE_COUPLE_NON_BIND_PDU"}` (the violating leg) + `{direction="INGRESS",reason="EGRESS_CONNECT_FAILED"}` (the collapsed client leg) |
+| Connection-cap refusal — an accept beyond `companion.memory.concurrent-pairs` (F13) | proxy | **no PDU** — the just-accepted socket is closed before any bind is read | WARN `connection refused: companion.memory.concurrent-pairs=<n> is exhausted (F13 cap) — closing <peer>` | none by design (pre-bind identity is untrusted and the observer seam is bind-scoped; AD-19 cardinality) |
 | Accepted socket that never binds (or a silent SMSC after the forward) — the pre-couple idle watchdog | proxy | **no PDU** — bare close at `companion.bind.pre-couple-idle-timeout` | WARN `pre-couple idle timeout elapsed …` (two variants: never-bound socket / pair still walking the handshake) | close `{direction="INGRESS",reason="PRE_COUPLE_NON_BIND_PDU"}` |
 | Shutdown drain deadline expired with pairs still live | proxy (shutdown) | legs force-closed | WARN `shutdown drain deadline (<timeout>) expired — force-closed <n> live pair(s) as SHUTDOWN_DRAIN …` | close `{reason="SHUTDOWN_DRAIN"}` on both legs of every force-closed pair |
 
@@ -219,7 +220,7 @@ create a series; there is no `command_id` label, no channel label, no free-form 
 |---|---|---|---|
 | `relay_pdus_total` | counter | `direction` ∈ `INGRESS`\|`EGRESS` | framed PDUs relayed across coupled pairs, per leg. Post-couple only: the bind handshake (the verbatim forward, the deny synthesis, the `generic_nack` forward) is uncounted by design |
 | `relay_binds_accepted_total` | counter | `system_id` (pre-registered for the forward cell's routing-table ids ONLY) | binds whose ROK couple completed |
-| `relay_binds_rejected_total` | counter | — (unlabeled; the verdict type is log-only — AD-33 collapses both `Deny*` permits to one wire status, a verdict label would fan a closed 3-value set for no operator value) | binds denied by a RETURNED `Deny*` verdict |
+| `relay_binds_rejected_total` | counter | — (unlabeled; the verdict type is log-only — AD-33 collapses both `Deny*` verdicts to one wire status, a verdict label would fan a closed 3-value set for no operator value) | binds denied by a RETURNED `Deny*` verdict |
 | `relay_binds_unknown_total` | counter | — | bind events whose `system_id` is outside the routing table (on reverse cells: every accept and every reject) |
 | `relay_connections_closed_total` | counter | `direction` × `reason` (the full 2×16 grid) | legs closed, by close path |
 
@@ -286,6 +287,7 @@ validated — see [configuration.md](configuration.md)): keep `drain-timeout` st
 | Code | Meaning |
 |---|---|
 | `143` | SIGTERM (`kill -TERM`) or `docker stop` with the walk completed — the JVM convention for a hook-completed graceful shutdown. The expected stop outcome. |
+| `130` | SIGINT (`Ctrl+C` in the foreground) — the same graceful walk runs; the JVM convention 128+2. Not a crash. |
 | `1` | A startup refusal (every fail-fast in [configuration.md](configuration.md)) or a boot crash — nothing partial survives: nearly all refusals fire at validation, before any listener binds, and the few lifecycle-phase failures (e.g. a metrics port collision) stop what had started on the way out. |
 | `137` | SIGKILL — `kill -9`, `docker kill`, a container OOM kill (see the Docker memory-cap rule in the [deployment guide](deployment-guide.md)), or a `docker stop` whose timeout expired before the walk finished (use `--timeout 30`; the guide explains why). |
 
