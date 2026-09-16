@@ -229,8 +229,13 @@ public final class TestCompanionConfigs {
         return props.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).toArray(String[]::new);
     }
 
-    /** {@code --key=value} args for {@code SpringApplicationBuilder.run(...)}. */
-    String[] args() {
+    /**
+     * {@code --key=value} args for {@code SpringApplicationBuilder.run(...)}. Public since Story
+     * 6.2 T2 &mdash; the composed-chain e2e suite ({@code bootstrap/ComposedChainE2eTest}) boots two
+     * FULL contexts from the forward-C/reverse-C bases cross-package (run args outrank
+     * application.yml &mdash; the {@code MetricsEndpointTest} lesson; {@code .properties()} does not).
+     */
+    public String[] args() {
         return props.entrySet().stream().map(e -> "--" + e.getKey() + "=" + e.getValue()).toArray(String[]::new);
     }
 }
