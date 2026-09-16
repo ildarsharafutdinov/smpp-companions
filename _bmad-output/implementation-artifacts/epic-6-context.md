@@ -24,6 +24,12 @@
      DEPLOY-005 amended, count stays 254; ledger resolutions BH7 / journey-widening / ROPC-through-TLS).
      Zero main-source and zero Gradle/buildSrc changes by contract; COMP-1's independent-stack point and
      REL-3's composed drain (SIGTERM/docker stop → 143, both shapes) are stated on the markers. -->
+<!-- Flipped done 2026-09-16 (review round 1 closed same date, fixes at 3bc56f2): 10 review fixes
+     applied + 2 owner ratifications (the REL-3 forward-first drain asymmetry — E2E-001 marker
+     point 7; the assertRokBindResp one-prose unification), 2 defers to the ledger (a standing
+     one-DockerRig structural guard; the daemon-less observation), 9 findings rejected with
+     evidence (jSMPP 3.0.2's 60s enquireLinkTimer default bytecode-verified twice). 16 targeted
+     rows re-verified green, both Docker suites included. -->
 
 ## Goal
 
@@ -38,8 +44,9 @@ per-mode A/B/C deployment guide (carrying the ROPC removal-track warning and the
 runbooks, cipher-allowlist policy, Mode B warning text. Status: Epics 1–5 done (`2f2b0e8`); Epic 7
 (performance) split out the same day — independent of this epic; **Story 6.1 (the docs half) done
 2026-09-13 — the operator surface exists as-built under `docs/` (see Stories); Story 6.2 (the
-composed-conformance half) as-built complete 2026-09-16 — E2E-001 landed as three rungs, the
-journey matrix widened per the ratified decision, the operator docs trued (see Stories)**.
+composed-conformance half) done 2026-09-16, review round 1 closed same date — E2E-001 landed as
+three rungs, the journey matrix widened per the ratified decision, the operator docs trued
+(see Stories)**.
 
 ## Stories
 
@@ -63,7 +70,8 @@ renumbered 6.1→6.3 so number = execution order, the repo convention.)*
   (deferred-work BH7), the packaged-shape journey-widening decision (mode A/C cells + auth-DENY journeys —
   deferred-work 5.2 close-out #1), COMP-1/REL-3 finals. Runs BEFORE the sandbox, so its rows ride the
   in-JVM mocks/jSMPP by design (E2E-001's own technique) — no sandbox dependency.
-  **As-built complete 2026-09-16 (T1–T4; zero main-source, zero Gradle changes): T1 folded the rig
+  **DONE 2026-09-16 (T1–T4; review round 1 closed same date — 10 fixes + 2 owner ratifications,
+  2 ledger defers; zero main-source, zero Gradle changes): T1 folded the rig
   (`testsupport/DockerRig`, BH7 RESOLVED — drift reconciled, both 5.2 suites byte-identical, the third
   consumer landed at T3 as `launchComposedModeCChain`); T2/T3 landed E2E-001 as THREE suites sharing one
   journey home (`testsupport/ComposedJourney`) — the in-JVM rung `ComposedChainE2eTest` (two full boots,
