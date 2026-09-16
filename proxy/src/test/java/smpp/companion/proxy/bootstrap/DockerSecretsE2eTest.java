@@ -13,19 +13,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.model.ImageHistory;
-import com.sun.net.httpserver.HttpsServer;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -34,15 +31,11 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.Container;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
-import smpp.companion.proxy.relay.MockSmsc;
+import smpp.companion.proxy.testsupport.DockerRig;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
-import smpp.companion.proxy.testsupport.TokenIdpStandIn;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -51,7 +44,10 @@ import static org.assertj.core.api.Assertions.fail;
  * Story 5.2 T4 &mdash; the Docker secrets E2E (DEP-1, FR-DEPLOY-4): the SAME rig as {@link
  * DockerImageBootSmokeTest} (the T2 distroless image over the one boot jar, the host-access
  * satellites, the cp'd {@link DockerContainerProbe}) proving the secrets contract end to end in
- * the container shape.
+ * the container shape. The container rig itself lives in {@link DockerRig} ({@code testsupport/},
+ * Story 6.2 T1 — the BH7 fold; this suite and {@code DockerImageBootSmokeTest} are the folded
+ * consumers); this suite drives the rig's T4 knobs (container env, secret-file mount modes, the
+ * stand-in IdP's form capture).
  *
  * <p><b>(a) DEPLOY-007 &mdash; mounted files, non-root UID, ready.</b> The cell boots with its two
  * secret files docker-cp'd to {@code /run/secrets} world-readable (the Design Note's arm: an
@@ -114,38 +110,13 @@ import static org.assertj.core.api.Assertions.fail;
         + "any image layer")
 class DockerSecretsE2eTest {
 
-    /** The assembled T2 context ({@code :proxy:assembleDockerContext} output — the suite's input). */
-    private static final Path DOCKER_CONTEXT = Path.of("build", "docker-image");
-
-    private static final Path DOCKERFILE_IN_CONTEXT = DOCKER_CONTEXT.resolve("Dockerfile");
-
-    private static final Path JLINK_RUNTIME_IN_CONTEXT = DOCKER_CONTEXT.resolve("jlink-image");
-
-    private static final Path PROXY_JAR_IN_CONTEXT = DOCKER_CONTEXT.resolve("proxy.jar");
-
-    /**
-     * The compiled test classes' {@code smpp} tree &mdash; {@code docker cp}d to {@code /smpp} so
-     * the image's own java can run {@link DockerContainerProbe} (row (a)'s readability stat runs
-     * under the container's UID).
-     */
-    private static final Path TEST_CLASSES_SMPP_TREE = Path.of("build", "classes", "java", "test", "smpp");
-
     /**
      * The image this suite builds and boots &mdash; the SAME three-entry context {@code
      * :proxy:dockerImage} assembles (one image definition with T3's suite; own tag so each suite's
-     * reaper-tagged lifecycle stays its own). {@link ImageFromDockerfile} resolves lazily, once
+     * reaper-tagged lifecycle stays its own). {@code ImageFromDockerfile} resolves lazily, once
      * per test JVM.
      */
-    private static final ImageFromDockerfile IMAGE = new ImageFromDockerfile("smpp-proxy:t4-suite")
-            .withFileFromPath("Dockerfile", DOCKERFILE_IN_CONTEXT)
-            .withFileFromPath("jlink-image", JLINK_RUNTIME_IN_CONTEXT)
-            .withFileFromPath("proxy.jar", PROXY_JAR_IN_CONTEXT);
-
-    /** The image's ENTRYPOINT java path (exec'd for the in-container probe). */
-    private static final String ENTRYPOINT_JAVA = "/opt/jre/bin/java";
-
-    /** The in-container probe's FQCN (docker-cp'd as /smpp/companion/...). */
-    private static final String PROBE_FQCN = "smpp.companion.proxy.bootstrap.DockerContainerProbe";
+    private static final ImageFromDockerfile IMAGE = DockerRig.suiteImage("smpp-proxy:t4-suite");
 
     /** The DEP-1 mount point: the only secret channel the container shape honors. */
     private static final String SECRETS_DIR = "/run/secrets";
@@ -154,8 +125,11 @@ class DockerSecretsE2eTest {
 
     private static final String TRUST_STORE_PATH = SECRETS_DIR + "/idp-truststore.p12";
 
-    /** The mounted client-secret FILE's value — the credential the row proves is honored. */
-    private static final String FILE_SECRET_VALUE = "docker-smoke-secret";
+    /**
+     * The mounted client-secret FILE's value — the credential the row proves is honored (the
+     * folded rig's own mount value, aliased so the rows keep their name for it).
+     */
+    private static final String FILE_SECRET_VALUE = DockerRig.MOUNTED_CLIENT_SECRET_VALUE;
 
     /**
      * The container-env decoy value — secret MATERIAL deliberately injected through the channel
@@ -168,13 +142,7 @@ class DockerSecretsE2eTest {
 
     // ── the pinned stdout markers (identical literals to the T3/JAR-shape smokes) ────────────────
 
-    private static final String STARTUP_SUMMARY_MARKER = "\"event\":\"startup_summary\"";
-
-    /** The bind_resp wire contract, pinned as a LITERAL (the RelayA1SmokeTest discipline). */
-    private static final int BIND_TRANSCEIVER_RESP = 0x80000009;
-
-    /** The container boot/refusal deadline (image boot + Spring on a loaded CI runner). */
-    private static final long BOOT_DEADLINE_MILLIS = 90_000;
+    private static final String STARTUP_SUMMARY_MARKER = DockerRig.STARTUP_SUMMARY_MARKER;
 
     /**
      * The committed fixture PKI directory ({@code src/test/resources/keycloak/certs/}) &mdash;
@@ -218,13 +186,14 @@ class DockerSecretsE2eTest {
             + "files (in-container stat as that UID), and a correctly-configured run's docker "
             + "inspect Env carries no secret material at all (SEC-077 Docker arm)")
     void mountedSecretsReachReadyUnderTheNonRootUid() throws Exception {
-        try (DockerRig rig = launchReverseBCell(Map.of(), true, "r--r--r--", null)) {
-            awaitStartupSummary(rig);
+        try (DockerRig rig = DockerRig.launchReverseBCell(
+                IMAGE, dir, "docker-secrets-idp", Map.of(), true, "r--r--r--", null)) {
+            rig.awaitStartupSummary();
 
             // (1) The runtime UID/GID, from the LIVE process (not the image text): docker inspect's
             // State.Pid is the container's PID-1 java as seen by the HOST kernel; its /proc status
             // pins every UID/GID field to the distroless nonroot 65532.
-            long pid = rig.container.getContainerInfo().getState().getPidLong();
+            long pid = rig.container().getContainerInfo().getState().getPidLong();
             assertThat(pid)
                     .as("docker exposes the container's host PID (local daemon — this suite's "
                             + "platform, the PackagedBootSmokeTest /proc stance)")
@@ -244,7 +213,7 @@ class DockerSecretsE2eTest {
             // the probe stats the paths as that UID — mode 0444 exactly as the rig mounted them
             // (the docker-cp mode preservation the (c) unreadable arm turns into a refusal).
             for (String secret : List.of(CLIENT_SECRET_PATH, TRUST_STORE_PATH)) {
-                Container.ExecResult stat = execProbe(rig, "readable", secret);
+                Container.ExecResult stat = rig.execProbe("readable", secret);
                 assertThat(stat.getExitCode())
                         .as("the container's own UID reads <%s> — stderr: <%s>", secret,
                                 stat.getStderr())
@@ -259,7 +228,7 @@ class DockerSecretsE2eTest {
             // carries no secret material — only the base image's own variables. The value channel
             // row (b) deliberately populates is empty here BY CONSTRUCTION (paths ride args, the
             // only secret carrier is the mount).
-            String[] env = rig.container.getContainerInfo().getConfig().getEnv();
+            String[] env = rig.container().getContainerInfo().getConfig().getEnv();
             assertThat(env)
                     .as("the run carries an inspectable env (base-image variables at minimum)")
                     .isNotNull()
@@ -293,15 +262,16 @@ class DockerSecretsE2eTest {
                 "COMPANION_REVERSE_MODEB_OIDC_CLIENTSECRET", ENV_DECOY_VALUE,
                 "COMPANION_REVERSE_MODEB_OIDC_CLIENT_SECRET", ENV_DECOY_VALUE);
         List<String> capturedTokenForms = new CopyOnWriteArrayList<>();
-        try (DockerRig rig = launchReverseBCell(decoyEnv, true, "r--r--r--", capturedTokenForms)) {
+        try (DockerRig rig = DockerRig.launchReverseBCell(
+                IMAGE, dir, "docker-secrets-idp", decoyEnv, true, "r--r--r--", capturedTokenForms)) {
             // (1) INERT, not refused (the owner amendment): no key binds the value, so the boot
             // reaches ready solely on the mounted file-path secrets with the decoy present.
-            awaitStartupSummary(rig);
+            rig.awaitStartupSummary();
 
             // (2) The premise is real, pinned: docker inspect's Env DOES carry the decoy — the
             // /proc/<pid>/environ + inspect leak channel is exactly why DEP-1 forbids the channel.
             String env = String.join("\n",
-                    rig.container.getContainerInfo().getConfig().getEnv());
+                    rig.container().getContainerInfo().getConfig().getEnv());
             assertThat(env)
                     .as("the decoy really is in the container env (the row's premise — the leak "
                             + "channel DEP-1 closes)")
@@ -313,7 +283,7 @@ class DockerSecretsE2eTest {
             // value field that outranked the path (or an env fallback) turns this RED.
             Socket legacy = rig.connectLegacy();
             RelayTestFixtures.writePdu(legacy, RelayTestFixtures.bindRequest(1, "legacy1", "pw123456"));
-            assertRokBindResp(RelayTestFixtures.readPdu(legacy), 1);
+            DockerRig.assertRokBindResp(RelayTestFixtures.readPdu(legacy), 1);
             awaitCapturedForm(capturedTokenForms);
             // CONTENT, not count: a second token fetch landing between the await and a size pin
             // is a non-defect (renewal/retry under the admission cap), so an exactly-once pin
@@ -330,10 +300,10 @@ class DockerSecretsE2eTest {
                     .allSatisfy(form -> assertThat(form).doesNotContain(ENV_DECOY_VALUE));
 
             // (4) And in no stdout/log line either stream (the app never echoes its environment).
-            assertThat(stdout(rig))
+            assertThat(rig.stdout())
                     .as("the decoy value appears in no container stdout line")
                     .doesNotContain(ENV_DECOY_VALUE);
-            assertThat(stderr(rig))
+            assertThat(rig.stderr())
                     .as("the decoy value appears in no container stderr line")
                     .doesNotContain(ENV_DECOY_VALUE);
         }
@@ -348,9 +318,10 @@ class DockerSecretsE2eTest {
     void missingAndUnreadableSecretFilesRefusePreBind() throws Exception {
         // (a) the configured path points at a file that does not exist (only the trust store is
         // mounted — the refusal names the client-secret path, the FIRST oidc content check).
-        try (DockerRig rig = launchReverseBCell(Map.of(), false, null, null)) {
-            long missingExit = awaitContainerExit(rig);
-            String missingOut = stdout(rig) + "\n" + stderr(rig);
+        try (DockerRig rig = DockerRig.launchReverseBCell(
+                IMAGE, dir, "docker-secrets-idp", Map.of(), false, null, null)) {
+            long missingExit = rig.awaitContainerExit();
+            String missingOut = rig.stdout() + "\n" + rig.stderr();
             assertThat(missingExit)
                     .as("the missing-file boot refuses (Spring Boot exits 1 — the manual probe's "
                             + "pinned code)")
@@ -370,9 +341,10 @@ class DockerSecretsE2eTest {
 
         // (b) the file EXISTS but mode 0600 under an owner that is not 65532 (docker cp lands the
         // file root-owned): the non-root JVM's Files.isReadable refuses at startup validation.
-        try (DockerRig rig = launchReverseBCell(Map.of(), true, "rw-------", null)) {
-            long unreadableExit = awaitContainerExit(rig);
-            String unreadableOut = stdout(rig) + "\n" + stderr(rig);
+        try (DockerRig rig = DockerRig.launchReverseBCell(
+                IMAGE, dir, "docker-secrets-idp", Map.of(), true, "rw-------", null)) {
+            long unreadableExit = rig.awaitContainerExit();
+            String unreadableOut = rig.stdout() + "\n" + rig.stderr();
             assertThat(unreadableExit)
                     .as("the unreadable-file boot refuses (exit 1)")
                     .isEqualTo(1L);
@@ -399,7 +371,7 @@ class DockerSecretsE2eTest {
             + "the rig's secret values, and docker history pins the payload to exactly the two "
             + "COPY layers")
     void noSecretMaterialRidesAnyImageLayer() throws Exception {
-        assertContextAssembled();
+        DockerRig.assertContextAssembled();
 
         // (0) Completeness of the marker list: FIXTURE_MATERIAL must be the certs directory's
         // CLOSED set of material files (everything except generate.sh, the regeneration script
@@ -462,242 +434,7 @@ class DockerSecretsE2eTest {
                 .isGreaterThan(100_000_000L);
     }
 
-    // ── the rig: the container + its host-side satellites (the T3 rig + T4's knobs) ─────────────
-
-    /**
-     * Everything one row holds: the distroless container, its captured docker streams, and the
-     * two loopback satellites ({@link MockSmsc} and the docker-reachable IMMEDIATE-allow token
-     * stand-in), both reached through the Testcontainers host-access portal. {@link #close()} is
-     * idempotent and exception-safe (the house rule).
-     */
-    private static final class DockerRig implements AutoCloseable {
-
-        final GenericContainer<?> container;
-        final MockSmsc smsc;
-        final HttpsServer idp;
-        final int bindPort;
-
-        /** The coupled pair's legacy leg (row (b) holds it until the row's assertions are done). */
-        Socket legacy;
-
-        DockerRig(GenericContainer<?> container, MockSmsc smsc, HttpsServer idp, int bindPort) {
-            this.container = container;
-            this.smsc = smsc;
-            this.idp = idp;
-            this.bindPort = bindPort;
-        }
-
-        /** A legacy client on the container's PUBLISHED SMPP port (the RelayA1SmokeTest idiom). */
-        Socket connectLegacy() throws IOException {
-            Socket socket = new Socket(container.getHost(), container.getMappedPort(bindPort));
-            socket.setSoTimeout(10_000);
-            legacy = socket;
-            return socket;
-        }
-
-        @Override
-        public void close() {
-            if (legacy != null) {
-                try {
-                    legacy.close();
-                } catch (IOException ignored) {
-                    // teardown best-effort
-                }
-            }
-            try {
-                container.stop(); // no-op-safe on an already-stopped container
-            } catch (RuntimeException ignored) {
-                // already stopped/removed — Ryuk owns the remainder
-            }
-            try {
-                smsc.close();
-            } catch (Exception ignored) {
-                // already closed
-            }
-            try {
-                idp.stop(0);
-            } catch (Exception ignored) {
-                // already stopped
-            }
-        }
-    }
-
-    /**
-     * Launches the reverse-B cell as the T2 image with T4's knobs: {@code containerEnv} rides
-     * {@code docker run -e} (row (b)'s decoys; empty for correctly-configured rows), and the
-     * client-secret FILE is mounted when {@code mountClientSecret} is set with the given POSIX
-     * mode string ({@code "r--r--r--"} readable-by-all / {@code "rw-------"} owner-only — the
-     * docker cp preserves the modes, and the files land root-owned, so 0600 denies the container
-     * UID). {@code capturedTokenForms} (nullable) is the stand-in IdP's form capture. The
-     * trust store always mounts world-readable — the rows vary only the client-secret file, the
-     * DEP-1 contract's own credential.
-     */
-    private DockerRig launchReverseBCell(Map<String, String> containerEnv, boolean mountClientSecret,
-            String clientSecretPerms, List<String> capturedTokenForms) throws IOException {
-        assertContextAssembled();
-        assertThat(TEST_CLASSES_SMPP_TREE)
-                .as("the compiled test classes must exist (:proxy:test compiles them first)")
-                .isDirectory();
-        MockSmsc smsc = MockSmsc.start();
-        HttpsServer idp = null;
-        GenericContainer<?> container = null;
-        try {
-            idp = TokenIdpStandIn.dockerHostAllowIdp(
-                    new CountDownLatch(1), new CountDownLatch(1),
-                    false, "docker-secrets-idp", capturedTokenForms);
-            int bindPort = RelayTestFixtures.freePort();
-            org.testcontainers.Testcontainers.exposeHostPorts(smsc.port(), idp.getAddress().getPort());
-
-            Path secrets = dir.resolve("secrets");
-            Files.createDirectories(secrets);
-            if (mountClientSecret) {
-                Path secret = Files.writeString(
-                        secrets.resolve("oidc-client-secret"), FILE_SECRET_VALUE + "\n");
-                Files.setPosixFilePermissions(secret, PosixFilePermissions.fromString(clientSecretPerms));
-            }
-            Path trustStore = RelayTestFixtures.idpTrustStoreFixture(secrets.resolve("idp-truststore.p12"));
-            Files.setPosixFilePermissions(trustStore, PosixFilePermissions.fromString("r--r--r--"));
-
-            GenericContainer<?> cell = new GenericContainer<>(IMAGE)
-                    .withAccessToHost(true)
-                    .withExposedPorts(bindPort)
-                    .withCommand(cellArgs(idp, smsc.port(), bindPort).toArray(String[]::new))
-                    .withCopyFileToContainer(MountableFile.forHostPath(secrets), SECRETS_DIR)
-                    .withCopyFileToContainer(MountableFile.forHostPath(TEST_CLASSES_SMPP_TREE), "/smpp");
-            containerEnv.forEach(cell::withEnv);
-            container = cell;
-            container.start();
-            return new DockerRig(container, smsc, idp, bindPort);
-        } catch (RuntimeException | Error | IOException e) {
-            // a rig that fails to build must not strand what it already created (the house rule).
-            if (container != null) {
-                try {
-                    container.stop();
-                } catch (RuntimeException ignored) {
-                    // best-effort teardown on the failure path
-                }
-            }
-            if (idp != null) {
-                idp.stop(0);
-            }
-            smsc.close();
-            throw e;
-        }
-    }
-
-    /**
-     * The reverse-B cell as CONTAINER args — the identical arg list to the T3 suite's rig (the
-     * CMD pass-through = the JAR shape's arg surface; args outrank application.yml), so both
-     * suites boot the SAME cell against the SAME satellites.
-     */
-    private List<String> cellArgs(HttpsServer idp, int smscPort, int bindPort) {
-        return List.of(
-                "--companion.bind.host=0.0.0.0",
-                "--companion.bind.port=" + bindPort,
-                "--companion.shutdown.drain-timeout=2s",
-                "--companion.reverse.mode-b.smsc.host=" + TokenIdpStandIn.DOCKER_GATEWAY_HOST,
-                "--companion.reverse.mode-b.smsc.port=" + smscPort,
-                "--companion.reverse.mode-b.acknowledged=true",
-                "--companion.reverse.mode-b.oidc.provider-url=" + TokenIdpStandIn.dockerHostRealmBase(idp),
-                "--companion.reverse.mode-b.oidc.client-id=smpp-client-confidential",
-                "--companion.reverse.mode-b.oidc.client-secret-path=" + CLIENT_SECRET_PATH,
-                "--companion.reverse.mode-b.oidc.trust-store.path=" + TRUST_STORE_PATH,
-                "--companion.reverse.mode-b.oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
-                "--companion.reverse.mode-b.oidc.timeout=4s",
-                "--companion.reverse.mode-b.oidc.max-in-flight=64");
-    }
-
-    // ── waits, probes, and pinned literals ──────────────────────────────────────────────────────
-
-    /**
-     * Fail-closed guard: identical to the T3 suite's (the suite docker-builds from the assembled
-     * context, so it must exist before any row touches the image).
-     */
-    private static void assertContextAssembled() {
-        assertThat(DOCKERFILE_IN_CONTEXT)
-                .as("the assembled docker context exists (:proxy:assembleDockerContext — wired into "
-                        + ":proxy:test; a manual run is ./gradlew :proxy:test)")
-                .isRegularFile();
-        assertThat(JLINK_RUNTIME_IN_CONTEXT.resolve("bin/java"))
-                .as("the context carries the jlink runtime")
-                .isRegularFile();
-        assertThat(PROXY_JAR_IN_CONTEXT)
-                .as("the context carries the ONE boot jar (byte-for-byte 5.1's artifact)")
-                .isRegularFile();
-    }
-
-    /**
-     * Bounded poll for the boot summary on the container's stdout, failing FAST (with the captured
-     * docker logs) if the container dies first — the refusal rows' own variant is {@link
-     * #awaitContainerExit}.
-     */
-    private static void awaitStartupSummary(DockerRig rig) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BOOT_DEADLINE_MILLIS);
-        while (!stdout(rig).contains(STARTUP_SUMMARY_MARKER)) {
-            if (!isRunning(rig)) {
-                fail("the container exited (code " + exitCode(rig) + ") before startup_summary — "
-                        + "docker logs: <" + stdout(rig) + ">, <" + stderr(rig) + ">");
-            }
-            if (System.nanoTime() > deadline) {
-                fail("no startup_summary within " + BOOT_DEADLINE_MILLIS + "ms — docker logs so far: <"
-                        + stdout(rig) + ">, <" + stderr(rig) + ">");
-            }
-            Thread.sleep(200);
-        }
-    }
-
-    /**
-     * Bounded poll for the REFUSED boot's terminal state: the container exits on its own at
-     * startup validation (~1s in-container; bounded by the boot deadline regardless), and the
-     * LIVE inspect (never Testcontainers' cached start state) reports its exit code.
-     */
-    private static long awaitContainerExit(DockerRig rig) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BOOT_DEADLINE_MILLIS);
-        while (isRunning(rig)) {
-            if (System.nanoTime() > deadline) {
-                fail("the container did not exit within " + BOOT_DEADLINE_MILLIS
-                        + "ms — a refused boot must die on its own, never hang: <" + stdout(rig)
-                        + ">, <" + stderr(rig) + ">");
-            }
-            Thread.sleep(200);
-        }
-        return exitCode(rig);
-    }
-
-    /** LIVE running-state via the raw client (the T3 stop row's inspect idiom). */
-    private static boolean isRunning(DockerRig rig) {
-        return Boolean.TRUE.equals(rig.container.getDockerClient()
-                .inspectContainerCmd(rig.container.getContainerId())
-                .exec()
-                .getState()
-                .getRunning());
-    }
-
-    /** LIVE exit code via the raw client (the container is terminal when this is read). */
-    private static long exitCode(DockerRig rig) {
-        Long code = rig.container.getDockerClient()
-                .inspectContainerCmd(rig.container.getContainerId())
-                .exec()
-                .getState()
-                .getExitCodeLong();
-        return code == null ? -1L : code;
-    }
-
-    /** The container's stdout (docker keeps the streams separately fetchable). */
-    private static String stdout(DockerRig rig) {
-        return rig.container.getLogs(OutputFrame.OutputType.STDOUT);
-    }
-
-    /** The container's stderr. */
-    private static String stderr(DockerRig rig) {
-        return rig.container.getLogs(OutputFrame.OutputType.STDERR);
-    }
-
-    /** Runs the cp'd probe inside the container with the IMAGE'S OWN java. */
-    private Container.ExecResult execProbe(DockerRig rig, String mode, String arg)
-            throws IOException, InterruptedException {
-        return rig.container.execInContainer(ENTRYPOINT_JAVA, "-cp", "/", PROBE_FQCN, mode, arg);
-    }
+    // ── waits and pinned literals ──────────────────────────────────────────────────────────────
 
     /** /proc/<pid>/status of the container's host-visible PID (the local-daemon stance). */
     private static String readProcStatus(long pid) {
@@ -731,23 +468,6 @@ class DockerSecretsE2eTest {
         }
     }
 
-    /** The pinned ROK bind_resp contract, asserted on LITERALS (independent of production constants). */
-    private static void assertRokBindResp(byte[] resp, int expectedSequence) {
-        ByteBuffer header = ByteBuffer.wrap(resp);
-        int commandLength = header.getInt(0);
-        int commandId = header.getInt(4);
-        int commandStatus = header.getInt(8);
-        int sequence = header.getInt(12);
-        assertThat(commandLength).as("the resp's command_length covers the whole PDU").isEqualTo(resp.length);
-        assertThat(commandId).as("bind_transceiver answered by bind_transceiver_resp")
-                .isEqualTo(BIND_TRANSCEIVER_RESP);
-        assertThat(commandStatus)
-                .as("ESME_ROK — the chain coupled on the mounted file-path secret (the env decoy "
-                        + "bound nothing)")
-                .isZero();
-        assertThat(sequence).as("the resp answers the request's sequence_number").isEqualTo(expectedSequence);
-    }
-
     // ── the layer scan (row d): markers, the tar walk, and the rolling window ────────────────────
 
     /** One scan marker: what it is (for the failure message) and its exact bytes. */
@@ -762,7 +482,7 @@ class DockerSecretsE2eTest {
     }
 
     /** What the save scan covered (the vacuous-scan guard's evidence). */
-    private record ScanTally(int entries, long bytes) {}
+    private static record ScanTally(int entries, long bytes) {}
 
     /** Loads the scan markers: every committed fixture material file + the rigs' secret values. */
     private static List<Marker> secretMaterialMarkers() {
