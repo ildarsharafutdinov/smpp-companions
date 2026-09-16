@@ -125,6 +125,22 @@ public final class TokenIdpStandIn {
     }
 
     /**
+     * The DOCKER-REACHABLE DENY arm (Story 6.2 T3): the {@link #parkedTokenIdp} 401 behavior on the
+     * {@code docker-host} cert, with the hold latch PRE-OPENED &mdash; every token call answers 401
+     * immediately (the deterministic deny switch; the composed Docker leg's auth-DENY round flips
+     * the containerized reverse's ROPC adjudication to {@code DenyInvalid} without a park). Same
+     * binding and certificate story as {@link #dockerHostAllowIdp}: the server stays on the host
+     * loopback and the portal carries the container's dial.
+     */
+    public static HttpsServer dockerHostDenyTokenIdp(CountDownLatch tokenReceived, String threadName)
+            throws IOException {
+        return tokenEndpointIdp(tokenReceived, new CountDownLatch(0), true, 10, 401, "{}", 4, threadName,
+                OidcDiscoveryStandIn.serverSslContext(
+                        "/keycloak/certs/docker-host.pem", "/keycloak/certs/docker-host-key.pem"),
+                "127.0.0.1", null);
+    }
+
+    /**
      * The shared body: TLS stand-in server, daemon pool, the realm token context (park, then
      * answer). {@code capturedRequestForms} (nullable) receives every token request's decoded form
      * body BEFORE the response is written — the T4 capture seam; {@code null} discards.

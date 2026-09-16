@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.sun.net.httpserver.HttpsServer;
 
+import org.testcontainers.Testcontainers;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.OutputFrame;
@@ -34,6 +35,15 @@ import static org.assertj.core.api.Assertions.fail;
  * DockerSecretsE2eTest} (5.2 T4); one home before the third consumer (Story 6.2 T3's composed
  * two-container leg), the 4.2/4.3 fixture-fold precedent (one public-final-class home, static
  * factories, caller-owned handles).
+ *
+ * <p><b>Story 6.2 T3 — the third consumer IS here:</b> {@link #launchComposedModeCChain} boots the
+ * composed forward&times;C + reverse&times;C pair (E2E-001's Docker rung) as TWO rig instances over
+ * ONE shared satellite set, reusing every wait/probe above. Its portal wiring extends the 5.2
+ * pattern by ONE step: {@code host.testcontainers.internal} resolves to Testcontainers' SSH PORTAL
+ * container, which remote-forwards ONLY the ports registered through {@code
+ * Testcontainers.exposeHostPorts} — so besides the satellites' ports, the rig ALSO registers the
+ * reverse container's PUBLISHED host port (the forward container's routing[0] dials {@code
+ * host.testcontainers.internal:<mapped reverse port>}, exactly the ratified I/O-matrix wiring).
  *
  * <p><b>The recorded T3/T4 drift is reconciled HERE, once.</b> The 5.2 T4 suite grew a LIVE-inspect
  * {@code isRunning()}/{@code exitCode()} pair (raw docker-inspect, never Testcontainers' cached
@@ -169,7 +179,7 @@ public final class DockerRig implements AutoCloseable {
 
             // the host-side satellites, reachable from the container by name (the portal forwards
             // to this JVM's loopback — the satellites stay exactly where the JAR-shape rig puts them)
-            org.testcontainers.Testcontainers.exposeHostPorts(smsc.port(), idp.getAddress().getPort());
+            Testcontainers.exposeHostPorts(smsc.port(), idp.getAddress().getPort());
 
             Path secrets = secretsDir.resolve("secrets");
             Files.createDirectories(secrets);
@@ -181,15 +191,8 @@ public final class DockerRig implements AutoCloseable {
             Path trustStore = RelayTestFixtures.idpTrustStoreFixture(secrets.resolve("idp-truststore.p12"));
             Files.setPosixFilePermissions(trustStore, PosixFilePermissions.fromString("r--r--r--"));
 
-            GenericContainer<?> cell = new GenericContainer<>(image)
-                    .withAccessToHost(true)
-                    .withExposedPorts(bindPort)
-                    .withCommand(cellArgs(idp, smsc.port(), bindPort).toArray(String[]::new))
-                    .withCopyFileToContainer(MountableFile.forHostPath(secrets), SECRETS_DIR)
-                    .withCopyFileToContainer(MountableFile.forHostPath(TEST_CLASSES_SMPP_TREE), "/smpp");
-            containerEnv.forEach(cell::withEnv);
-            container = cell;
-            container.start();
+            container = startCell(image, cellArgs(idp, smsc.port(), bindPort), bindPort,
+                    secrets, containerEnv);
             return new DockerRig(container, smsc, idp, bindPort);
         } catch (RuntimeException | Error | IOException e) {
             if (container != null) {
@@ -204,6 +207,178 @@ public final class DockerRig implements AutoCloseable {
             }
             smsc.close();
             throw e;
+        }
+    }
+
+    /**
+     * Story 6.2 T3 (E2E-001's Docker rung — the folded rig's THIRD consumer) — the composed
+     * chain: the reverse&times;C container (the mTLS listener presenting the committed {@code
+     * docker-host} SAN cert, ROPC-adjudicating against the stand-in, dialing the host {@link
+     * MockSmsc}) plus the forward&times;C container (the plaintext trusted-leg listener dialing the
+     * REVERSE over mTLS per session), on the ONE image. The reverse starts FIRST (its PUBLISHED
+     * port must exist before the forward's routing[0] can name it); the forward's dial target is
+     * {@code host.testcontainers.internal:<mapped reverse port>} with hostname verification ON
+     * against the {@code docker-host} SAN — the committed PKI re-pointed, never weakened (AD-20).
+     *
+     * <p><b>The portal wiring's one extra step</b> (see the class javadoc): {@code
+     * Testcontainers.exposeHostPorts} is called for the satellites' ports AND for the reverse's
+     * published host port — the SSH portal remote-forwards registered ports only, so the forward
+     * container's dial of the published port rides the same proven path the satellites do.
+     *
+     * <p>{@code denyTokenEndpoint} selects the stand-in's arm: the IMMEDIATE-allow IdP (a genuine
+     * {@code Allow} per bind) or the docker-reachable 401 arm (every token call &rarr; {@code
+     * DenyInvalid}) — the composed auth-DENY round's switch. The row's {@code tokenReceived}
+     * latch rides the returned chain (caller-asserted: the ROPC exchange really crossed the TLS
+     * stand-in). NO {@code companion.memory.*} and NO {@code companion.metrics.*} keys ride either
+     * cell (the AD-30 interlock and the loopback-only metrics scrape pin the SHIPPED defaults,
+     * exactly the 5.2 container posture). Teardown on a failed launch is the house rule.
+     */
+    public static ComposedChain launchComposedModeCChain(
+            ImageFromDockerfile image, Path secretsDir, boolean denyTokenEndpoint, String idpThreadName)
+            throws IOException {
+        assertContextAssembled();
+        assertThat(TEST_CLASSES_SMPP_TREE)
+                .as("the compiled test classes must exist (:proxy:test compiles them first)")
+                .isDirectory();
+        MockSmsc smsc = MockSmsc.start();
+        HttpsServer idp = null;
+        GenericContainer<?> reverseContainer = null;
+        GenericContainer<?> forwardContainer = null;
+        try {
+            CountDownLatch tokenReceived = new CountDownLatch(1);
+            idp = denyTokenEndpoint
+                    ? TokenIdpStandIn.dockerHostDenyTokenIdp(tokenReceived, idpThreadName)
+                    : TokenIdpStandIn.dockerHostAllowIdp(
+                            new CountDownLatch(1), new CountDownLatch(1), false, idpThreadName, null);
+            int reverseBindPort = RelayTestFixtures.freePort();
+            int forwardBindPort = RelayTestFixtures.freePort();
+            Testcontainers.exposeHostPorts(smsc.port(), idp.getAddress().getPort());
+
+            // the reverse cell's material: the docker-host SAN pair IS its server cert (the
+            // forward dials host.testcontainers.internal — the SAN matches, verification stays ON),
+            // beside the REQUIRE trust store and the OIDC pair; all world-readable (UID 65532).
+            Path reverseSecrets = secretsDir.resolve("reverse-secrets");
+            Files.createDirectories(reverseSecrets);
+            copyWorldReadable("/keycloak/certs/docker-host.pem", reverseSecrets.resolve("docker-host.pem"));
+            copyWorldReadable("/keycloak/certs/docker-host-key.pem",
+                    reverseSecrets.resolve("docker-host-key.pem"));
+            copyWorldReadable("/keycloak/certs/smpp-truststore.p12",
+                    reverseSecrets.resolve("smpp-truststore.p12"));
+            worldReadable(Files.writeString(
+                    reverseSecrets.resolve("oidc-client-secret"), MOUNTED_CLIENT_SECRET_VALUE + "\n"));
+            worldReadable(RelayTestFixtures.idpTrustStoreFixture(
+                    reverseSecrets.resolve("idp-truststore.p12")));
+
+            reverseContainer = startCell(image,
+                    composedReverseArgs(idp, smsc.port(), reverseBindPort), reverseBindPort,
+                    reverseSecrets, Map.of());
+            int reverseMappedPort = reverseContainer.getMappedPort(reverseBindPort);
+            // the portal forwards REGISTERED ports only — the reverse's published host port must
+            // join the satellites' registration before the forward container dials it by name.
+            Testcontainers.exposeHostPorts(reverseMappedPort);
+
+            // the forward cell's material: the per-instance client pair presented on every dial +
+            // the trust store anchoring the same fixture CA that signed docker-host.pem.
+            Path forwardSecrets = secretsDir.resolve("forward-secrets");
+            Files.createDirectories(forwardSecrets);
+            copyWorldReadable("/keycloak/certs/smpp-forward-client.pem",
+                    forwardSecrets.resolve("smpp-forward-client.pem"));
+            copyWorldReadable("/keycloak/certs/smpp-forward-client-key.pem",
+                    forwardSecrets.resolve("smpp-forward-client-key.pem"));
+            copyWorldReadable("/keycloak/certs/smpp-truststore.p12",
+                    forwardSecrets.resolve("smpp-truststore.p12"));
+
+            forwardContainer = startCell(image,
+                    composedForwardArgs(forwardBindPort, reverseMappedPort), forwardBindPort,
+                    forwardSecrets, Map.of());
+
+            // the reverse sub-rig carries the shared satellites (its close stops them exactly
+            // once); the forward sub-rig is satellite-free (a dialer, not an adjudicator).
+            return new ComposedChain(
+                    new DockerRig(reverseContainer, smsc, idp, reverseBindPort),
+                    new DockerRig(forwardContainer, null, null, forwardBindPort),
+                    tokenReceived);
+        } catch (RuntimeException | Error | IOException e) {
+            if (forwardContainer != null) {
+                try {
+                    forwardContainer.stop();
+                } catch (RuntimeException ignored) {
+                    // best-effort teardown on the failure path
+                }
+            }
+            if (reverseContainer != null) {
+                try {
+                    reverseContainer.stop();
+                } catch (RuntimeException ignored) {
+                    // best-effort teardown on the failure path
+                }
+            }
+            if (idp != null) {
+                idp.stop(0);
+            }
+            smsc.close();
+            throw e;
+        }
+    }
+
+    /**
+     * Creates and starts ONE cell container over the shared create recipe (the T1 fold's single
+     * container-create path, consumed by {@link #launchReverseBCell} and the composed chain alike
+     * — one place for the mounts, the portal access, the env pass-through, and the CMD args).
+     */
+    private static GenericContainer<?> startCell(
+            ImageFromDockerfile image, List<String> args, int bindPort,
+            Path secretsDir, Map<String, String> containerEnv) {
+        GenericContainer<?> cell = new GenericContainer<>(image)
+                .withAccessToHost(true)
+                .withExposedPorts(bindPort)
+                .withCommand(args.toArray(String[]::new))
+                .withCopyFileToContainer(MountableFile.forHostPath(secretsDir), SECRETS_DIR)
+                .withCopyFileToContainer(MountableFile.forHostPath(TEST_CLASSES_SMPP_TREE), "/smpp");
+        containerEnv.forEach(cell::withEnv);
+        cell.start();
+        return cell;
+    }
+
+    /** Copies a classpath fixture resource into the cell's secret set, world-readable (UID 65532). */
+    private static Path copyWorldReadable(String resource, Path target) throws IOException {
+        return worldReadable(RelayTestFixtures.copyResource(resource, target));
+    }
+
+    private static Path worldReadable(Path file) throws IOException {
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("r--r--r--"));
+        return file;
+    }
+
+    /**
+     * The composed chain one row holds: the REVERSE rig (it owns the shared satellites — the mock
+     * SMSC and the stand-in IdP), the FORWARD rig (satellite-free), and the stand-in's {@code
+     * tokenReceived} latch (the deny row's ROPC-crossed-TLS observation). {@link #close()} is
+     * idempotent and exception-safe (the house rule): forward first (the dialer — its teardown
+     * must never wait on the listener), then the reverse (stopping the containers, the mock's
+     * loop, and the stand-in's executor exactly once).
+     */
+    public static final class ComposedChain implements AutoCloseable {
+
+        /** The reverse&times;C rig — also the owner of the shared satellites on close. */
+        public final DockerRig reverse;
+
+        /** The forward&times;C rig — the plaintext trusted-leg listener the ESME's published dial hits. */
+        public final DockerRig forward;
+
+        /** Counted down on every token request the stand-in IdP serves (allow and deny arms alike). */
+        public final CountDownLatch tokenReceived;
+
+        ComposedChain(DockerRig reverse, DockerRig forward, CountDownLatch tokenReceived) {
+            this.reverse = reverse;
+            this.forward = forward;
+            this.tokenReceived = tokenReceived;
+        }
+
+        @Override
+        public void close() {
+            forward.close();
+            reverse.close();
         }
     }
 
@@ -371,6 +546,61 @@ public final class DockerRig implements AutoCloseable {
                 "--companion.reverse.mode-b.oidc.max-in-flight=64");
     }
 
+    /**
+     * The composed REVERSE&times;C cell as container args (the same Spring run-args channel; args
+     * outrank application.yml). The listener binds the container wildcard so the PUBLISHED port
+     * reaches it; the server cert is the {@code docker-host} SAN pair (the forward's dial of
+     * {@code host.testcontainers.internal} verifies the SAN, AD-20); the SMSC and the IdP are
+     * named through the host-access portal. NO {@code companion.memory.*} and NO {@code
+     * companion.metrics.*} key (the interlock and the loopback-only scrape pin the SHIPPED
+     * defaults); the SHORT 2s drain deadline keeps the docker-stop walk quick.
+     */
+    private static List<String> composedReverseArgs(HttpsServer idp, int smscPort, int bindPort) {
+        return List.of(
+                "--companion.bind.host=0.0.0.0",
+                "--companion.bind.port=" + bindPort,
+                "--companion.shutdown.drain-timeout=2s",
+                "--companion.reverse.mode-c.smsc.host=" + TokenIdpStandIn.DOCKER_GATEWAY_HOST,
+                "--companion.reverse.mode-c.smsc.port=" + smscPort,
+                "--companion.reverse.mode-c.server-cert.cert-path=" + SECRETS_DIR + "/docker-host.pem",
+                "--companion.reverse.mode-c.server-cert.key-path=" + SECRETS_DIR + "/docker-host-key.pem",
+                "--companion.reverse.mode-c.trust-store.path=" + SECRETS_DIR + "/smpp-truststore.p12",
+                "--companion.reverse.mode-c.trust-store.password="
+                        + RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD,
+                "--companion.reverse.mode-c.oidc.provider-url=" + TokenIdpStandIn.dockerHostRealmBase(idp),
+                "--companion.reverse.mode-c.oidc.client-id=smpp-client-confidential",
+                "--companion.reverse.mode-c.oidc.client-secret-path=" + SECRETS_DIR + "/oidc-client-secret",
+                "--companion.reverse.mode-c.oidc.trust-store.path=" + SECRETS_DIR + "/idp-truststore.p12",
+                "--companion.reverse.mode-c.oidc.trust-store.password=" + RelayTestFixtures.IDP_STORE_PASSWORD,
+                "--companion.reverse.mode-c.oidc.timeout=4s",
+                "--companion.reverse.mode-c.oidc.max-in-flight=64");
+    }
+
+    /**
+     * The composed FORWARD&times;C cell as container args: the per-instance client pair mounted
+     * under {@code /run/secrets}, the trust store anchoring the fixture CA that signed the
+     * reverse's {@code docker-host} cert, and the ONE routing entry dialing the reverse's
+     * PUBLISHED port through the host-access name. The trusted-leg listener binds the container
+     * wildcard (the host ESME's published dial); NO oidc node exists on the forward (AD-12
+     * amended — the trusted side carries no OIDC material).
+     */
+    private static List<String> composedForwardArgs(int bindPort, int reverseMappedPort) {
+        return List.of(
+                "--companion.bind.host=0.0.0.0",
+                "--companion.bind.port=" + bindPort,
+                "--companion.shutdown.drain-timeout=2s",
+                "--companion.forward.mode-c.client-cert.cert-path="
+                        + SECRETS_DIR + "/smpp-forward-client.pem",
+                "--companion.forward.mode-c.client-cert.key-path="
+                        + SECRETS_DIR + "/smpp-forward-client-key.pem",
+                "--companion.forward.mode-c.trust-store.path=" + SECRETS_DIR + "/smpp-truststore.p12",
+                "--companion.forward.mode-c.trust-store.password="
+                        + RelayTestFixtures.SmppTlsLegs.STORE_PASSWORD,
+                "--companion.forward.mode-c.routing[0].system-id=" + ComposedJourney.SYSTEM_ID,
+                "--companion.forward.mode-c.routing[0].host=" + TokenIdpStandIn.DOCKER_GATEWAY_HOST,
+                "--companion.forward.mode-c.routing[0].port=" + reverseMappedPort);
+    }
+
     @Override
     public void close() {
         if (legacy != null) {
@@ -385,15 +615,20 @@ public final class DockerRig implements AutoCloseable {
         } catch (RuntimeException ignored) {
             // already stopped/removed — Ryuk owns the remainder
         }
-        try {
-            smsc.close();
-        } catch (Exception ignored) {
-            // already closed
+        // satellite-free sub-rigs (the composed chain's forward cell) carry nulls here
+        if (smsc != null) {
+            try {
+                smsc.close();
+            } catch (Exception ignored) {
+                // already closed
+            }
         }
-        try {
-            idp.stop(0);
-        } catch (Exception ignored) {
-            // already stopped
+        if (idp != null) {
+            try {
+                idp.stop(0);
+            } catch (Exception ignored) {
+                // already stopped
+            }
         }
     }
 }

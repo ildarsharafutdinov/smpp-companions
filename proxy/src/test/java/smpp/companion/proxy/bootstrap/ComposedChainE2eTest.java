@@ -5,33 +5,26 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.Socket;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
-import org.jsmpp.bean.AlertNotification;
 import org.jsmpp.bean.BindType;
 import org.jsmpp.bean.DataCodings;
-import org.jsmpp.bean.DataSm;
 import org.jsmpp.bean.DeliverSm;
 import org.jsmpp.bean.ESMClass;
 import org.jsmpp.bean.InterfaceVersion;
 import org.jsmpp.bean.NumberingPlanIndicator;
 import org.jsmpp.bean.RegisteredDelivery;
 import org.jsmpp.bean.TypeOfNumber;
-import org.jsmpp.extra.ProcessRequestException;
 import org.jsmpp.extra.ResponseTimeoutException;
 import org.jsmpp.extra.SessionState;
 import org.jsmpp.session.BindParameter;
-import org.jsmpp.session.MessageReceiverListener;
 import org.jsmpp.session.SMPPSession;
-import org.jsmpp.session.Session;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -49,11 +42,39 @@ import com.sun.net.httpserver.HttpsServer;
 import smpp.companion.proxy.ProxyCompanionApplication;
 import smpp.companion.proxy.config.TestCompanionConfigs;
 import smpp.companion.proxy.relay.MockSmsc;
+import smpp.companion.proxy.testsupport.ComposedJourney;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 import smpp.companion.proxy.testsupport.TokenIdpStandIn;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static smpp.companion.proxy.testsupport.ComposedJourney.BIND_ACCEPT;
+import static smpp.companion.proxy.testsupport.ComposedJourney.BIND_REJECT;
+import static smpp.companion.proxy.testsupport.ComposedJourney.BIND_TRANSCEIVER;
+import static smpp.companion.proxy.testsupport.ComposedJourney.BIND_TRANSCEIVER_RESP;
+import static smpp.companion.proxy.testsupport.ComposedJourney.DELIVER_SM;
+import static smpp.companion.proxy.testsupport.ComposedJourney.DELIVER_SM_RESP;
+import static smpp.companion.proxy.testsupport.ComposedJourney.ESME_RBINDFAIL;
+import static smpp.companion.proxy.testsupport.ComposedJourney.LOOPBACK;
+import static smpp.companion.proxy.testsupport.ComposedJourney.MODE_A_BANNER;
+import static smpp.companion.proxy.testsupport.ComposedJourney.MODE_B_BANNER;
+import static smpp.companion.proxy.testsupport.ComposedJourney.PASSWORD;
+import static smpp.companion.proxy.testsupport.ComposedJourney.STARTUP_SUMMARY;
+import static smpp.companion.proxy.testsupport.ComposedJourney.SUBMIT_SM;
+import static smpp.companion.proxy.testsupport.ComposedJourney.SYSTEM_ID;
+import static smpp.companion.proxy.testsupport.ComposedJourney.assertHeader;
+import static smpp.companion.proxy.testsupport.ComposedJourney.assertHeaderKnownSequence;
+import static smpp.companion.proxy.testsupport.ComposedJourney.awaitScrape;
+import static smpp.companion.proxy.testsupport.ComposedJourney.bindPortField;
+import static smpp.companion.proxy.testsupport.ComposedJourney.bodyOf;
+import static smpp.companion.proxy.testsupport.ComposedJourney.cOctet;
+import static smpp.companion.proxy.testsupport.ComposedJourney.concat;
+import static smpp.companion.proxy.testsupport.ComposedJourney.deliverSmPdu;
+import static smpp.companion.proxy.testsupport.ComposedJourney.dlrListener;
+import static smpp.companion.proxy.testsupport.ComposedJourney.expectedBindBody;
+import static smpp.companion.proxy.testsupport.ComposedJourney.expectedSubmitBody;
+import static smpp.companion.proxy.testsupport.ComposedJourney.metricsPortField;
+import static smpp.companion.proxy.testsupport.ComposedJourney.scrape;
 
 /**
  * Story 6.2 T2 &mdash; <b>E2E-001, the in-JVM rung</b>: the product's flagship topology run COMPOSED,
@@ -122,30 +143,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         + "a jSMPP ESME, and the in-JVM MockSmsc")
 class ComposedChainE2eTest {
 
-    // ── the pinned wire contract (LITERALS — independent of the production constants) ─────────
-
-    private static final int BIND_TRANSCEIVER = 0x00000009;
-    private static final int BIND_TRANSCEIVER_RESP = 0x80000009;
-    /** SMPP 3.4 §5.1.3 — the ONE generic bind-failure status every proxy-side denial collapses to (AD-33). */
-    private static final int ESME_RBINDFAIL = 0x0000000D;
-    private static final int SUBMIT_SM = 0x00000004;
-    private static final int DELIVER_SM = 0x00000005;
-    private static final int DELIVER_SM_RESP = 0x80000005;
-
-    /** One routed system_id — the forward's routing table carries exactly this entry. */
-    private static final String SYSTEM_ID = "carrierOne";
-    private static final String PASSWORD = "pw123456";
-
-    /** Literal-to-literal (never the loopback InetAddress) against the literal-bound listeners. */
-    private static final String LOOPBACK = "127.0.0.1";
-
-    // ── the pinned JSON-log event markers (fields on the production encoder's lines) ──────────
-
-    private static final String STARTUP_SUMMARY = "\"event\":\"startup_summary\"";
-    private static final String BIND_ACCEPT = "\"event\":\"bind_accept\"";
-    private static final String BIND_REJECT = "\"event\":\"bind_reject\"";
-    private static final String MODE_A_BANNER = "MODE A (one-way TLS) is ACTIVE";
-    private static final String MODE_B_BANNER = "MODE B (plaintext) is ACTIVE";
+    // ── the pinned wire/log/scrape contract — ONE home since T3 (the journey fold): every literal
+    //    and byte-expectation this suite pinned privately at T2 lives in testsupport/ComposedJourney
+    //    beside the packaged + Docker rungs (the BH7 fold discipline — the same journey must never
+    //    drift across three private copies). ────────────────────────────────────────────────────
 
     /**
      * Boots BOTH contexts under the PRODUCTION logging config (the {@code StructuredLogTest}
@@ -264,11 +265,13 @@ class ComposedChainE2eTest {
                 // empty by construction), one INGRESS fire per PDU each instance read (submit +
                 // deliver_sm_resp) and one EGRESS fire (the DLR), zero rejects anywhere.
                 assertThat(awaitScrape(rig.forwardMetricsPort,
-                        "relay_binds_accepted_total{system_id=\"carrierOne\"} 1.0"))
+                        "relay_binds_accepted_total{system_id=\"carrierOne\"} 1.0",
+                        OBSERVATION_DEADLINE_MILLIS))
                         .contains("relay_pdus_total{direction=\"INGRESS\"} 2.0")
                         .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0")
                         .contains("relay_binds_rejected_total 0.0");
-                assertThat(awaitScrape(rig.reverseMetricsPort, "relay_binds_unknown_total 1.0"))
+                assertThat(awaitScrape(rig.reverseMetricsPort, "relay_binds_unknown_total 1.0",
+                        OBSERVATION_DEADLINE_MILLIS))
                         .contains("relay_pdus_total{direction=\"INGRESS\"} 2.0")
                         .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0")
                         .contains("relay_binds_rejected_total 0.0");
@@ -332,7 +335,8 @@ class ComposedChainE2eTest {
 
             // The metrics agree: the REVERSE rejected (its counter), the FORWARD stayed at zero on
             // every couple/reject surface (nothing coupled, no Verdict anywhere on the forward).
-            assertThat(awaitScrape(rig.reverseMetricsPort, "relay_binds_rejected_total 1.0"))
+            assertThat(awaitScrape(rig.reverseMetricsPort, "relay_binds_rejected_total 1.0",
+                    OBSERVATION_DEADLINE_MILLIS))
                     .contains("relay_binds_unknown_total 1.0") // the off-table reject arm (AD-19 bound)
                     .contains("relay_pdus_total{direction=\"INGRESS\"} 0.0");
             assertThat(scrape(rig.forwardMetricsPort))
@@ -383,7 +387,8 @@ class ComposedChainE2eTest {
             // The forward's close taxonomy names the failed egress dial (the T4 hoist: the
             // egress-establishment failure is observed with its real reason on the ingress close).
             assertThat(awaitScrape(rig.forwardMetricsPort,
-                    "relay_connections_closed_total{direction=\"INGRESS\",reason=\"EGRESS_CONNECT_FAILED\"} 1.0"))
+                    "relay_connections_closed_total{direction=\"INGRESS\",reason=\"EGRESS_CONNECT_FAILED\"} 1.0",
+                    OBSERVATION_DEADLINE_MILLIS))
                     .contains("relay_binds_accepted_total{system_id=\"carrierOne\"} 0.0");
         }
     }
@@ -554,80 +559,8 @@ class ComposedChainE2eTest {
     }
 
     // ── row-1 helpers: the jSMPP ESME and the byte-pinned expectations ────────────────────────
-
-    /** The ESME's DLR listener: capture + count down; the client auto-answers deliver_sm_resp ROK. */
-    private static MessageReceiverListener dlrListener(AtomicReference<DeliverSm> into, CountDownLatch received) {
-        return new MessageReceiverListener() {
-            @Override
-            public void onAcceptDeliverSm(DeliverSm deliverSm) {
-                into.set(deliverSm);
-                received.countDown();
-            }
-
-            @Override
-            public void onAcceptAlertNotification(AlertNotification alertNotification) {
-                // not programmed by this row
-            }
-
-            @Override
-            public org.jsmpp.session.DataSmResult onAcceptDataSm(DataSm dataSm, Session source)
-                    throws ProcessRequestException {
-                throw new ProcessRequestException("data_sm is not programmed by this row", 0x00000008);
-            }
-        };
-    }
-
-    /**
-     * The bind body jSMPP serializes for the row's exact {@link BindParameter} — per its
-     * {@code DefaultComposer.bind}: {@code system_id} / {@code password} / {@code system_type}
-     * C-octets, then {@code interface_version} (IF_34 = 0x34), {@code addr_ton}/{@code addr_npi}
-     * (UNKNOWN = 0/0), and the {@code address_range} C-octet (empty). Pinned byte-for-byte against
-     * the frame MockSmsc captured — the AD-14 observation at byte granularity.
-     */
-    private static byte[] expectedBindBody() {
-        return concat(
-                cOctet(SYSTEM_ID), cOctet(PASSWORD), cOctet("SMPP"),
-                new byte[] {0x34, 0, 0},
-                cOctet(""));
-    }
-
-    /**
-     * The submit_sm body jSMPP serializes for the row's exact {@code submitShortMessage} arguments
-     * (per {@code DefaultComposer.submitSm}; the two empty C-octets are the empty
-     * schedule/validity strings, then the four single-byte fields — registered_delivery,
-     * replace_if_present, data_coding ({@code DataCodings.ZERO} = 0), sm_default_msg_id).
-     */
-    private static byte[] expectedSubmitBody(byte[] shortMessage) {
-        return concat(
-                cOctet(""),
-                new byte[] {0, 0}, cOctet("1111"),
-                new byte[] {0, 0}, cOctet("9999"),
-                new byte[] {0, 0, 0},
-                cOctet(""), cOctet(""),
-                new byte[] {0, 0, 0, 0},
-                new byte[] {(byte) shortMessage.length},
-                shortMessage);
-    }
-
-    /**
-     * A WELL-FORMED {@code deliver_sm} (the DLR) in the layout jSMPP 3.0.2's own
-     * composer/decomposer pair uses for the PDU (the schedule/validity C-octets and the
-     * replace/sm_default octets ride between the fixed fields) — hand-authored raw bytes,
-     * independent of the production codec, carrying the ASCII tag probe in {@code short_message}.
-     */
-    private static byte[] deliverSmPdu(int sequence, String tag) {
-        byte[] message = RelayTestFixtures.ascii(tag);
-        byte[] body = concat(
-                cOctet(""),
-                new byte[] {0, 0}, cOctet("SMSC01"),
-                new byte[] {0, 0}, cOctet(SYSTEM_ID),
-                new byte[] {0x04, 0, 0}, // esm_class 0x04 = SMSC delivery receipt (the DLR shape)
-                cOctet(""), cOctet(""),
-                new byte[] {0, 0, 0, 0}, // registered_delivery, replace_if_present, data_coding, sm_default_msg_id
-                new byte[] {(byte) message.length},
-                message);
-        return RelayTestFixtures.assemble(DELIVER_SM, 0, sequence, body.length, out -> out.put(body));
-    }
+    // (the DLR listener, the byte-exact bind/submit/DLR expectations, and the header/body
+    // primitives live in ComposedJourney since T3 — one home beside the packaged + Docker rungs)
 
     // ── the boot- and observation-surface helpers ─────────────────────────────────────────────
 
@@ -660,20 +593,6 @@ class ComposedChainE2eTest {
                         .anyMatch(line -> line.contains(STARTUP_SUMMARY)
                                 && line.contains(bindPortField(bindPort))),
                 BOOT_DEADLINE_MILLIS);
-    }
-
-    /**
-     * The summary's {@code smpp_bind_port} JSON field for the given port — the field is emitted
-     * mid-object (metrics_port follows), so the trailing comma pins the exact number (a prefix
-     * port can never match).
-     */
-    private static String bindPortField(int port) {
-        return "\"smpp_bind_port\":" + port + ",";
-    }
-
-    /** The summary's {@code metrics_port} JSON field (the LAST field: followed by the brace). */
-    private static String metricsPortField(int port) {
-        return "\"metrics_port\":" + port;
     }
 
     /** Bounded poll until at least {@code n} captured lines contain the marker; returns them. */
@@ -726,77 +645,6 @@ class ComposedChainE2eTest {
         }
     }
 
-    // ── the per-instance /metrics scrape (the MetricsEndpointTest raw-socket idiom) ───────────
-
-    /** Bounded poll until the instance's scrape contains the needle; returns the final scrape. */
-    private String awaitScrape(int metricsPort, String needle) throws IOException {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(OBSERVATION_DEADLINE_MILLIS);
-        String scrape = scrape(metricsPort);
-        while (!scrape.contains(needle)) {
-            if (System.nanoTime() > deadline) {
-                throw new AssertionError("no <" + needle + "> on 127.0.0.1:" + metricsPort
-                        + "/metrics within " + OBSERVATION_DEADLINE_MILLIS + "ms — scrape:" + System.lineSeparator()
-                        + scrape);
-            }
-            sleepQuietly(100);
-            scrape = scrape(metricsPort);
-        }
-        return scrape;
-    }
-
-    /** The read-only /metrics scrape through a raw loopback socket. */
-    private static String scrape(int port) throws IOException {
-        try (Socket socket = new Socket(LOOPBACK, port)) {
-            socket.setSoTimeout(10_000);
-            socket.getOutputStream()
-                    .write(("GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n"
-                            + "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
-            socket.getOutputStream().flush();
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = socket.getInputStream().read(buf)) != -1) {
-                out.write(buf, 0, n);
-            }
-            return out.toString(StandardCharsets.UTF_8);
-        }
-    }
-
-    // ── the pinned header/body primitives ─────────────────────────────────────────────────────
-
-    /** The pinned 16-octet header contract: length covers, id/status/sequence exact. */
-    private static void assertHeader(byte[] pdu, int commandId, int commandStatus, int sequence) {
-        ByteBuffer header = ByteBuffer.wrap(pdu);
-        assertThat(header.getInt(0)).as("the command_length covers the whole PDU").isEqualTo(pdu.length);
-        assertThat(header.getInt(4)).as("the command_id").isEqualTo(commandId);
-        assertThat(header.getInt(8)).as("the command_status").isEqualTo(commandStatus);
-        assertThat(header.getInt(12)).as("the sequence_number").isEqualTo(sequence);
-    }
-
-    /**
-     * The header pin for ESME-AUTHORED frames (jSMPP assigns the sequence from its own session
-     * counter): everything exact except the sequence, which is only checked well-formed.
-     */
-    private static void assertHeaderKnownSequence(byte[] pdu, int commandId) {
-        assertHeader(pdu, commandId, 0, headerInt(pdu, 12));
-        assertThat(headerInt(pdu, 12)).as("the session-assigned sequence is well-formed").isPositive();
-    }
-
-    private static int headerInt(byte[] pdu, int offset) {
-        return ByteBuffer.wrap(pdu).getInt(offset);
-    }
-
-    private static byte[] bodyOf(byte[] pdu) {
-        return Arrays.copyOfRange(pdu, 16, pdu.length);
-    }
-
-    /** One NUL-terminated C-octet string (SMPP's fixed-string encoding). */
-    private static byte[] cOctet(String s) {
-        byte[] bytes = RelayTestFixtures.ascii(s);
-        return concat(bytes, new byte[] {0});
-    }
-
-    private static byte[] concat(byte[]... parts) {
-        return RelayTestFixtures.concat(Arrays.asList(parts));
-    }
+    // ── the per-instance /metrics scrape — the raw-socket scrape and its bounded poll live in
+    //    ComposedJourney since T3 (the packaged rung scrapes host-loopback ports the same way) ──
 }
