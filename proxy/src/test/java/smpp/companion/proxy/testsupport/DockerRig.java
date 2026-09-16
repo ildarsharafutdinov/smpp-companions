@@ -203,9 +203,17 @@ public final class DockerRig implements AutoCloseable {
                 }
             }
             if (idp != null) {
-                idp.stop(0);
+                try {
+                    idp.stop(0);
+                } catch (Exception ignored) {
+                    // best-effort teardown — the launch failure below is the row's signal
+                }
             }
-            smsc.close();
+            try {
+                smsc.close();
+            } catch (Exception ignored) {
+                // best-effort teardown — the launch failure below is the row's signal
+            }
             throw e;
         }
     }
@@ -249,7 +257,7 @@ public final class DockerRig implements AutoCloseable {
             idp = denyTokenEndpoint
                     ? TokenIdpStandIn.dockerHostDenyTokenIdp(tokenReceived, idpThreadName)
                     : TokenIdpStandIn.dockerHostAllowIdp(
-                            new CountDownLatch(1), new CountDownLatch(1), false, idpThreadName, null);
+                            tokenReceived, new CountDownLatch(1), false, idpThreadName, null);
             int reverseBindPort = RelayTestFixtures.freePort();
             int forwardBindPort = RelayTestFixtures.freePort();
             Testcontainers.exposeHostPorts(smsc.port(), idp.getAddress().getPort());
@@ -314,9 +322,17 @@ public final class DockerRig implements AutoCloseable {
                 }
             }
             if (idp != null) {
-                idp.stop(0);
+                try {
+                    idp.stop(0);
+                } catch (Exception ignored) {
+                    // best-effort teardown — the launch failure below is the row's signal
+                }
             }
-            smsc.close();
+            try {
+                smsc.close();
+            } catch (Exception ignored) {
+                // best-effort teardown — the launch failure below is the row's signal
+            }
             throw e;
         }
     }
@@ -444,6 +460,25 @@ public final class DockerRig implements AutoCloseable {
         return exitCode();
     }
 
+    /**
+     * Bounded poll for a STOP-SIGNALED instance's terminal state (the REL-3 rows: {@code docker
+     * stop}/SIGTERM with the pair open) — the same live-inspect loop as {@link
+     * #awaitContainerExit()} with stop-shaped wording, so a hung drain walk reports itself and
+     * never reads as the refusal shape's wording ({@link #awaitContainerExit} owns that family).
+     */
+    public long awaitExit() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BOOT_DEADLINE_MILLIS);
+        while (isRunning()) {
+            if (System.nanoTime() > deadline) {
+                fail("the container did not exit within " + BOOT_DEADLINE_MILLIS
+                        + "ms of its stop signal — the drain walk must complete, never hang: <"
+                        + stdout() + ">, <" + stderr() + ">");
+            }
+            Thread.sleep(200);
+        }
+        return exitCode();
+    }
+
     /** LIVE running-state via the raw client (the BH7 drift reconciliation: the ONE behavior). */
     public boolean isRunning() {
         return Boolean.TRUE.equals(container.getDockerClient()
@@ -480,6 +515,28 @@ public final class DockerRig implements AutoCloseable {
     public Container.ExecResult execProbe(String mode, String arg)
             throws IOException, InterruptedException {
         return container.execInContainer(ENTRYPOINT_JAVA, "-cp", "/", PROBE_FQCN, mode, arg);
+    }
+
+    /**
+     * The in-container /metrics scrape via the cp'd probe (the image's own java — no shell), on
+     * the yml-default port (DEPLOY-011: the endpoint answers only inside the container). Folded
+     * at review round 1 (2026-09-16) from the suite-local copies — the second consumer made it
+     * rig family.
+     */
+    public String scrapeMetrics(int metricsPort) throws IOException, InterruptedException {
+        Container.ExecResult scrape = execProbe("scrape", String.valueOf(metricsPort));
+        assertThat(scrape.getExitCode())
+                .as("the in-container probe scrape succeeded — stderr: <%s>", scrape.getStderr())
+                .isZero();
+        return scrape.getStdout();
+    }
+
+    /** {@code docker stop --timeout 30} (SIGTERM to the PID-1 java — the REL-3 stop rows). */
+    public void dockerStop() {
+        container.getDockerClient()
+                .stopContainerCmd(container.getContainerId())
+                .withTimeout(30)
+                .exec();
     }
 
     /**

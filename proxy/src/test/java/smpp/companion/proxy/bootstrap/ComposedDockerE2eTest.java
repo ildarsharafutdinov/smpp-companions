@@ -223,13 +223,13 @@ class ComposedDockerE2eTest {
                 // (5) The per-instance METRICS surface, IN-CONTAINER (the endpoint answers only
                 // inside each container, on the literal loopback, via the image's own java): the
                 // couple on BOTH, the exact PDU counts, zero rejects anywhere.
-                String forwardScrape = inContainerScrape(forward);
+                String forwardScrape = forward.scrapeMetrics(METRICS_PORT);
                 assertThat(forwardScrape)
                         .contains("relay_binds_accepted_total{system_id=\"carrierOne\"} 1.0")
                         .contains("relay_pdus_total{direction=\"INGRESS\"} 2.0")
                         .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0")
                         .contains("relay_binds_rejected_total 0.0");
-                String reverseScrape = inContainerScrape(reverse);
+                String reverseScrape = reverse.scrapeMetrics(METRICS_PORT);
                 assertThat(reverseScrape)
                         .contains("relay_binds_unknown_total 1.0")
                         .contains("relay_pdus_total{direction=\"INGRESS\"} 2.0")
@@ -241,15 +241,16 @@ class ComposedDockerE2eTest {
                         .as("the forward container's couple line names the routed id")
                         .contains("\"system_id\":\"" + SYSTEM_ID + "\"", "\"outcome\":\"coupled\"");
                 assertThat(firstAcceptLine(reverse))
-                        .as("the reverse container's couple line names the same id")
-                        .contains("\"system_id\":\"" + SYSTEM_ID + "\"");
+                        .as("the reverse container's couple line names the same id and carries "
+                                + "the couple outcome (the in-JVM rung's both-instance pin)")
+                        .contains("\"system_id\":\"" + SYSTEM_ID + "\"", "\"outcome\":\"coupled\"");
                 assertThat(forward.stdout() + reverse.stdout()).doesNotContain(BIND_REJECT);
 
                 // (7) REL-3, container half: docker stop the FORWARD with the pair OPEN — TERM to
                 // PID-1 java walks the AD-22 drain (the OBS-020 WARN at the PT2S deadline), in
                 // order, then exit 143.
-                dockerStop(forward);
-                assertThat(forward.awaitContainerExit())
+                forward.dockerStop();
+                assertThat(forward.awaitExit())
                         .as("clean docker-stop exit on the forward: 143 = the JVM convention for a "
                                 + "hook-completed SIGTERM shutdown (java is PID 1 via the exec-form "
                                 + "ENTRYPOINT; a shell-form wrapper would strand the walk)")
@@ -275,8 +276,8 @@ class ComposedDockerE2eTest {
                 // (8) …then the REVERSE: its pair died with the forward's drain (the AD-32 pair
                 // teardown on the closing mTLS leg), so its walk drains an EMPTY registry — the
                 // documented short-circuit, no WARN to claim — and still exits a clean 143.
-                dockerStop(reverse);
-                assertThat(reverse.awaitContainerExit())
+                reverse.dockerStop();
+                assertThat(reverse.awaitExit())
                         .as("clean docker-stop exit on the reverse")
                         .isEqualTo(143L);
                 String reverseOut = reverse.stdout();
@@ -304,6 +305,7 @@ class ComposedDockerE2eTest {
             DockerRig forward = chain.forward;
             reverse.awaitStartupSummary();
             forward.awaitStartupSummary();
+            assertStartupSummaries(reverse, forward);
 
             // ONE generic failure code on the wire (AD-33), verbatim-forwarded by the forward
             // container — 16 octets, then the leg closes.
@@ -337,35 +339,28 @@ class ComposedDockerE2eTest {
 
             // The in-container metrics agree: the REVERSE rejected (its counter + the off-table
             // unknown arm), the FORWARD stayed at zero on every couple/reject surface.
-            assertThat(inContainerScrape(reverse))
+            assertThat(reverse.scrapeMetrics(METRICS_PORT))
                     .contains("relay_binds_rejected_total 1.0")
                     .contains("relay_binds_unknown_total 1.0")
                     .contains("relay_pdus_total{direction=\"INGRESS\"} 0.0");
-            assertThat(inContainerScrape(forward))
+            assertThat(forward.scrapeMetrics(METRICS_PORT))
                     .contains("relay_binds_rejected_total 0.0")
                     .contains("relay_binds_accepted_total{system_id=\"carrierOne\"} 0.0")
                     .contains("relay_pdus_total{direction=\"INGRESS\"} 0.0");
+
+            // The deny is a VERDICT, not a crash: both containers stay up (fail-closed service —
+            // the JAR rung's survival arm, on the rig's live-inspect pair).
+            assertThat(reverse.isRunning())
+                    .as("the reverse container survived the deny round").isTrue();
+            assertThat(forward.isRunning())
+                    .as("the forward container survived the deny round").isTrue();
         }
     }
 
     // ── the container-surface helpers ─────────────────────────────────────────────────────────
 
-    /** The in-container /metrics scrape via the cp'd probe (the image's own java — no shell). */
-    private static String inContainerScrape(DockerRig rig) throws IOException, InterruptedException {
-        var scrape = rig.execProbe("scrape", String.valueOf(METRICS_PORT));
-        assertThat(scrape.getExitCode())
-                .as("the in-container probe scrape succeeded — stderr: <%s>", scrape.getStderr())
-                .isZero();
-        return scrape.getStdout();
-    }
-
-    /** {@code docker stop --timeout 30} (SIGTERM to the PID-1 java). */
-    private static void dockerStop(DockerRig rig) {
-        rig.container().getDockerClient()
-                .stopContainerCmd(rig.container().getContainerId())
-                .withTimeout(30)
-                .exec();
-    }
+    // (the in-container scrape and the docker stop live on the rig since review round 1 —
+    //  DockerRig.scrapeMetrics / DockerRig.dockerStop, folded from the suite-local copies)
 
     /**
      * Both containers reached {@code startup_summary}, distinguished by their OWN bind ports, and

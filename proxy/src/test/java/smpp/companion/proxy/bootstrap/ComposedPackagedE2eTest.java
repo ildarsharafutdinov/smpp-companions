@@ -254,8 +254,9 @@ class ComposedPackagedE2eTest {
                         .as("the forward's couple line names the routed id")
                         .contains("\"system_id\":\"" + SYSTEM_ID + "\"", "\"outcome\":\"coupled\"");
                 assertThat(firstLineContaining(output(rig.reverseStdout), BIND_ACCEPT))
-                        .as("the reverse's couple line names the same id (the couple unit at the SMSC ROK)")
-                        .contains("\"system_id\":\"" + SYSTEM_ID + "\"");
+                        .as("the reverse's couple line names the same id and carries the couple "
+                                + "outcome (the in-JVM rung's both-instance pin)")
+                        .contains("\"system_id\":\"" + SYSTEM_ID + "\"", "\"outcome\":\"coupled\"");
                 assertThat(output(rig.forwardStdout) + output(rig.reverseStdout))
                         .doesNotContain(BIND_REJECT);
 
@@ -505,9 +506,17 @@ class ComposedPackagedE2eTest {
                 reverseProcess.destroyForcibly();
             }
             if (idp != null) {
-                idp.stop(0);
+                try {
+                    idp.stop(0);
+                } catch (Exception ignored) {
+                    // best-effort teardown — the launch failure below is the row's signal
+                }
             }
-            smsc.close();
+            try {
+                smsc.close();
+            } catch (Exception ignored) {
+                // best-effort teardown — the launch failure below is the row's signal
+            }
             throw e;
         }
     }

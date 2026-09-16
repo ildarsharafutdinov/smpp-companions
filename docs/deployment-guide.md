@@ -520,8 +520,9 @@ JSON log events (`startup_summary`, `bind_accept`, `bind_reject`, the drain WARN
 `/metrics` counters per instance — so a failing row states which hop failed, with the failing
 instance's own captured output. Per-row detail (names, durations) lands in the JUnit XML under
 `proxy/build/test-results/test/TEST-smpp.companion.proxy.bootstrap.Composed*.xml`. (Wire
-exactness: the bind and `submit_sm` bodies are pinned byte-exact at the SMSC; the DLR's body is
-asserted byte-equal at the ESME it must return to.)
+exactness: the bind and `submit_sm` bodies are pinned byte-exact at the SMSC; the DLR's
+`short_message` payload is asserted byte-equal at the ESME it must return to, with its
+`deliver_sm_resp` receipt observed back on the same SMSC session.)
 
 The pre-existing single-instance packaged rows — the reverse-b smoke and the Docker
 secrets/refusal contract — run the same way under their own selectors:
@@ -530,6 +531,10 @@ secrets/refusal contract — run the same way under their own selectors:
 $ ./gradlew :proxy:test --tests '*PackagedBootSmokeTest' --tests '*DockerImageBootSmokeTest' \
       --tests '*DockerSecretsE2eTest' --console=plain
 ```
+
+Expected result with a daemon reachable: `BUILD SUCCESSFUL`, 9 rows (2 + 3 + 4), 0 failed,
+0 skipped. Without a daemon the two Docker suites skip with their stated reasons and the JAR
+smoke's 2 rows still run.
 
 ## Cross-references
 

@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
 
 import org.jsmpp.bean.BindType;
 import org.jsmpp.bean.DataCodings;
@@ -64,6 +63,7 @@ import static smpp.companion.proxy.testsupport.ComposedJourney.SUBMIT_SM;
 import static smpp.companion.proxy.testsupport.ComposedJourney.SYSTEM_ID;
 import static smpp.companion.proxy.testsupport.ComposedJourney.assertHeader;
 import static smpp.companion.proxy.testsupport.ComposedJourney.assertHeaderKnownSequence;
+import static smpp.companion.proxy.testsupport.ComposedJourney.awaitBounded;
 import static smpp.companion.proxy.testsupport.ComposedJourney.awaitScrape;
 import static smpp.companion.proxy.testsupport.ComposedJourney.bindPortField;
 import static smpp.companion.proxy.testsupport.ComposedJourney.bodyOf;
@@ -193,27 +193,27 @@ class ComposedChainE2eTest {
             CountDownLatch dlrReceived = new CountDownLatch(1);
             AtomicReference<DeliverSm> receivedDlr = new AtomicReference<>();
             esme.setMessageReceiverListener(dlrListener(receivedDlr, dlrReceived));
-            try {
-                String smscSystemId = esme.connectAndBind(LOOPBACK, rig.forwardBindPort,
-                        new BindParameter(BindType.BIND_TRX, SYSTEM_ID, PASSWORD, "SMPP",
-                                TypeOfNumber.UNKNOWN, NumberingPlanIndicator.UNKNOWN, "",
-                                InterfaceVersion.IF_34),
-                        60_000);
-                assertThat(smscSystemId)
-                        .as("the ROK bind_resp crossed BOTH proxies and was parsed by the "
-                                + "independent stack (MockSmsc's authored system_id, verbatim-relayed)")
-                        .isEqualTo("SMSC01");
-                assertThat(esme.getSessionState())
-                        .as("the jSMPP session is BOUND_TRX — the couple holds at the ESME surface")
-                        .isEqualTo(SessionState.BOUND_TRX);
-            } catch (IOException | RuntimeException e) {
-                throw new AssertionError("the composed bind never reached ROK at the jSMPP ESME — "
-                        + "the journey failed somewhere on forward → mTLS → reverse → adjudication → "
-                        + "MockSmsc: " + e + System.lineSeparator() + capturedTail(), e);
-            }
+            try { // from creation (the JAR/Docker rungs' shape): a failed bind or awaitSession must not leak the session
+                try {
+                    String smscSystemId = esme.connectAndBind(LOOPBACK, rig.forwardBindPort,
+                            new BindParameter(BindType.BIND_TRX, SYSTEM_ID, PASSWORD, "SMPP",
+                                    TypeOfNumber.UNKNOWN, NumberingPlanIndicator.UNKNOWN, "",
+                                    InterfaceVersion.IF_34),
+                            60_000);
+                    assertThat(smscSystemId)
+                            .as("the ROK bind_resp crossed BOTH proxies and was parsed by the "
+                                    + "independent stack (MockSmsc's authored system_id, verbatim-relayed)")
+                            .isEqualTo("SMSC01");
+                    assertThat(esme.getSessionState())
+                            .as("the jSMPP session is BOUND_TRX — the couple holds at the ESME surface")
+                            .isEqualTo(SessionState.BOUND_TRX);
+                } catch (IOException | RuntimeException e) {
+                    throw new AssertionError("the composed bind never reached ROK at the jSMPP ESME — "
+                            + "the journey failed somewhere on forward → mTLS → reverse → adjudication → "
+                            + "MockSmsc: " + e + System.lineSeparator() + capturedTail(), e);
+                }
 
-            MockSmsc.Session smscSide = rig.smsc.awaitSession(0);
-            try {
+                MockSmsc.Session smscSide = rig.smsc.awaitSession(0);
                 // (2) AD-14, byte-pinned at the SMSC: jSMPP's bind serialization is deterministic
                 // (DefaultComposer.bind), so the ENTIRE body is pinned against a hand-built
                 // expectation of exactly what the ESME was told to send — any mutation by EITHER
@@ -538,9 +538,17 @@ class ComposedChainE2eTest {
                 }
             }
             if (idp != null) {
-                idp.stop(0);
+                try {
+                    idp.stop(0);
+                } catch (Exception ignored) {
+                    // best-effort teardown — the boot failure below is the row's signal
+                }
             }
-            smsc.close();
+            try {
+                smsc.close();
+            } catch (Exception ignored) {
+                // best-effort teardown — the boot failure below is the row's signal
+            }
             throw e;
         }
     }
@@ -592,14 +600,14 @@ class ComposedChainE2eTest {
                 () -> capturedLines().stream()
                         .anyMatch(line -> line.contains(STARTUP_SUMMARY)
                                 && line.contains(bindPortField(bindPort))),
-                BOOT_DEADLINE_MILLIS);
+                BOOT_DEADLINE_MILLIS, () -> "captured tail:" + System.lineSeparator() + capturedTail());
     }
 
     /** Bounded poll until at least {@code n} captured lines contain the marker; returns them. */
     private List<String> awaitLines(String marker, int n) {
         awaitBounded(n + " captured line(s) containing <" + marker + ">",
                 () -> capturedLines().stream().filter(line -> line.contains(marker)).count() >= n,
-                OBSERVATION_DEADLINE_MILLIS);
+                OBSERVATION_DEADLINE_MILLIS, () -> "captured tail:" + System.lineSeparator() + capturedTail());
         return capturedLines().stream().filter(line -> line.contains(marker)).toList();
     }
 
@@ -625,26 +633,8 @@ class ComposedChainE2eTest {
                 lines.subList(Math.max(0, lines.size() - 20), lines.size()));
     }
 
-    private void awaitBounded(String what, BooleanSupplier condition, long timeoutMillis) {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
-        while (!condition.getAsBoolean()) {
-            if (System.nanoTime() > deadline) {
-                throw new AssertionError("timed out after " + timeoutMillis + "ms waiting for " + what
-                        + " — captured tail:" + System.lineSeparator() + capturedTail());
-            }
-            sleepQuietly(100);
-        }
-    }
-
-    private static void sleepQuietly(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted while awaiting a composed-chain observation", e);
-        }
-    }
-
     // ── the per-instance /metrics scrape — the raw-socket scrape and its bounded poll live in
-    //    ComposedJourney since T3 (the packaged rung scrapes host-loopback ports the same way) ──
+    //    ComposedJourney since T3 (the packaged rung scrapes host-loopback ports the same way);
+    //    the bounded poll itself (awaitBounded) lives there too since review round 1 — this
+    //    suite's private 3-arg twin was re-pointed at the shared home and deleted ────────────
 }

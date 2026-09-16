@@ -1,6 +1,5 @@
 package smpp.companion.proxy.bootstrap;
 
-import java.io.IOException;
 import java.net.Socket;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -186,7 +185,7 @@ class DockerImageBootSmokeTest {
             // ONLY inside the container, on the literal loopback, via the image's own java running
             // the cp'd probe — the standard JVM binder gauges beside the custom ones, and the
             // round itself visible (one PDU per leg).
-            String scrape = inContainerScrape(rig);
+            String scrape = rig.scrapeMetrics(METRICS_PORT);
             assertThat(scrape)
                     .as("the container's loopback metrics listener serves the whole gauge surface "
                             + "to an in-container exec (and to nothing else)")
@@ -216,10 +215,7 @@ class DockerImageBootSmokeTest {
             // (5) docker stop (SIGTERM to PID 1 — the exec-form ENTRYPOINT) → the AD-22 walk:
             // acceptor stop → deny (no-op) → the drain body polls the live pair to the 2s deadline
             // and force-closes it (the OBS-020 WARN) → release → quiesce → exit 143.
-            rig.container().getDockerClient()
-                    .stopContainerCmd(rig.container().getContainerId())
-                    .withTimeout(30)
-                    .exec();
+            rig.dockerStop();
             Long exitCode = rig.container().getDockerClient()
                     .inspectContainerCmd(rig.container().getContainerId())
                     .exec()
@@ -321,7 +317,7 @@ class DockerImageBootSmokeTest {
             // with OUR forced cycle's cause — a jcmd GC.run reports as "Diagnostic Command" (not
             // System.gc()'s cause; pinned on the first run) — the runtime GC identity under the
             // ENTRYPOINT's -XX:+UseZGC, deterministic instead of awaited.
-            String scrape = inContainerScrape(rig);
+            String scrape = rig.scrapeMetrics(METRICS_PORT);
             assertThat(scrape)
                     .as("a pause timer exists for a ZGC-named collector on the forced cycle's cause")
                     .contains("jvm_gc_pause_seconds")
@@ -339,14 +335,8 @@ class DockerImageBootSmokeTest {
 
     // ── probes and pinned wire literals ───────────────────────────────────────────────────────
 
-    /** The probe's /metrics scrape inside the container (DEPLOY-011's Docker arm). */
-    private String inContainerScrape(DockerRig rig) throws IOException, InterruptedException {
-        Container.ExecResult scrape = rig.execProbe("scrape", String.valueOf(METRICS_PORT));
-        assertThat(scrape.getExitCode())
-                .as("the in-container probe scrape succeeded — stderr: <%s>", scrape.getStderr())
-                .isZero();
-        return scrape.getStdout();
-    }
+    // (the in-container /metrics scrape lives on the rig since review round 1 —
+    //  DockerRig.scrapeMetrics, folded from this suite's private copy)
 
     /** The first stream line containing {@code marker} (fails naming the whole stream if absent). */
     private static String lineContaining(String stream, String marker) {
