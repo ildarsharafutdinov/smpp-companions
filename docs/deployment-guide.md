@@ -1,13 +1,15 @@
 # Deployment Guide — per-cell walkthroughs in both packaged shapes
 
-> **Status:** authored with Story 6.1 T2 (2026-09-13) — this page is documentation only, nothing
-> in the repository parses it (owner rule 2026-09-10: no Java test's oracle is a markdown page),
-> so page↔reality coherence is a review-time duty: a change to any launch fact goes through a
-> story that touches the deploy code AND this page · **Audience:** operators taking the proxy
-> from a clean checkout to a running instance, in either packaged shape · **Oracle:** the as-built
-> deploy shapes and their test rigs — `proxy/src/docker/Dockerfile`,
+> **Status:** authored with Story 6.1 T2 (2026-09-13); the machine-proven matrix trued and the
+> conformance-run section added by Story 6.2 T4 (2026-09-16) — this page is documentation only,
+> nothing in the repository parses it (owner rule 2026-09-10: no Java test's oracle is a markdown
+> page), so page↔reality coherence is a review-time duty: a change to any launch fact goes
+> through a story that touches the deploy code AND this page · **Audience:** operators taking
+> the proxy from a clean checkout to a running instance, in either packaged shape · **Oracle:**
+> the as-built deploy shapes and their test rigs — `proxy/src/docker/Dockerfile`,
 > `buildSrc/src/main/kotlin/smpp/deploy/`, `PackagedBootSmokeTest`, `DockerImageBootSmokeTest`,
-> `DockerSecretsE2eTest`, `TestCompanionConfigs` — where this page and the code disagree, the
+> `DockerSecretsE2eTest`, the composed suites (`ComposedChainE2eTest`, `ComposedPackagedE2eTest`,
+> `ComposedDockerE2eTest`), `TestCompanionConfigs` — where this page and the code disagree, the
 > code wins and this page is buggy.
 
 There is exactly one deploy artifact and two packaged shapes for it. The JAR
@@ -29,9 +31,9 @@ COUPLED bind additionally needs the IdP and SMSC realities described in the trus
 and the AD-17 role×mode matrix — [`configuration.md`](configuration.md); the JSON log events,
 `/metrics`, the deny surface, and shutdown internals — [`runbooks.md`](runbooks.md); the TLS
 cipher policy — [`cipher-allowlist-policy.md`](cipher-allowlist-policy.md). There are no
-performance numbers anywhere in this documentation (Epic 7 will publish them), no sandbox rig
-(Story 6.3 will own its README), and no conformance-run instructions (Story 6.2 owns the
-packaged-shape journey matrix).
+performance numbers anywhere in this documentation (Epic 7 will publish them) and no sandbox rig
+(Story 6.3 will own its README). The packaged-shape conformance run — the composed two-instance
+journeys — has its own section at the bottom of this page (Story 6.2 landed it there).
 
 ## The two shapes
 
@@ -453,14 +455,81 @@ The packaged shapes carry real e2e rows — exactly what they cover, and what th
   mounted files (live `/proc` proof, DEPLOY-007), a secret VALUE in the environment is inert —
   no key exists to bind it — the two bad-file refusals quoted above (DEPLOY-009), and a
   byte-scan proving no secret material rides any image layer (SEC-098).
-- **What is NOT covered by packaged-shape e2e:** the mode A and mode C cells have no e2e row in
-  either shape, and neither do auth-DENY journeys — only the reverse.mode-b ALLOW path and the
-  startup refusals run packaged. Widening that journey matrix is Story 6.2's explicit decision
-  to make (deferred-work, the 5.2 close-out), and 6.2 also owns the DockerRig test-fixture
-  consolidation (BH7) before its third consumer. The Kannel sandbox — the proxy against a real
-  third-party SMPP stack — is Story 6.3's. Until then, read the A/C walkthroughs above honestly:
-  every cell's configuration is fail-fast-validated and the cells are exercised by the in-JVM
-  and loopback suites, but no packaged-shape test has driven a bind through A or C.
+- **E2E-001 (the composed two-instance chain, Story 6.2):** the flagship topology runs COMPOSED
+  in three rungs — two full application contexts in one JVM (`ComposedChainE2eTest`), two
+  `java -jar` subprocesses of the one jar under the contract flags with file-path secrets
+  (`ComposedPackagedE2eTest`), and two containers of the one image (`ComposedDockerE2eTest`).
+  Every rung wires the as-built [B] chain — `forward.mode-c` dials `reverse.mode-c` per SMPP
+  session over the Mode C mTLS leg, the REVERSE (not the forward) ROPC-adjudicates every bind
+  through the real verifier against the TLS token stand-in, the reverse dials the SMSC — and a
+  jSMPP 3.0.2 ESME (an independent stack, COMP-1's interop point) drives the legacy leg. The
+  ALLOW round: ROK at the ESME, the bind frame VERBATIM at the SMSC (AD-14), `submit_sm`
+  byte-intact through both hops, the DLR back on the originating pair (A-1 affinity across two
+  proxies), the couple on BOTH instances' `bind_accept` lines and `/metrics` counters. The
+  in-session auth-DENY round (the stand-in's 401 arm): ONE generic `ESME_RBINDFAIL` on the wire
+  then close, NO couple anywhere, the rich verdict only in the reverse's `bind_reject` line and
+  `relay_binds_rejected_total`. The two packaged rungs additionally prove REL-3 composed:
+  SIGTERM / `docker stop` to each instance with the pair open → the ordered
+  `startup_summary < bind_accept < drain WARN` stream → exit **143** both (the forward is
+  stopped first with the live pair; the reverse's pair dies with the forward's drain, so its
+  walk short-circuits on an empty registry — still a clean 143). The in-JVM rung adds a full-boot
+  Mode C REQUIRE-negative: a foreign-CA client dial fails the reverse's REQUIRE handshake below
+  SMPP — the same generic collapse at the ESME, no SMPP byte anywhere.
+- **What is NOT covered by packaged-shape e2e:** the mode A cells — no packaged row before
+  Story 6.2, none after: the ratified journey-widening decision (owner 2026-09-13) widened
+  MODE C composed plus the in-session auth-DENY round into both shapes (the bullets above) and
+  deliberately left mode A with the in-JVM loopback suite (`TlsModesLoopbackE2eTest` owns
+  composed mode A at relay altitude) plus this shape pair's structural sameness (one jar, one
+  arg channel, one flag set — the DEPLOY-005 parity argument). Mode B's packaged coverage stays
+  the reverse-b smoke journeys and startup refusals above (mode B is single-instance by
+  construction — there is no forward to compose). The adjudication IdP in every composed rung
+  is the deterministic TLS token stand-in, not a live Keycloak (the live adapter-vs-Keycloak
+  proof is the 3.2 live suite's). The SMSC-side non-ROK verbatim-forward journey and the proxy
+  against a real third-party SMPP stack (Kannel) are Story 6.3's. Read the mode A walkthrough
+  above honestly: its configuration is fail-fast-validated and the cell is exercised by the
+  in-JVM and loopback suites, but no packaged-shape test has driven a bind through it.
+
+## The packaged-shape conformance run (Story 6.2)
+
+The composed journeys above are ordinary test-suite rows: they run inside `./gradlew clean build`
+on any machine — the Docker rung skips with an explicit `disabledWithoutDocker` reason when no
+daemon is reachable, never a silent green — and there is no separate "conformance tier" wiring
+(no tag filters, no special task). The targeted manual run — what an operator or reviewer
+executes to re-prove the matrix on the spot — is ONE command from the repository root (the
+pinned JDK 25 of `.tool-versions`, and a Docker daemon for the third rung):
+
+```console
+$ ./gradlew :proxy:test --tests '*Composed*' --console=plain
+```
+
+The selector matches exactly three suites (a selector that matches nothing FAILS the task rather
+than passing silently; the three classes' per-row results land in the JUnit XML named below —
+on a green plain-console run the classes are not listed in stdout):
+
+| Suite (`proxy/src/test/…/bootstrap/`) | Rung | Rows |
+|---|---|---|
+| `ComposedChainE2eTest` | two full application contexts in one JVM | 3 — allow, auth-DENY, Mode C REQUIRE-negative |
+| `ComposedPackagedE2eTest` | two `java -jar` subprocesses (contract flags, file-path secrets) | 2 — allow (+ SIGTERM → 143 each), auth-DENY |
+| `ComposedDockerE2eTest` | two containers of the one image (through the shared test rig) | 2 — allow (+ `docker stop` → 143 each), auth-DENY |
+
+Expected result with a daemon reachable: `BUILD SUCCESSFUL`, 7 rows, 0 failed, 0 skipped. Without
+a daemon the Docker rung skips with its stated reason and the other two rungs still run (5 rows).
+Each row names its expected observations per surface — the wire literals (the one generic
+`ESME_RBINDFAIL` 0x0000000D collapse; the bind/submit bodies pinned byte-exact at the SMSC), the
+JSON log events (`startup_summary`, `bind_accept`, `bind_reject`, the drain WARN), and the
+`/metrics` counters per instance — so a failing row states which hop failed, with the failing
+instance's own captured output. Per-row detail (names, durations) lands in the JUnit XML under
+`proxy/build/test-results/test/TEST-smpp.companion.proxy.bootstrap.Composed*.xml`. (Wire
+exactness: the bind and `submit_sm` bodies are pinned byte-exact at the SMSC; the DLR's body is
+asserted byte-equal at the ESME it must return to.)
+
+The pre-existing single-instance packaged rows — the reverse-b smoke and the Docker
+secrets/refusal contract — run the same way under their own selectors:
+
+```console
+$ ./gradlew :proxy:test --tests '*PackagedBootSmokeTest' --tests '*DockerImageBootSmokeTest' \
+      --tests '*DockerSecretsE2eTest' --console=plain
+```
 
 ## Cross-references
 

@@ -12,6 +12,18 @@
      (README.md indexes configuration.md, deployment-guide.md, runbooks.md, cipher-allowlist-policy.md beside
      the flag-contract page; a-1-carrier-test-plan.md refreshed in place); the 5.2 defers it carried are
      ledgered (BH15 authored + BH6 documented = resolved; journey-widening + BH7 visibly re-homed to 6.2). -->
+<!-- Regenerated to as-built 2026-09-16 (Story 6.2 T4): 6.2's four tasks landed — T1 the DockerRig fold
+     (BH7 RESOLVED: testsupport/DockerRig.java, both 5.2 suites re-pointed byte-identical), T2 the E2E-001
+     in-JVM composed suite (ComposedChainE2eTest — the row's "two in-JVM proxy instances" letter; the real
+     ROPC verifier over the TLS stand-in, closing the 3.3 ROPC-through-TLS gap), T3 the packaged rung
+     (ComposedPackagedE2eTest + ComposedDockerE2eTest through the folded rig — the spine's AD-24/DEP-1
+     letter) with the journey-widening decision EXECUTED per the ratified default (mode C composed +
+     auth-DENY in both shapes; mode A stays with the loopback suite + the DEPLOY-005 structural-sameness
+     argument), T4 the close-out (deployment guide machine-proven matrix trued + the conformance-run
+     section added and executed from the page; docs/README trued; catalog markers E2E-001 LANDED +
+     DEPLOY-005 amended, count stays 254; ledger resolutions BH7 / journey-widening / ROPC-through-TLS).
+     Zero main-source and zero Gradle/buildSrc changes by contract; COMP-1's independent-stack point and
+     REL-3's composed drain (SIGTERM/docker stop → 143, both shapes) are stated on the markers. -->
 
 ## Goal
 
@@ -25,7 +37,9 @@ their final conformance. Documentation: the complete operator surface per AD-31/
 per-mode A/B/C deployment guide (carrying the ROPC removal-track warning and the `docker run` recipe),
 runbooks, cipher-allowlist policy, Mode B warning text. Status: Epics 1–5 done (`2f2b0e8`); Epic 7
 (performance) split out the same day — independent of this epic; **Story 6.1 (the docs half) done
-2026-09-13 — the operator surface exists as-built under `docs/` (see Stories)**.
+2026-09-13 — the operator surface exists as-built under `docs/` (see Stories); Story 6.2 (the
+composed-conformance half) as-built complete 2026-09-16 — E2E-001 landed as three rungs, the
+journey matrix widened per the ratified decision, the operator docs trued (see Stories)**.
 
 ## Stories
 
@@ -49,6 +63,20 @@ renumbered 6.1→6.3 so number = execution order, the repo convention.)*
   (deferred-work BH7), the packaged-shape journey-widening decision (mode A/C cells + auth-DENY journeys —
   deferred-work 5.2 close-out #1), COMP-1/REL-3 finals. Runs BEFORE the sandbox, so its rows ride the
   in-JVM mocks/jSMPP by design (E2E-001's own technique) — no sandbox dependency.
+  **As-built complete 2026-09-16 (T1–T4; zero main-source, zero Gradle changes): T1 folded the rig
+  (`testsupport/DockerRig`, BH7 RESOLVED — drift reconciled, both 5.2 suites byte-identical, the third
+  consumer landed at T3 as `launchComposedModeCChain`); T2/T3 landed E2E-001 as THREE suites sharing one
+  journey home (`testsupport/ComposedJourney`) — the in-JVM rung `ComposedChainE2eTest` (two full boots,
+  the real ROPC verifier over the TLS stand-in — closing the 3.3 ROPC-through-TLS gap — allow / auth-DENY /
+  REQUIRE-negative), the JAR rung `ComposedPackagedE2eTest` and the Docker rung `ComposedDockerE2eTest`
+  (allow + auth-DENY + the composed REL-3 drain: SIGTERM/`docker stop` → ordered stream → 143 both shapes);
+  the journey-widening decision executed per the ratified default (mode C composed + in-session auth-DENY
+  in BOTH shapes; mode A stays with `TlsModesLoopbackE2eTest` + the DEPLOY-005 structural-sameness
+  argument — a dated scope note on the markers, not a silent drop); T4 trued the operator docs
+  (deployment-guide § machine-proven + the conformance-run section, executed from the page; docs/README)
+  and closed the catalog/ledger (E2E-001 LANDED with the technique notes, DEPLOY-005's scope honesty
+  trued, count stays 254; BH7 + journey-widening + ROPC-through-TLS RESOLVED). COMP-1's independent-stack
+  point (the jSMPP allow round) and REL-3's composed drain are stated on the markers.**
 - 6.3 — the Kannel sandbox: port the proven `/home/ildar/Documents/smpp-sandbox` compose pattern into the
   repo (`sandbox/`), add the Keycloak the reverse cell's ROPC adjudication requires, document the packaged-jar
   launch recipe, and author the correctness journeys (happy send + DLR round trip, deliver_sm injection,

@@ -625,6 +625,18 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: ROPC adjudication is not e2e-proven THROUGH the TLS path (loopback e2e uses the AlwaysAllow stand-in on the reverse).
   evidence: The implementer's close-out gap list; `VerifierWiringConfig` was spec-forbidden to touch, and 3.2's live Keycloak suite owns the production adapter — but no test drives a real (or stand-in) ROPC verdict across the new TLS legs. Candidate home: extend the T9-style live suite or the loopback e2e with a scripted verifier.
+  **✅ RESOLVED 2026-09-16 (Story 6.2 T2, commit `9cc0eb9`; marker at T4): the real
+  `RopcBindCredentialVerifier` now adjudicates through a real TLS leg inside a real composed
+  chain.** `bootstrap/ComposedChainE2eTest` boots the `reverse.mode-c` FULL application context
+  whose real adapter (selected by `VerifierWiringConfig`) exchanges credentials against the TLS
+  token stand-in over the verified HTTPS leg: the allow arm yields a genuine Allow verdict (the
+  bind couples end-to-end through the forward, the mTLS leg, and the SMSC dial), the parked-401
+  arm yields DenyInvalid with the rich verdict only in the reverse's `bind_reject` line and
+  counter — asserted with the ROPC-crossed-TLS latch (the token exchange really happened) plus
+  the wire/log/metric surfaces. Both packaged rungs (T3, `ComposedPackagedE2eTest` /
+  `ComposedDockerE2eTest`, commit `d18c71f`) carry the same real-adapter-over-TLS deny arm in
+  the deploy shapes. The AlwaysAllow stand-in stays `TlsModesLoopbackE2eTest`'s lane by design
+  (the anti-reinvention boundary); the live-Keycloak variant remains the 3.2 live suite's.
 - source_spec: `3-3-tls-modes-and-forward-acceptor.md`
   summary: The AD-28 delegated-task executor's abort-on-saturation arm is verified in Netty sources only — no behavioral test drives it to saturation.
   evidence: Implementer close-out; the 3.2 F7/M-SETTLE double-coverage precedent suggests this may be structurally hard to bite — the attempt should record either a control or a reasoned non-control comment.
@@ -781,6 +793,17 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   cells have no e2e row in either shape, and neither do auth-DENY journeys") and names the
   widening itself as "Story 6.2's explicit decision to make (deferred-work, the 5.2 close-out)".
   The decision now lives nowhere else — 6.2 takes it or explicitly drops it.
+  **✅ RESOLVED 2026-09-16 (Story 6.2 T2/T3, commits `9cc0eb9`+`d18c71f`; marker at T4): the
+  decision was TAKEN and EXECUTED — WIDEN via the composed flow, the ratified default (owner
+  2026-09-13; no dispatch-time amendment).** Mode C composed + the in-session auth-DENY round
+  now run e2e in BOTH packaged shapes (`bootstrap/ComposedPackagedE2eTest` — two `java -jar`
+  subprocesses under the operator flag set with file-path secrets; `bootstrap/ComposedDockerE2eTest`
+  — two containers through the folded rig) beside the in-JVM rung (`bootstrap/ComposedChainE2eTest`,
+  which also carries the full-boot Mode C REQUIRE-negative arm). Mode A stays with
+  `TlsModesLoopbackE2eTest` (composed mode A at relay altitude) + this entry's own
+  structural-sameness argument (one jar, one arg channel, one flag set) — recorded, not silently
+  ignored: the dated scope note lives on the E2E-001 and DEPLOY-005 catalog markers and in
+  `docs/deployment-guide.md` § "What is machine-proven about these shapes" (trued 2026-09-16).
 - source_spec: `5-2-distroless-docker.md`
   summary: `:proxy:dockerImage` is deliberately OUTSIDE the `build`/`check` graph — the image lives in the Docker daemon, invisible to Gradle, so a tracked output would UP-TO-DATE-skip after a `docker rmi`/daemon restart and silently skip rebuilds; docker's own layer cache is the incrementality. The E2E suites build the image themselves via Testcontainers `ImageFromDockerfile` from the same assembled context (`:proxy:assembleDockerContext`, cacheable, daemon-free — that one IS wired into `test`).
   evidence: 5.2 T2/T3 spec Implementation Notes; `buildSrc/src/main/kotlin/smpp/deploy/DockerImageTask.kt` (not cacheable, no task wiring) vs `AssembleDockerContextTask.kt`. Recorded so a future story does not "fix" this into `check` (a daemon-less CI would break) — if release/publish tooling ever lands (explicitly untouched, owner 2026-09-11), it owns the decision of when the image builds.
@@ -803,6 +826,21 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   "6.2 also owns the DockerRig test-fixture consolidation (BH7) before its third consumer."
   6.1 authored zero test code and consolidated nothing (docs-only story); the duplication and
   its drift stand exactly as this entry records them until 6.2.
+  **✅ RESOLVED 2026-09-16 (Story 6.2 T1, commit `cca0500`; marker at T4): folded BEFORE the
+  third consumer, per this entry's own precedent rule.** The rig is ONE public final class,
+  `proxy/src/test/java/smpp/companion/proxy/testsupport/DockerRig.java` (private ctor, static
+  factories, caller-owned handles — image, temp dir, env map, capture lists — javadoc naming
+  both folded consumers); the recorded T3/T4 drift is reconciled in it ONCE (the LIVE-inspect
+  `isRunning`/`exitCode` pair is the rig's single behavior — `awaitStartupSummary` fails fast
+  naming the live exit code, `awaitContainerExit` covers the refusal shape; the cached
+  `container.isRunning()` arm is gone, both suites consume the live pair); both 5.2 suites are
+  re-pointed with every row/literal byte-identical (7 rows re-run GREEN against the daemon), and
+  zero private rig-family duplicates remain outside `testsupport/` (the T1 structural sweep,
+  RED-verified by a deliberate re-duplication mutation). The THIRD consumer landed with T3 as
+  planned: `DockerRig.launchComposedModeCChain` — `bootstrap/ComposedDockerE2eTest`, the composed
+  two-container rung. The composed family received the same discipline a task early:
+  `testsupport/ComposedJourney` is the ONE home for the three rungs' shared wire/log/scrape
+  primitives, folded before its second and third consumers.
 - source_spec: `5-2-distroless-docker.md`
   summary: No operator-facing `docker run` recipe exists for the Docker shape — the canonical invocation (world-readable-or-65532-owned `/run/secrets` mounts, published SMPP port only, no-args → AD-17 refusal, `docker stop` → exit 143) lives only in test code and story/catalog notes; the flag-contract page covers flags and build invocation but not the run itself.
   evidence: 5.2 review round 1 (BH15, 2026-09-12): `docs/operator-jvm-flag-contract.md` (trued for flags/artifacts only) vs the rigs' `launchReverseBCell` mounts. Epic 6 owns the operator docs surface — carry this there as the deploy-guide seed.
