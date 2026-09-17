@@ -1,7 +1,9 @@
 # The Kannel sandbox rig (Story 6.3) — ported from the proven pre-project playground
 # (/home/ildar/Documents/smpp-sandbox). Deltas from the source are exactly: the explicit
-# project name below, the build path (self-contained sandbox/ layout), and the front SMSC
-# re-point in conf/front-kannel.conf (host.docker.internal:2775 — the host-run proxy).
+# project name below, the build path (self-contained sandbox/ layout), the front SMSC
+# re-point in conf/front-kannel.conf (host.docker.internal:2775 — the host-run proxy), and
+# the MO-routing smsbox-route group in conf/smsc-kannel.conf (T3 — without it the bearerbox
+# queues every injected MO with `smsbox_list empty!`; README §6.2/§10).
 # Every inter-service hop hairpins through the host (host.docker.internal + the published
 # ports) — that is the ported pattern that lets the host-run proxy sit in the chain.
 # Added by T2 on top of the ported 7: the keycloak service (the ROPC adjudication the

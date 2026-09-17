@@ -77,7 +77,7 @@ context:
 **Execution:**
 - [x] **T1 — the Kannel rig in-repo** — `sandbox/` with the ported Dockerfile, `conf/` (the ONE delta: front SMSC re-pointed at `host.docker.internal:2775`), `init.sql`, and `compose.yml` (pg + both Kannel sides + healthchecks, ports 8080/13000/14000/14567 published, fakesmsc tty-attached for injection). Verify from a clean checkout: `docker compose up` → every healthcheck green; `docker compose config` validates. Mutation: any service's healthcheck removed or conf broken → the README's bring-up table names the failure instead of hiding it.
 - [x] **T2 — Keycloak + the proxy launch recipe** — Compose Keycloak service (dev mode, realm export mirroring `KeycloakFixture`: DAG enabled, confidential client; pin ≥26.7.0 per the 3.1 verdict) + the gitignored client-secret file by path (AD-18); README section: build the jar (`./gradlew :proxy:bootJar`), the `java -jar` launch with the operator flag set + reverse.mode-b args (ingress 2775, egress 14567, OIDC → compose Keycloak, secret file path), expected `startup_summary` + Mode B banner, and the front bearerbox binding THROUGH the proxy (couple in logs + `/metrics`). Mutation: launch recipe pointed at a stale jar or wrong port → the bind never couples → the recipe's expected-observation step fails loudly.
-- [ ] **T3 — the correctness journeys + debugging guide** — README journeys, each with expected observations per hop: happy send + DLR round trip (postgres row + status pages); `deliver_sm` injection toward the ESME; `enquire_link` crossing the coupled pair (with the keepalive-vs-`pre-couple-idle-timeout` note); the two deny journeys (wrong SMSC credential → AD-32 case-4 verbatim non-ROK forward; bad OIDC credential → AD-33 collapsed generic deny on the wire, rich reason in JSON logs only); the debugging entry-point table (Kannel admin `status.txt`, log levels, proxy `/metrics` + JSON lines, pg tables, fakesmsc stdin). Mutation: a journey whose expected observation is unstated or unobservable → not shipped (the Always rule bites at review).
+- [x] **T3 — the correctness journeys + debugging guide** — README journeys, each with expected observations per hop: happy send + DLR round trip (postgres row + status pages); `deliver_sm` injection toward the ESME; `enquire_link` crossing the coupled pair (with the keepalive-vs-`pre-couple-idle-timeout` note); the two deny journeys (wrong SMSC credential → AD-32 case-4 verbatim non-ROK forward; bad OIDC credential → AD-33 collapsed generic deny on the wire, rich reason in JSON logs only); the debugging entry-point table (Kannel admin `status.txt`, log levels, proxy `/metrics` + JSON lines, pg tables, fakesmsc stdin). Mutation: a journey whose expected observation is unstated or unobservable → not shipped (the Always rule bites at review).
 - [ ] **T4 — proofs, catalog rows, ledger** — `./gradlew clean build --console=plain` GREEN untouched (the Gradle-inert claim verified, not assumed); sandbox journey rows land in the catalog as dated ops-tier entries (COMP-1/E2E-flavored, labeled manual-rig like OBS-035/037); any Kannel-quirk interop notes recorded in the README + deferred-work if actionable; `epic-6-context.md` regenerated to as-built.
 
 **Acceptance Criteria:**
@@ -115,7 +115,8 @@ context:
 ### Agent Model Used
 
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
-glm-5.2 (Claude Code dispatch agent), 2026-09-17, T2 only (this run).
+glm-5.2 (Claude Code dispatch agent), 2026-09-17, T2 only.
+glm-5.2 (Claude Code dispatch agent), 2026-09-17, T3 only (this run).
 
 ### Debug Log References
 
@@ -190,6 +191,76 @@ T2 (2026-09-17):
   force-closes at the deadline — documented as expected).
 - Final teardown `docker compose down -v` — no containers, network, or volumes left; no proxy
   process running.
+
+T3 (2026-09-17):
+
+- Rig re-bring-up: `docker compose up -d --build` → all 8 services up; pg + both bearerboxes +
+  keycloak `(healthy)`; `Realm 'smpp-companions' imported`; the §5.1 bootstrap re-run against the
+  fresh container (regenerated secret fetched via kcadm into the gitignored file — `git
+  check-ignore` names it); `./gradlew :proxy:bootJar` BUILD SUCCESSFUL (UP-TO-DATE); the §5.2
+  recipe launched verbatim → Mode B banner + `startup_summary` + `bind_accept … coupled` within
+  ~14 s (T2's recipe re-proven on this run's rig before the journeys).
+- **§6.1 happy send + DLR round trip (executed live):** `sendsms` with `dlr-mask=31` (no
+  `dlr-url` — Kannel accepts; the smsbox logs the harmless `URL <>` ERROR pair) → HTTP 202 `0:
+  Accepted for delivery`; pg `front_sms_log` `momt=MT` row (`hello`, `dlr_mask=31`) +
+  `front_bearer_dlr` (`mask=31,status=0`) + `smsc_bearer_dlr` (`mask=19`) rows
+  (`smsc_smpp_dlr` stays empty); opensmppbox `submit_sm` → `submit_sm_resp` (message_id
+  e82bd7c8) → DLR `deliver_sm` (`stat:DELIVRD`, `receipted_message_id:"e82bd7c8"`,
+  `message_state: 2`) → `Got PDU: deliver_sm_resp` ROK; fakesmsc `Got message 1:
+  <79876543210 79033374423 text hello>`; front `removing DLR from database` + two `momt=DLR`
+  rows (`ACK/` mask 8, the `id:…stat:DELIVRD…` text mask 1); status pages `sent: sms 1` /
+  `rcvd: dlr 2` (front), FAKE1 `sent: sms 1 / rcvd: dlr 1` (SMSC); metrics +1/+1 per crossing.
+- **§6.2 deliver_sm injection (executed live, after the conf delta below):** line syntax pinned
+  empirically — `<sender> <receiver> text <message>` (the `text` coding keyword REQUIRED: without
+  it fakesmsc still prints `sent message N` but the BEARERBOX rejects with
+  `smsc_fake: invalid message syntax from client, ignored`); fed through a fifo held into
+  `script -qec "docker attach …"` (plain-pipe attach refused: `cannot attach stdin to a
+  TTY-enabled container because stdin is not a terminal`); opensmppbox `Sending PDU:
+  deliver_sm` (`source_addr:"79033374423"`, `destination_addr:"79876543210"`) → the FRONT's own
+  SMPP dump shows the identical `short_message` octets (`hello from the mobile`) → `Got PDU:
+  deliver_sm_resp` ROK; front status `rcvd: sms 1`; metrics +1 EGRESS +1 INGRESS.
+- **THE T3 RIG FINDING — the MO-routing delta:** the first injection died queued with
+  `WARNING: smsbox_list empty!` — Kannel 1.5.0's `bb_boxc.c` broadcasts MOs only to boxes with
+  `boxc_id == NULL`, and opensmppbox registers as `usr1` (`use-systemid-as-smsboxid = true`);
+  the playground never routed MOs (its plan never needed them), so the ported conf has no
+  `smsbox-route`. Fix: `group = smsbox-route` (`smsbox-id = usr1`, `smsc-id = FAKE1`) added to
+  `conf/smsc-kannel.conf` (commented in-file), bearerbox restarted → injection works. Documented
+  as deltas-list item 4 in both READMEs + the compose.yml header; three troubleshooting rows
+  added (smsbox-route absence, invalid line syntax, fakesmsc crash). `front-kannel.conf` verified
+  byte-identical to HEAD after the deny-journey edits (`git diff` names only
+  `sandbox/conf/smsc-kannel.conf`).
+- Side observations from the restart: restarting `smsc-bearer-box` took fakesmsc down with a
+  glibc `free(): double free detected in tcache 2` (Kannel 1.5.0 quirk → interop note in the
+  troubleshooting table; `up -d` restores); the couple's teardown while opensmppbox's box link
+  dropped showed `relay_connections_closed_total{PEER_HALF_CLOSE}` on both legs then an
+  automatic re-couple (bind_accept #2) — the SMSC-flap behavior, named in passing in §6.4's
+  metric-shape discussion.
+- **§6.3 enquire_link (passive, timed):** first `enquire_link` at couple + 30 s, then one per
+  ~30 s (Kannel's default `enquire-link-interval`; the conf sets none); each interval +1 on BOTH
+  `relay_pdus_total` legs (the enquire INGRESS + its resp EGRESS — the tag follows the arrival
+  leg); opensmppbox/front dump the mirror pair; the session online-time grows without bound. The
+  keepalive-vs-`pre-couple-idle-timeout` note written with the live arithmetic (4 s deadline ≪
+  30 s interval; Kannel enquires only on a bound session).
+- **§6.4 deny journeys (both arms live, both restored):** D1 (`usr2`/`pwd2`: ROPC-valid,
+  smsc-users-absent) → proxy stdout SILENT, `BIND_FAILED_NON_ROK` closes +1 per retry on BOTH
+  legs, `relay_binds_rejected_total`/`relay_binds_unknown_total` flat, opensmppbox answered its
+  OWN `bind_transceiver_resp` `command_status: 13 = 0x0000000d`, `system_id: NULL` (its code
+  coincides with the AD-33 collapse — the two arms are wire-identical in THIS rig; the
+  verbatim-forward and the discriminator are the dump + the metric shape, stated in the README);
+  front wire `code 0x0000000d (Bind Failed)` every 10 s. D2 (`usr1` + wrong password) →
+  `bind_reject` `verdict":"DenyInvalid"` + `bind_resp_command_status":"0x0000000D"` per retry,
+  `relay_binds_rejected_total` AND `relay_binds_unknown_total` climbing, closes
+  `{INGRESS,BIND_REJECTED}`, ZERO `bind_transceiver` at opensmppbox (deny pre-forward), the
+  IDENTICAL front wire line. Both reverts re-coupled within one 10 s retry (bind_accept #3/#4).
+- **§7 TRACE arm (executed live):** §5.2 relaunched with one more run arg
+  `--logging.level.smpp.companion.proxy.relay.pdu=TRACE` → `relayed pdu:
+  direction=INGRESS command_id=0x4 length=66 body=0x00000042…` (the `trace-probe` text readable
+  in the hex), the `submit_sm_resp` (`command_id=0x80000004`), the DLR `deliver_sm`
+  (`command_id=0x5 length=185`) — and ZERO bind-family pdu lines (redacted at every level, as
+  shipped). Two SIGTERM teardowns across the run: the OBS-020 drain WARN (PT10S, 1 live pair,
+  SHUTDOWN_DRAIN) then a clean exit, re-observed on both launches.
+- Final teardown: `docker compose down -v` — no containers, network, or volumes left; no proxy
+  process running; the attach holder killed; scratch files removed.
 
 ### Completion Notes List
 
@@ -281,6 +352,45 @@ T2 completion notes (2026-09-17):
   `.gitignore`, `sandbox/**`, and this spec file); the formal `clean build` GREEN check stays
   with T4.
 
+T3 completion notes (2026-09-17):
+
+- T3 executed per the one-task-per-conversational-step rule; T4 (proofs/catalog/ledger) NOT
+  started — the `./gradlew clean build --console=plain` GREEN check, the catalog rows, the
+  interop-note/deferred-work sweep, and the `epic-6-context.md` regeneration all stay with T4.
+- Owner directive honored again: NOTHING committed, no git state mutated — no `git add`, no
+  `git commit`; the working tree carries T3's edits beside the staged T2 index, untouched.
+- The journeys are the A-1-plan ops-tier shape in miniature (oracle/preconditions/per-hop
+  expected observations), every observation executed live on 2026-09-17's rig before it was
+  written down; where a value is run-specific the README states the DELTA to observe, not the
+  absolute.
+- The ONE T3 code change is the `group = smsbox-route` addition to
+  `sandbox/conf/smsc-kannel.conf` (9 lines incl. the comment) — a RIG fix, not a port deviation
+  in spirit: the playground never routed MOs, so its conf could not serve the spec's
+  `deliver_sm` journey. Surfaced by executing the journey (the `smsbox_list empty!` symptom),
+  root-caused in Kannel 1.5.0's `bb_boxc.c` broadcast rule, fixed minimally, and documented as
+  deltas-list item 4 in both READMEs + the compose.yml header + three troubleshooting rows. No
+  proxy defect was found by any journey (nothing to bounce); the Kannel-side quirks found
+  (fakesmsc's glibc double-free crash on bearerbox restart; opensmppbox answering its own
+  credential refusal with the same 0x0D the AD-33 collapse uses) are README interop notes, with
+  the catalog/deferred-work sweep deferred to T4 as tasked.
+- The wire-observation honesty note the journeys carry: on THIS rig the AD-32-verbatim arm and
+  the AD-33-collapse arm are wire-identical down to the code (opensmppbox itself answers 0x0D);
+  the discriminating surfaces are opensmppbox's own PDU dump and the metric shape
+  (`BIND_FAILED_NON_ROK` both legs vs `BIND_REJECTED` ingress-only) — stated in README §6.4
+  rather than papered over.
+- The deny journeys' procedures live entirely in conf edits + `docker compose restart`
+  (`usr2`/`pwd2` for the AD-32 arm — the realm user T2 landed for exactly this; a wrong password
+  for the AD-33 arm); `front-kannel.conf` verified byte-identical to HEAD after both reverts;
+  each restore re-coupled within one 10 s retry.
+- README §1's "the ONE wiring delta" phrasing trued to "the ONE wiring RE-POINT" with the
+  MO-routing delta named beside it (both languages); §2's `smsc-kannel.conf` row and the
+  compose.yml header comment carry the same truing; sections renumbered §6–§9 → §8–§11 with the
+  journeys as §6 and the debugging guide as §7, all cross-references swept (§-reference audit
+  run on both files).
+- Gradle inertness at T3 stays structural: `git status` names no Gradle file (only
+  `.gitignore`, `sandbox/**`, this spec — and now `sandbox/conf/smsc-kannel.conf`); the formal
+  `clean build` GREEN check stays with T4.
+
 ### File List
 
 - `sandbox/compose.yml` — the 7-service chain (ported; +`name:`, `build: ./kannel`).
@@ -321,3 +431,21 @@ T2 (2026-09-17) additions/changes:
 - `sandbox/README.ru.md` — the Russian twin of every T2 change above (docs/ru conventions;
   EN normative).
 - `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T2 checkbox + this record.
+
+T3 (2026-09-17) additions/changes:
+
+- `sandbox/conf/smsc-kannel.conf` — + the `group = smsbox-route` MO-routing delta (commented
+  in-file): `smsbox-id = usr1`, `smsc-id = FAKE1` — required for the §6.2 deliver_sm journey
+  (Kannel broadcasts MOs only to boxes without a boxc-id; opensmppbox carries one).
+- `sandbox/README.md` — + §6 "The correctness journeys" (6.1 happy send + DLR round trip;
+  6.2 deliver_sm injection incl. the line syntax and the tty-attach mechanics; 6.3 enquire_link
+  with the keepalive-vs-pre-couple-idle-timeout note; 6.4 the two deny journeys with the
+  wire/log/metric surface table) and §7 "The debugging guide — the entry points" (the 9-row
+  entry-point table + the two debugging heuristics); §6–§9 renumbered to §8–§11 with all
+  cross-references trued; the header status note, §1's one-delta phrasing, §2's
+  `smsc-kannel.conf` row, three new troubleshooting rows, and deltas-list items 4–5 added.
+- `sandbox/README.ru.md` — the Russian twin of every T3 change above (docs/ru conventions; EN
+  normative).
+- `sandbox/compose.yml` — the header comment's delta list trued to name the MO-routing conf
+  delta (no service change).
+- `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T3 checkbox + this record.

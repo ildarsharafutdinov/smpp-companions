@@ -1,11 +1,12 @@
 # The Kannel Sandbox — a real-SMPP rig for debugging and correctness proof
 
-> **Status:** Story 6.3, tasks T1+T2 (2026-09-17) — T1 the Kannel rig itself (compose file,
+> **Status:** Story 6.3, tasks T1+T2+T3 (2026-09-17) — T1 the Kannel rig itself (compose file,
 > pinned-source Dockerfile, `conf/`, `init.sql`, this bring-up guide); T2 the compose Keycloak
 > service (the ROPC adjudication the reverse cell requires, AD-17 fail-closed — no auth-bypass
-> exists) and the host-run proxy launch recipe (§5, machine-executed from this page). The remaining
-> story tasks append in order: **T3** adds the correctness journeys with expected observations per
-> hop; **T4** the proofs/catalog/ledger close-out. Spec:
+> exists) and the host-run proxy launch recipe (§5, machine-executed from this page); T3 the
+> correctness journeys with expected observations per hop (§6) and the debugging guide (§7), both
+> executed live from this page on 2026-09-17's rig. The remaining story task: **T4** the
+> proofs/catalog/ledger close-out. Spec:
 > `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md`. The sandbox is developer tooling,
 > not shipped product: it changes zero main-source lines, is inert to Gradle (`./gradlew clean build`
 > untouched), wires into no CI, and publishes no performance numbers (Epic 7 owns measurement).
@@ -13,17 +14,17 @@
 
 ## 1. What this rig is
 
-A docker-compose chain of **Kannel 1.5.0** on both sides of the proxy, ported from the proven
-pre-project playground (`/home/ildar/Documents/smpp-sandbox` — the repo's origin playground, whose
-plan item 3 is literally this proxy). Until now the proxy's interop evidence rested on in-repo mocks
-(`MockSmsc` on this repo's own codec) plus jSMPP 3.0.2 as the independent oracle; this rig adds the
-missing tier — a REAL, unmodified, third-party SMPP 3.4 stack (COMP-1 context). It **complements,
-never replaces**, the automated oracles: the in-repo suites stay the machine-checked conformance
-surface; Kannel is the real-stack, human-driven debugging and correctness tier.
+A docker-compose chain of **Kannel 1.5.0** on both sides of the proxy. Until now the proxy's
+interop evidence rested on in-repo mocks (`MockSmsc` on this repo's own codec) plus jSMPP 3.0.2 as
+the independent oracle; this rig adds the missing tier — a REAL, unmodified, third-party SMPP 3.4
+stack (COMP-1 context). It **complements, never replaces**, the automated oracles: the in-repo
+suites stay the machine-checked conformance surface; Kannel is the real-stack, human-driven
+debugging and correctness tier.
 
 The chain, with the proxy wedged in the middle (the front bearerbox's SMPP client dials the proxy's
-host ingress instead of straight at opensmppbox — the ONE wiring delta from the ported source) and
-the compose Keycloak adjudicating every bind over ROPC:
+host ingress instead of straight at opensmppbox — the ONE wiring re-point from the ported source;
+the one further conf delta, the MO `smsbox-route` group the §6.2 journey required, is §10's honesty
+list) and the compose Keycloak adjudicating every bind over ROPC:
 
 ```mermaid
 flowchart TD
@@ -82,11 +83,11 @@ a one-command, all-compose run (owner decision ratified 2026-09-17: host stays t
 | `kannel/Dockerfile` | The Kannel 1.5.0 pinned-source build, ported byte-for-byte from the playground (gateway-1.5.0.tar.gz, `--with-pgsql`, `test/fakesmsc`, addons opensmppbox + sqlbox; UBI10 builder / UBI10-minimal runtime, including the automake-1.11 symlink bootstrap quirk). No version drift, no distro swap. |
 | `conf/front-kannel.conf` | Front bearerbox + smsbox: the SMPP-**transceiver** `group = smsc` (`usr1`/`pwd1`, `interface-version = 34`) that dials the proxy at `host.docker.internal:2775`, and the `sendsms` HTTP user (`user`/`password`). |
 | `conf/front-sqlbox.conf` | Front sqlbox (smsbox → sqlbox → bearerbox routing leg). |
-| `conf/smsc-kannel.conf` | SMSC-side bearerbox: admin 14000, fake SMSC `FAKE1` on 10004, pgsql DLR (`smsc_bearer_dlr`). |
+| `conf/smsc-kannel.conf` | SMSC-side bearerbox: admin 14000, fake SMSC `FAKE1` on 10004, pgsql DLR (`smsc_bearer_dlr`), and the `smsbox-route` group (T3's MO-routing delta, §10 — routes FAKE1's MOs to the opensmppbox connection so §6.2's injection journey works). |
 | `conf/smsc-opensmppbox.conf` | opensmppbox on 14567: `smpp-logins` from `smsc-users.txt`, `route-to-smsc = FAKE1`, pgsql DLR (`smsc_smpp_dlr`). This box is the real SMSC the proxy's egress dials. |
 | `conf/smsc-users.txt` | opensmppbox's SMPP credential list (`usr1 pwd1 smsc1 *.*.*.*`) — the SMSC-side authority the deny journeys exercise (AD-32 case 4). |
 | `conf/db.conf` | Shared pgsql connection (via `host.docker.internal`). |
-| `init.sql` | The pgsql DLR tables (`front_bearer_dlr`, `smsc_bearer_dlr`, `smsc_smpp_dlr`), applied by the postgres entrypoint at every fresh container boot (the anonymous-volume lifetime — §7). |
+| `init.sql` | The pgsql DLR tables (`front_bearer_dlr`, `smsc_bearer_dlr`, `smsc_smpp_dlr`), applied by the postgres entrypoint at every fresh container boot (the anonymous-volume lifetime — §9). |
 | `keycloak/realm-smpp-companions.json` | The realm export the `keycloak` service imports at boot (T2): mirrors the test-tier `KeycloakFixture` realm shape — realm `smpp-companions`, the confidential client `smpp-client-confidential` with Direct Access Grants ON (per-client, off by default since KC 26.2), ROPC users (§5.1). Deliberately carries NO client secret: Keycloak generates one at import — the ONE AD-18 secret in the rig, fetched into `secrets/` (§5.1). |
 | `keycloak/certs/` | The Keycloak TLS material, copied byte-identical from the committed test fixtures (`proxy/src/test/resources/keycloak/certs/`): `server.pem`/`server-key.pem` (SANs `localhost`, `keycloak`, `127.0.0.1` — the host-run proxy dials `localhost:8443`, the optional docker variant dials `keycloak:8443`), `truststore.p12` (pw `smpp-test` — the proxy's IdP trust anchor), `ca.pem` (for host-side `curl --cacert` verification). Fixture-tier test PKI, NOT production secrets — the same class of material the test tier commits; the rig's one real secret-by-path is the client secret. |
 | `secrets/` | Operator-created (gitignored, AD-18): `oidc-client-secret` — the Keycloak client's generated secret, written by the §5.1 bootstrap. Nothing here is ever committed. |
@@ -362,7 +363,7 @@ refusal texts):
 | **Stale jar** (a `-jar` path pointed at an old build) | Structurally prevented on the normal path — `./gradlew :proxy:bootJar` tracks its inputs and rebuilds on any source change (the `PackagedBootSmokeTest` no-stale-jar wiring). If you point the path somewhere stale on purpose, the couple still fails exactly like the wrong-port arm above (the jar's wiring facts no longer match the rig's). |
 | **Secret mismatch** (live run: the launch pointed at a file with a wrong value — the stale-after-re-create case of §5.1) | ROPC 401 `invalid_client` → `bind_reject` JSON lines per front retry: `verdict":"DenyInvalid"` + `bind_resp_command_status":"0x0000000D"`; `relay_binds_rejected_total` climbing. The front's wire line is the SAME `code 0x0000000d (Bind Failed)` as the wrong-port arm — the deny is rich only in the proxy's logs. |
 | **Keycloak down / unreachable** (live run: `docker compose stop keycloak`, correct secret) | ROPC network error → `bind_reject` (`verdict":"DenyIndeterminate"`) per retry, `0x0000000D` on the wire — indistinguishable ON THE WIRE from the 401 arm (AD-33; no IdP-availability enumeration); the two arms are distinguished ONLY by the verdict field in the proxy's log lines. |
-| **Missing/unreadable secret file** | The boot itself refuses before any listener binds — exit 1 with the SEC-060/AD-18 refusal naming the path (§6's table). |
+| **Missing/unreadable secret file** | The boot itself refuses before any listener binds — exit 1 with the SEC-060/AD-18 refusal naming the path (§8's table). |
 
 ### 5.5 Optional variant — the compose-side (docker) proxy
 
@@ -403,7 +404,180 @@ below the AD-30 budget). Observations are §5.3's list with `docker logs smpp-pr
 and `docker stop --timeout 30 smpp-proxy` (exit 143) as the teardown. What you LOSE is the point of
 §1: no debugger, no JDK toolbox, no flag edits — which is why the host launch stays the default.
 
-## 6. Bring-up troubleshooting — failures are named, never hidden
+## 6. The correctness journeys (T3)
+
+The proof artifact this sandbox exists for. Each journey is a procedure against the §5-coupled
+chain with the EXPECTED OBSERVATION named at every hop — the A-1 carrier plan's ops-tier shape in
+miniature (oracle, preconditions, what PASS looks like). The Always rule that governed authoring:
+a journey whose expected observation is unstated or unobservable is not shipped. Every observation
+below was executed live on this rig (2026-09-17); where a value is run-specific the tables state
+the DELTA to observe, not the absolute.
+
+Preconditions for all four: §4's rig healthy, §5.2's proxy launched, §5.3's couple observed
+(`bind_accept … coupled`; the front status page showing `smsc1 … (online`).
+
+### 6.1 The happy send — `submit_sm` relayed + the DLR round trip
+
+```bash
+curl "http://127.0.0.1:8080/cgi-bin/sendsms?user=user&pass=password&dlr-mask=31&from=79876543210&coding=0&to=79033374423&text=hello"
+```
+
+| Hop | Expected observation (where to look) |
+|-----|--------------------------------------|
+| smsbox accepts | HTTP `202`, body `0: Accepted for delivery`. |
+| sqlbox logs the MT | pg `front_sms_log` gains a `momt=MT` row: `msgdata=hello`, `dlr_mask=31`, `boxc_id=smsbox1`. |
+| the DLR reservations | pg `front_bearer_dlr` gains a row (`mask=31`, `status=0`, empty `url` — no `dlr-url` was requested); pg `smsc_bearer_dlr` gains its own (`mask=19` — Kannel's SMSC-side re-interpretation); `smsc_smpp_dlr` stays empty in this flow. |
+| the submit crosses the relay | `/metrics`: `relay_pdus_total{direction="INGRESS"}` +1 (the `submit_sm`) and `{direction="EGRESS"}` +1 moments later (the `submit_sm_resp`). |
+| the real SMSC answers | `docker compose logs smsc-opensmpp-box`: `Got PDU:` dump `type_name: submit_sm`, then `Sending PDU:` `type_name: submit_sm_resp` (`command_id: 2147483652 = 0x80000004`, `command_status: 0`) carrying `message_id: "<yours>"`. |
+| the fake center receipts | `docker compose logs smsc-fake-smsc`: `DEBUG: Got message 1: <79876543210 79033374423 text hello>` — the text intact through proxy + opensmppbox + bearerbox. |
+| the DLR returns THROUGH the proxy | opensmppbox: `Sending PDU:` `type_name: deliver_sm` (short_message `id:<mid> sub:001 dlvrd:001 submit date:… done date:… stat:DELIVRD err:000`, `message_state: 2`, `receipted_message_id: "<mid>"`) then `Got PDU:` `type_name: deliver_sm_resp` (`command_status: 0` — the FRONT's answer, relayed back). `/metrics`: +1 `EGRESS` (the DLR) +1 `INGRESS` (its resp). |
+| the front completes the DLR | `docker compose logs front-bearer-box`: `DEBUG: removing DLR from database`; pg `front_sms_log` gains two `momt=DLR` rows — `ACK/` (`dlr_mask=8`, the sme-ack Kannel derives from the ROK `submit_sm_resp` itself) and the `id:…stat:DELIVRD…` text (`dlr_mask=1`); smsbox logs `Starting delivery report <user> from <79876543210>` plus the harmless no-url pair `ERROR: URL <> doesn't start with 'http://' nor 'https://'` / `Couldn't send request to <>`. |
+| the status pages count it | front 13000: the `smsc1` line's `sent: sms` +1, and after the DLRs `rcvd: dlr` +2; SMSC 14000: FAKE1 `sent: sms 1 / dlr 0`, `rcvd: dlr 1`. |
+
+Transit-integrity reading: the text that left smsbox is the text fakesmsc printed, and the DLR's
+`receipted_message_id` is the `message_id` opensmppbox issued — end to end through the relay with
+nothing dropped, duplicated, or rewritten (the reservation rows persist with `status=0` in this
+no-`dlr-url` rig — the DLR completion itself is the `front_sms_log` rows + the `removing DLR from
+database` log line). For BYTE-level sight of the relay crossing, relaunch the proxy with §7's TRACE
+arm: the submit appears as
+`relayed pdu: direction=INGRESS command_id=0x4 length=66 body=0x00000042…` with the message text
+readable in the hex. Submit lost/duplicated/corrupted at any hop = a REL-1 defect → §11's findings
+discipline, never tuned away.
+
+### 6.2 `deliver_sm` toward the ESME — MO injection at the SMSC side
+
+The A-1 session-affinity property against a real stack: an MO typed into the fake center rides back
+as a real `deliver_sm` over the SAME coupled pair that submitted the MT.
+
+Prerequisite — the T3 conf delta: `conf/smsc-kannel.conf` carries a `group = smsbox-route` routing
+`FAKE1`'s traffic to `usr1` (the opensmppbox connection). Kannel's bearerbox broadcasts MOs only to
+boxes WITHOUT a boxc-id; opensmppbox registers as `usr1`
+(`use-systemid-as-smsboxid = true`), so without the route every injected MO dies queued with
+`WARNING: smsbox_list empty!` — observed live; that is why the delta exists (§10).
+
+Injection (the service is tty-attached; `docker attach` requires a terminal on YOUR side):
+
+```bash
+docker compose attach smsc-fake-smsc     # interactive: type the line, detach with Ctrl-p Ctrl-q
+79033374423 79876543210 text hello from the mobile
+```
+
+Line syntax: `<sender> <receiver> text <message>` — sender first (the mobile), then the receiver
+(the short code), then the REQUIRED coding keyword `text`, then the body. Scripted feeding without
+a terminal: hold a fifo through `script -qec "docker attach --sig-proxy=false <container>" /dev/null`
+(a plain pipe is refused with `cannot attach stdin to a TTY-enabled container because stdin is not
+a terminal`).
+
+| Hop | Expected observation |
+|-----|----------------------|
+| fakesmsc accepts | its tty prints `DEBUG: fakesmsc: sent message N`. NOTE: it prints this even for a malformed line — the syntax verdict is the BEARERBOX's: `docker compose logs smsc-bearer-box` shows `WARNING: smsc_fake: invalid message syntax from client, ignored` for a bad line, `DEBUG: smsc_fake: new message received` for a good one. |
+| the MO becomes a `deliver_sm` | opensmppbox: `Sending PDU:` `type_name: deliver_sm` with `source_addr: "79033374423"`, `destination_addr: "79876543210"`. |
+| it crosses the relay | `/metrics`: +1 `{direction="EGRESS"}` (the `deliver_sm`) then +1 `{direction="INGRESS"}` (the `deliver_sm_resp`). |
+| the front receives it | `docker compose logs front-bearer-box`: the `SMPP[smsc1]: Got PDU:` dump shows the SAME `short_message` octets (`data: … hello from the m…obile`); the front status page's `rcvd: sms` +1. |
+| the ESME answers | opensmppbox: `Got PDU:` `type_name: deliver_sm_resp`, `command_status: 0`. |
+
+Wrong-leg delivery — the `deliver_sm` arriving anywhere but the originating pair — is the affinity
+defect class → bounce (§11). (The single-pair rig demonstrates the property; the multi-pair
+falsification is the A-1 carrier plan's, which this rig complements but does not replace.)
+
+### 6.3 `enquire_link` — Kannel's keepalive crossing the coupled pair
+
+A passive journey: launch, couple, watch. Kannel's SMPP client enquires every
+`enquire-link-interval` — 30 s by default (the conf does not set it; observed: the first
+`enquire_link` at couple + 30 s, then one per ~30 s).
+
+| Observation | Where |
+|-------------|-------|
+| `relay_pdus_total{direction="INGRESS"}` and `{direction="EGRESS"}` EACH +1 per interval — the `enquire_link` in, its resp out, never out of step | `/metrics` |
+| the actual PDUs | opensmppbox log: `Got PDU:` `type_name: enquire_link` (`command_id: 21 = 0x00000015`) answered `Sending PDU:` `type_name: enquire_link_resp`; the front bearerbox log shows the mirror pair (`SMPP[smsc1]: Sending enquire link:`). |
+| the session stays up across idle windows | front status page: `smsc1 … (online Ns` — N grows without bound while both ends live. |
+
+**The keepalive-vs-`pre-couple-idle-timeout` note (the accepted-risk constraint, stated for this
+rig).** Post-couple, `enquire_link` is OPAQUE RELAY both ways (AD-3/AD-32): the proxy never
+answers it and never synthesizes `enquire_link_resp` — opensmppbox does; keepalive traffic costs
+the proxy a relay and tells you nothing about it. PRE-couple, the opposite: any non-bind PDU — an
+`enquire_link` included — is bare-closed, no response at all (AD-32's uniform rule; the pre-couple
+windows are `companion.bind.adjudication-deadline` 4 s and `companion.bind.pre-couple-idle-timeout`
+30 s by default). The constraint is that the client's keepalive interval must exceed its bind
+latency: here the pre-couple window is bounded by the 4 s deadline (the §5.2 `oidc.timeout=4s`
+sits inside it) — an order of magnitude under Kannel's 30 s interval — and Kannel enquires only on
+a BOUND session, so this rig's front never trips the rule. A client whose keepalive fires inside
+the adjudication window would see its bind attempt bare-closed as a keepalive-driven disconnect:
+understood-by-design behavior, not a proxy defect (the accepted-risk register's interop note; the
+A-1 carrier plan carries the carrier-side check).
+
+### 6.4 The deny journeys — where each failure surfaces (wire vs. log vs. metric)
+
+Two journeys, one operational skill: reading a bind denial by its SURFACE. All the failure arms
+collapse to the SAME wire code — the discrimination lives in the proxy's logs/metrics and in
+whether the SMSC ever saw the bind. (§5.4 already runs the OIDC-side client-secret and
+Keycloak-down arms live; these two complete the set with the credential the FRONT controls.)
+
+**D1 — wrong SMSC credential (AD-32 case 4: the SMSC is the sole credential authority).** The
+front conf's `smsc-username/-password` valid at Keycloak, absent from `smsc-users.txt`:
+
+```bash
+# conf/front-kannel.conf: smsc-username = usr2 / smsc-password = pwd2 (the realm user that exists for exactly this)
+docker compose restart front-bearer-box && docker compose up -d     # dependents follow the bearerbox
+```
+
+**D2 — bad OIDC credential (AD-33: the proxy's own denial collapses on the wire).** Valid
+everywhere except Keycloak:
+
+```bash
+# conf/front-kannel.conf: smsc-password = anything-but-pwd1 (username stays usr1)
+docker compose restart front-bearer-box && docker compose up -d
+```
+
+Restore either by reverting the conf and restarting the same way — the couple returns within one
+10 s retry (observed both times).
+
+| Surface | D1 (the SMSC says no) | D2 (Keycloak says no) |
+|---------|-----------------------|-----------------------|
+| The wire (front log, every 10 s) | `ERROR: SMPP[smsc1]: SMSC rejected login to transmit, code 0x0000000d (Bind Failed).` | the IDENTICAL line |
+| Proxy stdout | SILENT — no `bind_accept`, no `bind_reject`, no WARN: no verdict was returned and the SMSC's own answer IS the answer (AD-27's pinned triggers) | one `bind_reject` line per retry: `"verdict":"DenyInvalid"`, `"bind_resp_command_status":"0x0000000D"` — the rich reason lives ONLY here |
+| `/metrics` | `relay_connections_closed_total{direction="INGRESS",reason="BIND_FAILED_NON_ROK"}` AND `{direction="EGRESS",…}` +1 per retry on BOTH legs; `relay_binds_rejected_total` flat; `relay_binds_unknown_total` flat | `relay_binds_rejected_total` +1 per retry AND `relay_binds_unknown_total` +1 (a reverse cell counts every reject on both); `relay_connections_closed_total{direction="INGRESS",reason="BIND_REJECTED"}` +1; NO egress-leg activity |
+| The SMSC's view | opensmppbox log: `Got PDU:` `type_name: bind_transceiver` with `system_id: "usr2"`, answered by ITS OWN `bind_transceiver_resp` — `command_status: 13 = 0x0000000d`, `system_id: NULL` — and THOSE bytes reach the front unchanged (the verbatim forward, AD-32 case 4) | opensmppbox sees NOTHING (zero `bind_transceiver` dumps) — the deny fired before the forward |
+
+The D1 note worth internalizing: opensmppbox happens to answer `0x0000000d` itself, so in THIS rig
+the two arms are wire-identical down to the code; the verbatim-forward property is still directly
+visible in opensmppbox's dump (its own answer, un-collapsed, `system_id: NULL` and all) and in the
+metric shape (`BIND_FAILED_NON_ROK` on both legs = the SMSC answered; `BIND_REJECTED` on the
+ingress only = the proxy answered). A collapsed or synthesized response on D1's wire — e.g. the
+front's code failing to match opensmppbox's dump — would violate the verbatim contract → defect,
+bounce (§11).
+
+## 7. The debugging guide — the entry points
+
+Where to look, roughly in reach order. The proxy-side surfaces are the SHIPPED ones (no logging or
+metrics were added for the sandbox — the JSON stream and `/metrics` as they ship ARE the debugging
+surface being proven); their full reference is
+[`docs/runbooks.md`](../docs/runbooks.md) (the deny-surface table, the log-event reference, the
+`/metrics` reference).
+
+| Entry point | How | What it gives you |
+|-------------|-----|-------------------|
+| The proxy's JSON stdout | the terminal §5.2 launched in (or its redirect) | the event spine: `startup_summary` (readiness), `bind_accept` / `bind_reject` (the couple and the verdict), the WARN catalog (drain deadline, idle watchdog, cap exhaustion). Grep `"event":`. |
+| The proxy's `/metrics` | `curl -s http://127.0.0.1:9090/metrics` | the discriminating counters: `relay_pdus_total{direction}` (is data flowing), `relay_binds_unknown_total` / `relay_binds_rejected_total`, and the full `relay_connections_closed_total{direction,reason}` grid — §6.4's table is read off exactly these. |
+| The proxy's TRACE arm (PDU bodies) | relaunch §5.2 with ONE more run arg: `--logging.level.smpp.companion.proxy.relay.pdu=TRACE` | one line per relayed PDU — `relayed pdu: direction=INGRESS command_id=0x4 length=66 body=0x00000042…` — the exact framed bytes crossing the relay, message text readable in the hex (observed live, §6.1). The bind family is redacted at EVERY level (the password never crosses); OFF by default. |
+| Kannel front status page | `curl "http://127.0.0.1:13000/status.txt?password=test"` | the front's world: box connections, the `smsc1` line (online vs reconnecting), per-SMSC counters (`rcvd: sms / dlr, sent: sms / dlr`), queue depth, DLR storage. |
+| Kannel SMSC status page | `curl "http://127.0.0.1:14000/status.txt?password=test"` | FAKE1's health, the SMSC-side DLR counters, the box connection list (the opensmppbox leg as `smsbox:usr1`). |
+| Kannel box logs — the byte view | `docker compose logs front-bearer-box` / `smsc-opensmpp-box` / `smsc-bearer-box` / `front-sms-box` | every box ships `log-level = 4` — the most verbose, with full SMPP PDU dumps. The front's `Sending PDU:` / `Got PDU:` dumps vs opensmppbox's are a two-ended wire tap AROUND the proxy: what left the front vs what the SMSC got is the verbatim-forward check without touching the proxy. (No runtime log knob — a level change is a conf edit + restart.) |
+| pg — the DLR stores | `docker compose exec pg psql -U postgres -d postgres -c 'SELECT * FROM front_bearer_dlr;'` (likewise `smsc_bearer_dlr`, `smsc_smpp_dlr`) | the DLR reservations and their `status`/`mask` columns — §6.1's hop rows. |
+| pg — sqlbox's log | `… -c 'SELECT sql_id,momt,sender,receiver,msgdata,dlr_mask,boxc_id FROM front_sms_log;'` | every MT and every DLR text that completed (`momt` = `MT` / `DLR`) — the durable transcript of the sends. |
+| fakesmsc's tty | `docker compose attach smsc-fake-smsc` (a terminal is required — §6.2) | inject MOs (§6.2's line syntax) and watch MT receipts print (`Got message N: <…>`). |
+
+Debugging heuristics — the §6.4 skill generalized:
+
+- **A bind that never couples** → proxy stdout first. `bind_reject` lines: the OIDC arm (read the
+  `verdict`; §5.4 names the sub-arms). Silence + `BIND_FAILED_NON_ROK` closes: the SMSC refused —
+  diff `conf/smsc-users.txt` against the front's `smsc-username/-password`. Silence +
+  `EGRESS_CONNECT_FAILED` closes: the egress dial — is opensmppbox up, is the §5.2 port right?
+- **A message that vanishes** → walk §6.1's hop table top-down; the first hop without its expected
+  observation is where it stopped. The proxy's counters tell you whether it crossed
+  (`relay_pdus_total`); the TRACE arm shows the bytes; the Kannel dumps show what each end saw.
+
+## 8. Bring-up troubleshooting — failures are named, never hidden
 
 | Symptom | What broke | Where to look / what to do |
 |---------|-----------|----------------------------|
@@ -414,16 +588,18 @@ and `docker stop --timeout 30 smpp-proxy` (exit 143) as the teardown. What you L
 | `front-sql-box` / `front-sms-box` `exited (0)` | Kannel boxes terminate cleanly when they lose their bearerbox — if `front-bearer-box` exited (row above), the dependents go with it | Bring the bearerbox back first, then `docker compose up -d` restores the dependents (verified: both re-registered as box connections within seconds) |
 | `front-sql-box` / `front-sms-box` crash-loop | Same conf-refusal class (they mount the same `./conf`), or their upstream box port is unreachable | `docker compose logs <service>`; then the box-port rows above |
 | `smsc-opensmpp-box` exits | `smpp-users.txt` missing/unreadable in the mounted conf, or 14001 unreachable | `docker compose logs smsc-opensmpp-box`; the logins file and bearerbox port are named in `conf/smsc-opensmppbox.conf` |
-| `smsc-fake-smsc` exits immediately | 10004 unreachable (smsc-bearer-box down) — fakesmsc dies fast when its connect fails | Bring `smsc-bearer-box` healthy first (compose ordering does this; a manual `docker compose start smsc-fake-smsc` re-attaches after a crash) |
+| `smsc-fake-smsc` exits immediately | 10004 unreachable (smsc-bearer-box down) — fakesmsc dies fast when its connect fails; a RESTART of a running `smsc-bearer-box` can also take it down with a glibc crash (`free(): double free detected in tcache 2` in its tty — observed, a Kannel 1.5.0 quirk; interop note, COMP-1 flavor) | Bring `smsc-bearer-box` healthy first (compose ordering does this; a manual `docker compose up -d` re-attaches after a crash). MO injection (§6.2) needs it attached — re-attach after any SMSC-side restart |
 | Front status page shows `smsc1` reconnecting forever | EXPECTED while the proxy is down (see §4) — or the proxy is up but not listening on 2775 | This is §5's precondition, not a rig bug: the couple is observed in the proxy's logs + `/metrics` once launched. If the proxy IS up, §5.4's table names the broken-input signatures |
 | `smsc-opensmpp-box` log shows `ERROR: Invalid SMPP PDU received` | A zero-byte/blind TCP probe hit 14567 (e.g. a port scanner, or your own `nc`/TCP liveness check) — opensmppbox treats the immediate close as a zero-length PDU and logs it per-connection thread | Probe artifact, not a rig fault; the box keeps serving (its own bearerbox connection is unaffected). Interop note (COMP-1 flavor): expect these lines whenever something polls 14567 without speaking SMPP |
 | `sendsms` curl returns 403 Authorization failed | Wrong sendsms credentials | The `sendsms-user` is `user`/`password` (`conf/front-kannel.conf`) |
+| An injected MO never arrives (§6.2) and `docker compose logs smsc-bearer-box` shows `WARNING: smsbox_list empty!` | The `group = smsbox-route` delta is missing from `conf/smsc-kannel.conf` (the MO has no route to the opensmppbox connection) | Restore the group (`smsbox-id = usr1`, `smsc-id = FAKE1`) and restart `smsc-bearer-box` — the bearerbox broadcasts MOs only to boxes WITHOUT a boxc-id, and opensmppbox carries one (§6.2's prerequisite note) |
+| fakesmsc printed `sent message N` but the bearerbox logged `smsc_fake: invalid message syntax from client, ignored` | The injected line's syntax is wrong — fakesmsc accepts and forwards anything; the BEARERBOX is the parser that rejects | Use §6.2's line syntax: `<sender> <receiver> text <message>` — the coding keyword (`text`) is required |
 | `keycloak` never turns healthy | The HTTPS listener never came up — cert/key mount unreadable, port 8443 taken on the host, or the container crashed at boot | `docker compose logs keycloak` (refusals name the file/option); check the §3 8443 row — including a concurrently running `:proxy:test` suite, whose `KeycloakContainer` binds the same fixed port |
 | The §5.1 discovery curl fails (404 / TLS error / connection refused) | 404: the realm did not import (bad JSON — the log says `Realm 'smpp-companions' imported` when it did); TLS error: hostname/cert mismatch (use `--cacert keycloak/certs/ca.pem` against `localhost`, not an IP or other name); refused: container down | `docker compose logs keycloak`; the curl is the authoritative realm-ready probe (the compose healthcheck asserts the listener only — see `compose.yml`'s service comment) |
 | The proxy refuses at boot: `…client-secret-path=… does not exist (OIDC client secret file missing) — refusing to start (SEC-060/AD-18)` | The §5.1 bootstrap was skipped (or the file moved) — AD-18 makes the path non-optional | Run the §5.1 steps; the refusal fires BEFORE any listener binds (exit 1, no `startup_summary` — no partial start) |
 | Proxy up, but every bind denies: `bind_reject` lines, verdict `DenyInvalid`, wire code 0x0d | The Keycloak client secret in `sandbox/secrets/oidc-client-secret` is stale — a container re-create regenerated it (§5.1's regeneration semantics) | Re-run the §5.1 fetch and overwrite the file; the next front retry couples |
 
-## 7. Teardown
+## 9. Teardown
 
 The ported compose gives `pg` no named volume (the playground pattern, kept as-is), so postgres
 data lives in an anonymous volume whose lifetime is the CONTAINER, not the project. Verified
@@ -450,15 +626,15 @@ graceful drain, proven in Story 5.1 and re-observed as part of §5.3's recipe pr
 force-closing the live pair at the PT10S deadline (Kannel never half-closes — expected), then exit
 143.
 
-## 8. Deltas from the ported source (honesty list)
+## 10. Deltas from the ported source (honesty list)
 
 The porting source is the proven playground chain; these are ALL the deltas, so the rig never
 drifts silently:
 
-1. **`conf/front-kannel.conf`, the ONE wiring delta:** the front `group = smsc` `port` re-pointed
-   `14567 → 2775` (`host` stays `host.docker.internal`) — the front bearerbox binds THROUGH the
-   host-run proxy instead of straight at opensmppbox. A sandbox with two wiring deltas is a
-   different rig; there is exactly one.
+1. **`conf/front-kannel.conf`, the ONE wiring re-point:** the front `group = smsc` `port`
+   re-pointed `14567 → 2775` (`host` stays `host.docker.internal`) — the front bearerbox binds
+   THROUGH the host-run proxy instead of straight at opensmppbox. A sandbox with two wiring
+   re-points is a different rig; there is exactly one.
 2. **`compose.yml` identity:** an explicit project `name: smpp-bmad-sandbox` (the compose default
    would otherwise be the checkout directory name — and would collide with the playground's own
    compose project on this machine), and `build: ./kannel` (the self-contained `sandbox/` layout;
@@ -471,9 +647,17 @@ drifts silently:
    contract, never a place where a secret value is "just sandbox data"), the `.gitignore` entry
    covering it, and the §5 recipe. Keycloak was never part of the ported source — it is the
    reverse cell's missing adjudicator, not a port.
-4. **The journeys:** land with T3.
+4. **`conf/smsc-kannel.conf`, the MO-routing addition (T3, as landed):** a `group = smsbox-route`
+   (`smsbox-id = usr1`, `smsc-id = FAKE1`) the ported source never had — the playground never
+   routed MOs. Kannel's bearerbox broadcasts MOs only to boxes WITHOUT a boxc-id, and opensmppbox
+   registers as `usr1`; without the route every fakesmsc-injected MO dies queued with
+   `WARNING: smsbox_list empty!` (observed live). Found by executing the §6.2 journey; required
+   for it, documented here.
+5. **The journeys + the debugging guide (T3, as landed):** §6's four journeys and §7's entry-point
+   table, all observations executed live on the rig the same day; their one conf requirement is
+   delta 4 above.
 
-## 9. Findings discipline
+## 11. Findings discipline
 
 - A proxy defect surfaced via Kannel is bounced to the owning epic (the honest-exception pattern)
   and recorded in deferred-work — it is never patched inside the sandbox, and never tuned away.
