@@ -78,7 +78,7 @@ context:
 - [x] **T1 — the Kannel rig in-repo** — `sandbox/` with the ported Dockerfile, `conf/` (the ONE delta: front SMSC re-pointed at `host.docker.internal:2775`), `init.sql`, and `compose.yml` (pg + both Kannel sides + healthchecks, ports 8080/13000/14000/14567 published, fakesmsc tty-attached for injection). Verify from a clean checkout: `docker compose up` → every healthcheck green; `docker compose config` validates. Mutation: any service's healthcheck removed or conf broken → the README's bring-up table names the failure instead of hiding it.
 - [x] **T2 — Keycloak + the proxy launch recipe** — Compose Keycloak service (dev mode, realm export mirroring `KeycloakFixture`: DAG enabled, confidential client; pin ≥26.7.0 per the 3.1 verdict) + the gitignored client-secret file by path (AD-18); README section: build the jar (`./gradlew :proxy:bootJar`), the `java -jar` launch with the operator flag set + reverse.mode-b args (ingress 2775, egress 14567, OIDC → compose Keycloak, secret file path), expected `startup_summary` + Mode B banner, and the front bearerbox binding THROUGH the proxy (couple in logs + `/metrics`). Mutation: launch recipe pointed at a stale jar or wrong port → the bind never couples → the recipe's expected-observation step fails loudly.
 - [x] **T3 — the correctness journeys + debugging guide** — README journeys, each with expected observations per hop: happy send + DLR round trip (postgres row + status pages); `deliver_sm` injection toward the ESME; `enquire_link` crossing the coupled pair (with the keepalive-vs-`pre-couple-idle-timeout` note); the two deny journeys (wrong SMSC credential → AD-32 case-4 verbatim non-ROK forward; bad OIDC credential → AD-33 collapsed generic deny on the wire, rich reason in JSON logs only); the debugging entry-point table (Kannel admin `status.txt`, log levels, proxy `/metrics` + JSON lines, pg tables, fakesmsc stdin). Mutation: a journey whose expected observation is unstated or unobservable → not shipped (the Always rule bites at review).
-- [ ] **T4 — proofs, catalog rows, ledger** — `./gradlew clean build --console=plain` GREEN untouched (the Gradle-inert claim verified, not assumed); sandbox journey rows land in the catalog as dated ops-tier entries (COMP-1/E2E-flavored, labeled manual-rig like OBS-035/037); any Kannel-quirk interop notes recorded in the README + deferred-work if actionable; `epic-6-context.md` regenerated to as-built.
+- [x] **T4 — proofs, catalog rows, ledger** — `./gradlew clean build --console=plain` GREEN untouched (the Gradle-inert claim verified, not assumed); sandbox journey rows land in the catalog as dated ops-tier entries (COMP-1/E2E-flavored, labeled manual-rig like OBS-035/037); any Kannel-quirk interop notes recorded in the README + deferred-work if actionable; `epic-6-context.md` regenerated to as-built.
 
 **Acceptance Criteria:**
 - Given a clean checkout and Docker, when the README's bring-up is followed, then every compose service reaches healthy and the front bearerbox's SMPP transceiver binds through the host-run proxy — the couple visible in the proxy's logs and `/metrics`.
@@ -117,6 +117,7 @@ context:
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T2 only.
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T3 only (this run).
+glm-5.2 (Claude Code dispatch agent), 2026-09-17, T4 only (this run).
 
 ### Debug Log References
 
@@ -262,6 +263,37 @@ T3 (2026-09-17):
 - Final teardown: `docker compose down -v` — no containers, network, or volumes left; no proxy
   process running; the attach holder killed; scratch files removed.
 
+T4 (2026-09-17):
+
+- `./gradlew clean build --console=plain` — **BUILD SUCCESSFUL in 3m 3s**, exit 0, 34 actionable
+  tasks: 25 executed, 9 up-to-date. Test-result XML totals: `:codec` 82 tests / 0 failed /
+  0 skipped, `:proxy` 439 tests / 0 failed / 0 skipped — **521 total, 0 skipped** (the Docker
+  suites ran — the daemon is up on this box). The Gradle-inert claim verified on BOTH axes:
+  `git status` names no Gradle file (before and after the build — only `.gitignore`,
+  `sandbox/**`, this spec, the catalog, `epic-6-context.md` ever appear), and no build file
+  references `sandbox/` (grepped `settings.gradle.kts`, root/`proxy`/`codec` `build.gradle.kts`,
+  `gradle.properties`, `buildSrc/` — zero references).
+- `docker compose -f sandbox/compose.yml config` — VALID (re-checked at close-out; the spec's
+  verification command form; the live all-healthy bring-ups are T1–T3's recorded runs, the last
+  torn down `down -v` at T3's end).
+- Catalog rows landed: **E2E-002** (happy send + DLR round trip), **E2E-003** (`deliver_sm` MO
+  injection — A-1 affinity against a real stack), **E2E-004** (`enquire_link` crossing the
+  coupled pair), **E2E-005** (the two deny journeys, AD-32 case 4 vs AD-33) — under a new §8.2
+  "The Kannel manual-rig journeys" (E2E-001 got the §8.1 heading beside it), each row labeled
+  `[manual rig — Story 6.3]` with a Status bullet naming the live 2026-09-17 execution and its
+  README §6 home; the dated Row-additions note added at the top; §1.1/§1.2 tallies amended
+  **254 → 258** (E2E 1 → 5, P2 72 → 76, the level-tally e2e column 11 → 15); §9.4's A-1
+  testability boundary gained the dated E2E-003 real-stack parenthetical.
+- Interop-note sweep (the README half of the ledger item): both T3 quirks present in BOTH
+  READMEs — the fakesmsc glibc `double free` row and the zero-byte-probe `Invalid SMPP PDU`
+  row in §8's troubleshooting table, the opensmppbox-0x0D wire-identical note in §6.4. Deferred-
+  work determination: **neither actionable** — upstream Kannel 1.5.0 behavior / rig properties;
+  the only proxy-side "actions" imaginable would be tuning the product for the sandbox, which
+  the Always rules forbid. The README interop note IS the terminal disposition the findings
+  discipline prescribes → no ledger entry added.
+- `epic-6-context.md` regenerated to as-built (the 6.1/6.2 T4 precedent): the dated regeneration
+  comment, the Goal status line, the 6.3 DONE summary.
+
 ### Completion Notes List
 
 - T1 executed per the one-task-per-conversational-step rule; T2 (Keycloak + proxy launch
@@ -391,6 +423,33 @@ T3 completion notes (2026-09-17):
   `.gitignore`, `sandbox/**`, this spec — and now `sandbox/conf/smsc-kannel.conf`); the formal
   `clean build` GREEN check stays with T4.
 
+T4 completion notes (2026-09-17):
+
+- T4 executed per the one-task-per-conversational-step rule; all four story tasks are now
+  complete — the story awaits its review round.
+- Owner directive honored to the end: NOTHING committed across the whole story — no `git add`,
+  no `git commit`; the T1–T3 staged index untouched, all T4 edits landing as unstaged
+  working-tree changes beside it.
+- The clean-build proof closes the claim T1–T3 each carried forward structurally: GREEN in
+  3m 3s, 521 tests (0 failed, 0 skipped — the Docker suites included), zero Gradle-file
+  changes, zero build-file references to `sandbox/`. The sandbox is proven inert, not assumed.
+- The catalog rows follow the OBS-035/037 precedent as tasked: dated, ops-tier, labeled
+  `[manual rig — Story 6.3]`, non-CI by construction (the proof artifact is the documented
+  journey with per-hop expected observations, executed live 2026-09-17 per `sandbox/README.md`
+  §6). The count amendment 254 → 258 follows the RELAY-027/028 and DEPLOY-015 row-additions
+  precedent (tallies amended in step, dated note at the top). No P0/P1 coverage claim rides on
+  the new rows (all P2) — the coverage core is untouched.
+- The "ledger" half of the task is visibly DECIDED, not skipped: no proxy defect was found by
+  any journey (T3's live runs — nothing to bounce to an owning epic), and the two Kannel-side
+  quirks are README interop notes, the spec's terminal disposition for Kannel findings — neither
+  is actionable (upstream Kannel 1.5.0 behavior; the only imaginable proxy-side changes would be
+  sandbox-convenience tuning the Always rules forbid), so `deferred-work.md` gains NO 6.3 entry.
+  The `smsbox-route` conf gap T3's journey surfaced was already fixed in the rig itself (T3,
+  deltas item 4) — not a deferral.
+- README status headers trued in both languages (T1+T2+T3 → T1–T4; the "remaining task: T4"
+  line replaced by the T4 record: clean-build GREEN, the catalog rows, the epic-context
+  regeneration). No T1–T3 journey/guide content was re-edited.
+
 ### File List
 
 - `sandbox/compose.yml` — the 7-service chain (ported; +`name:`, `build: ./kannel`).
@@ -449,3 +508,17 @@ T3 (2026-09-17) additions/changes:
 - `sandbox/compose.yml` — the header comment's delta list trued to name the MO-routing conf
   delta (no service change).
 - `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T3 checkbox + this record.
+
+T4 (2026-09-17) additions/changes:
+
+- `_bmad-output/test-artifacts/test-design/test-coverage-scenarios.md` — + the dated Row-additions
+  note (2026-09-17, Story 6.3 T4), a §8.1 heading over E2E-001, §8.2 "The Kannel manual-rig
+  journeys" with rows **E2E-002..E2E-005** (each `[manual rig — Story 6.3]` with its
+  live-executed Status bullet), the §1.1/§1.2 tallies amended 254 → 258, and §9.4's A-1
+  testability-boundary dated parenthetical.
+- `_bmad-output/implementation-artifacts/epic-6-context.md` — regenerated to as-built: the dated
+  regeneration comment, the Goal status line, the 6.3 DONE summary.
+- `sandbox/README.md` + `sandbox/README.ru.md` — the status headers trued to T1–T4 (T4's record:
+  the clean-build GREEN proof, the catalog rows, the epic-context regeneration); no other content
+  touched.
+- `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T4 checkbox + this record.

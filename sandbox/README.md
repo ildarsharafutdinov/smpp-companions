@@ -1,12 +1,14 @@
 # The Kannel Sandbox — a real-SMPP rig for debugging and correctness proof
 
-> **Status:** Story 6.3, tasks T1+T2+T3 (2026-09-17) — T1 the Kannel rig itself (compose file,
+> **Status:** Story 6.3, tasks T1–T4 (2026-09-17) — T1 the Kannel rig itself (compose file,
 > pinned-source Dockerfile, `conf/`, `init.sql`, this bring-up guide); T2 the compose Keycloak
 > service (the ROPC adjudication the reverse cell requires, AD-17 fail-closed — no auth-bypass
 > exists) and the host-run proxy launch recipe (§5, machine-executed from this page); T3 the
 > correctness journeys with expected observations per hop (§6) and the debugging guide (§7), both
-> executed live from this page on 2026-09-17's rig. The remaining story task: **T4** the
-> proofs/catalog/ledger close-out. Spec:
+> executed live from this page on 2026-09-17's rig. T4 the close-out, same date: the Gradle-inert
+> claim verified (`./gradlew clean build --console=plain` GREEN, 521 tests, zero Gradle-file
+> changes), the journeys landed in the test catalog as dated manual-rig ops-tier rows
+> (E2E-002..005), and `epic-6-context.md` regenerated to as-built. Spec:
 > `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md`. The sandbox is developer tooling,
 > not shipped product: it changes zero main-source lines, is inert to Gradle (`./gradlew clean build`
 > untouched), wires into no CI, and publishes no performance numbers (Epic 7 owns measurement).

@@ -30,6 +30,21 @@
      one-DockerRig structural guard; the daemon-less observation), 9 findings rejected with
      evidence (jSMPP 3.0.2's 60s enquireLinkTimer default bytecode-verified twice). 16 targeted
      rows re-verified green, both Docker suites included. -->
+<!-- Regenerated to as-built 2026-09-17 (Story 6.3 T4): 6.3's four tasks landed — T1 the rig in-repo
+     (`sandbox/`: the ported 7-service compose chain, byte-identical except the ONE wiring re-point
+     14567→2775 + the pinned-source Kannel 1.5.0 Dockerfile + conf/init.sql + healthchecks + the
+     bring-up guide and its RU twin; the live conf-refusal mutation run), T2 the compose Keycloak
+     (26.7.0, fixture-mirrored realm, DAG-on confidential client whose secret is GENERATED at import
+     and fetched by path — AD-18) + the host-run packaged-jar launch recipe (§5, executed verbatim:
+     Mode B banner, startup_summary, bind_accept coupled through the proxy; the live wrong-egress-port
+     and deny-arm mutations), T3 the four correctness journeys with per-hop expected observations +
+     the debugging guide (§6/§7, all executed live; the rig's one conf fix = the smsbox-route
+     MO-routing delta the deliver_sm journey required), T4 the close-out (the Gradle-inert
+     `./gradlew clean build --console=plain` verified GREEN — 521 tests, 0 failed, 0 skipped, zero
+     Gradle-file changes; the journeys landed as catalog rows E2E-002..005, manual-rig ops-tier per
+     the OBS-035/037 precedent; the Kannel quirks stay README interop notes — neither actionable, so
+     no deferred-work entry; this file regenerated). Nothing bounced: no proxy defect surfaced via
+     Kannel. -->
 
 ## Goal
 
@@ -46,7 +61,9 @@ runbooks, cipher-allowlist policy, Mode B warning text. Status: Epics 1–5 done
 2026-09-13 — the operator surface exists as-built under `docs/` (see Stories); Story 6.2 (the
 composed-conformance half) done 2026-09-16, review round 1 closed same date — E2E-001 landed as
 three rungs, the journey matrix widened per the ratified decision, the operator docs trued
-(see Stories)**.
+(see Stories); Story 6.3 (the sandbox capstone) done 2026-09-17 — the Kannel rig, the compose
+Keycloak, the host-run launch recipe, and the four live-executed correctness journeys under
+`sandbox/`, closed out with the catalog rows and the Gradle-inert GREEN build (see Stories)**.
 
 ## Stories
 
@@ -90,6 +107,18 @@ renumbered 6.1→6.3 so number = execution order, the repo convention.)*
   launch recipe, and author the correctness journeys (happy send + DLR round trip, deliver_sm injection,
   enquire_link crossing, fail-closed deny journeys) with expected observations. Last by design — the capstone
   real-stack pass + debugging environment after docs and conformance exist to compare against.
+  **DONE 2026-09-17 (T1–T4): `sandbox/` is the self-contained rig — the ported Kannel 1.5.0 chain
+  (ONE wiring re-point: the front SMSC dials `host.docker.internal:2775`; plus T3's `smsbox-route`
+  MO-routing delta the deliver_sm journey itself surfaced), the compose Keycloak 26.7.0 mirroring
+  `KeycloakFixture`'s realm (generated secret fetched by path, AD-18), the host-run packaged-jar
+  launch recipe (§5, machine-executed: `startup_summary` + Mode B banner + the couple in logs and
+  `/metrics`, with the live wrong-port/secret/Keycloak-down mutations), the four correctness
+  journeys (§6) and the debugging guide (§7), every observation executed live on 2026-09-17's rig;
+  the journeys landed as catalog rows E2E-002..005 (manual-rig ops-tier, the OBS-035/037 precedent);
+  `./gradlew clean build --console=plain` GREEN with zero Gradle-file changes. No proxy defect
+  surfaced via Kannel (nothing bounced); the two Kannel-side quirks (fakesmsc's glibc double-free on
+  bearerbox restart; opensmppbox answering its own credential refusal with the same 0x0D the AD-33
+  collapse uses) are README interop notes — not actionable, no deferred-work entry.**
 
 ## Requirements & Constraints
 
