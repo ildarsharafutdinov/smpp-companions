@@ -1,0 +1,113 @@
+# The Kannel sandbox rig (Story 6.3) — ported from the proven pre-project playground
+# (/home/ildar/Documents/smpp-sandbox). Deltas from the source are exactly: the explicit
+# project name below, the build path (self-contained sandbox/ layout), and the front SMSC
+# re-point in conf/front-kannel.conf (host.docker.internal:2775 — the host-run proxy).
+# Every inter-service hop hairpins through the host (host.docker.internal + the published
+# ports) — that is the ported pattern that lets the host-run proxy sit in the chain.
+# The Keycloak service (the ROPC adjudication the reverse cell requires) is added by T2.
+name: smpp-bmad-sandbox
+
+services:
+  pg:
+    image: postgres:latest
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 2s
+      timeout: 1s
+      retries: 5
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - 5432:5432
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  front-bearer-box:
+    build: ./kannel
+    depends_on:
+      pg:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl \"http://127.0.0.1:13000/status.txt?password=test\"" ]
+      interval: 2s
+      timeout: 1s
+      retries: 5
+    ports:
+      - 13000:13000
+      - 13001:13001
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./conf:/etc/kannel:ro
+    command: [ /usr/local/kannel/sbin/bearerbox, /etc/kannel/front-kannel.conf ]
+
+  front-sql-box:
+    build: ./kannel
+    depends_on:
+      front-bearer-box:
+        condition: service_healthy
+    ports:
+      - 13002:13002
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./conf:/etc/kannel:ro
+    command: [ /usr/local/kannel/sbin/sqlbox, /etc/kannel/front-sqlbox.conf ]
+
+  front-sms-box:
+    build: ./kannel
+    depends_on:
+      - front-sql-box
+    ports:
+      - 8080:8080
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./conf:/etc/kannel:ro
+    command: [ /usr/local/kannel/sbin/smsbox, /etc/kannel/front-kannel.conf ]
+
+  smsc-bearer-box:
+    build: ./kannel
+    depends_on:
+      pg:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl \"http://127.0.0.1:14000/status.txt?password=test\"" ]
+      interval: 2s
+      timeout: 1s
+      retries: 5
+    ports:
+      - 10004:10004
+      - 14000:14000
+      - 14001:14001
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./conf:/etc/kannel:ro
+    command: [ /usr/local/kannel/sbin/bearerbox, /etc/kannel/smsc-kannel.conf ]
+
+  smsc-opensmpp-box:
+    build: ./kannel
+    depends_on:
+      smsc-bearer-box:
+        condition: service_healthy
+    ports:
+      - 14567:14567
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./conf:/etc/kannel:ro
+    command: [ /usr/local/kannel/sbin/opensmppbox, /etc/kannel/smsc-opensmppbox.conf ]
+
+  smsc-fake-smsc:
+    build: ./kannel
+    depends_on:
+      smsc-bearer-box:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    command: [ sh, -c, /usr/local/kannel/sbin/fakesmsc -H host.docker.internal -r 10004 ]

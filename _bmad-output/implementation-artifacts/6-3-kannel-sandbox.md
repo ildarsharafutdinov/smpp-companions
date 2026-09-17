@@ -2,9 +2,9 @@
 title: 'Story 6.3 — the Kannel sandbox: a real-SMPP docker-compose rig for debugging and correctness proof'
 type: 'feature'
 created: '2026-09-12'
-status: 'ready-for-dev'
+status: 'in-progress'
 route: 'dispatch'
-baseline_commit: 2f2b0e81444fdb8256fcf0a208d058385ea9074d
+baseline_commit: 73e4813daf1138c7825041b65f2707518bbcf11f
 review_loop_iteration: 0
 context:
   - {project-root}/_bmad-output/implementation-artifacts/epic-6-context.md
@@ -75,7 +75,7 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] **T1 — the Kannel rig in-repo** — `sandbox/` with the ported Dockerfile, `conf/` (the ONE delta: front SMSC re-pointed at `host.docker.internal:2775`), `init.sql`, and `compose.yml` (pg + both Kannel sides + healthchecks, ports 8080/13000/14000/14567 published, fakesmsc tty-attached for injection). Verify from a clean checkout: `docker compose up` → every healthcheck green; `docker compose config` validates. Mutation: any service's healthcheck removed or conf broken → the README's bring-up table names the failure instead of hiding it.
+- [x] **T1 — the Kannel rig in-repo** — `sandbox/` with the ported Dockerfile, `conf/` (the ONE delta: front SMSC re-pointed at `host.docker.internal:2775`), `init.sql`, and `compose.yml` (pg + both Kannel sides + healthchecks, ports 8080/13000/14000/14567 published, fakesmsc tty-attached for injection). Verify from a clean checkout: `docker compose up` → every healthcheck green; `docker compose config` validates. Mutation: any service's healthcheck removed or conf broken → the README's bring-up table names the failure instead of hiding it.
 - [ ] **T2 — Keycloak + the proxy launch recipe** — Compose Keycloak service (dev mode, realm export mirroring `KeycloakFixture`: DAG enabled, confidential client; pin ≥26.7.0 per the 3.1 verdict) + the gitignored client-secret file by path (AD-18); README section: build the jar (`./gradlew :proxy:bootJar`), the `java -jar` launch with the operator flag set + reverse.mode-b args (ingress 2775, egress 14567, OIDC → compose Keycloak, secret file path), expected `startup_summary` + Mode B banner, and the front bearerbox binding THROUGH the proxy (couple in logs + `/metrics`). Mutation: launch recipe pointed at a stale jar or wrong port → the bind never couples → the recipe's expected-observation step fails loudly.
 - [ ] **T3 — the correctness journeys + debugging guide** — README journeys, each with expected observations per hop: happy send + DLR round trip (postgres row + status pages); `deliver_sm` injection toward the ESME; `enquire_link` crossing the coupled pair (with the keepalive-vs-`pre-couple-idle-timeout` note); the two deny journeys (wrong SMSC credential → AD-32 case-4 verbatim non-ROK forward; bad OIDC credential → AD-33 collapsed generic deny on the wire, rich reason in JSON logs only); the debugging entry-point table (Kannel admin `status.txt`, log levels, proxy `/metrics` + JSON lines, pg tables, fakesmsc stdin). Mutation: a journey whose expected observation is unstated or unobservable → not shipped (the Always rule bites at review).
 - [ ] **T4 — proofs, catalog rows, ledger** — `./gradlew clean build --console=plain` GREEN untouched (the Gradle-inert claim verified, not assumed); sandbox journey rows land in the catalog as dated ops-tier entries (COMP-1/E2E-flavored, labeled manual-rig like OBS-035/037); any Kannel-quirk interop notes recorded in the README + deferred-work if actionable; `epic-6-context.md` regenerated to as-built.
@@ -114,8 +114,79 @@ context:
 
 ### Agent Model Used
 
+glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
+
 ### Debug Log References
+
+- `docker compose -f sandbox/compose.yml config` — VALID (spec's verification command form).
+- `docker compose up -d --build` — full cache hit on the playground's layers; all 7 services up;
+  `pg`, `front-bearer-box`, `smsc-bearer-box` reach `(healthy)` in order; `docker compose ps`
+  shows the rest running. Build `Apr 25 2026`, Kannel `1.5.0`.
+- Front status page: `smsbox:sqlbox1` + `smsbox:smsbox1` on-line; DLR `using pgsql storage`; SMSC
+  connections empty with the expected 10 s reconnect loop toward `host.docker.internal:2775`
+  (the conf delta live). SMSC status page: `FAKE1 (online ...)`. `sendsms` curl → HTTP 202.
+  pg `\dt`: the three init.sql DLR tables + sqlbox's `front_sms_log`/`front_sms_insert`.
+- opensmppbox: `Connected to bearerbox at host.docker.internal port 14001`; 14567 TCP-listening.
+- Mutation run (live): bogus `group = nonexistent-group` appended to `conf/front-kannel.conf` →
+  bearerbox logs `Group 'nonexistent-group' is no valid group identifier. Error found on line 58
+  of file '/etc/kannel/front-kannel.conf'`, exits 1, container `exited` (healthcheck never
+  greens); dependents `front-sql-box`/`front-sms-box` exit 0 with it. Conf restored
+  byte-identical (`cmp`), `docker compose up -d` → full chain healthy again. The README's
+  bring-up table carries the observed wording.
+- Teardown probes: a DLR row does NOT survive `down`/`up` (anonymous volume — fresh store,
+  init.sql re-runs) but DOES survive `stop`/`start`; README §6 states this verified behavior.
+  Final teardown `down -v` — no containers, network, or volumes left.
 
 ### Completion Notes List
 
+- T1 executed per the one-task-per-conversational-step rule; T2 (Keycloak + proxy launch
+  recipe), T3 (journeys + debugging guide), T4 (proofs/catalog/ledger) NOT started.
+- Owner mid-T1 additions (2026-09-17, applied by the orchestrator after the T1 diff audit):
+  (a) Russian translation `sandbox/README.ru.md` (EN original normative, docs/ru conventions +
+  glossary terms; colocated next to the original); (b) the chain schema in both READMEs converted
+  ASCII → mermaid; (c) opensmppbox necessity checked — verdict REQUIRED (fakesmsc is a Kannel
+  box-protocol CLIENT into the bearerbox, never an SMPP listener; opensmppbox is the rig's only
+  SMPP 3.4 server: egress termination + AD-32 case-4 credential authority + SMPP↔box translation
+  for the A-1 deliver_sm journey + smsc_smpp_dlr hop) — documented as README §2.1 in both
+  languages. Also disclosed: the T1 diff audit staged `sandbox/` intent-to-add (`git add -N`,
+  index entries only — no commits).
+- Frozen Decision 1 (proxy placement) RATIFIED at dispatch (owner, 2026-09-17): host-run packaged
+  jar stays THE launch; the compose-side proxy (Epic-5 distroless image, same hairpin wiring,
+  read-only AD-18 secret mount — the shape 6.2's E2E already proved) is DOCUMENTED as an optional
+  variant only. T2 therefore delivers a "docker-proxy variant" README section beside the host
+  `java -jar` recipe; the mermaid diagram keeps "on the host, packaged jar" (made vertical per
+  owner, same day). The why-host-vs-docker rationale is stated in README §1 of both languages
+  (debugger/JDK-toolbox/flag access vs deliberately minimal distroless; docker variant not
+  rejected — 6.2-proven — just not the debugging posture).
+- Owner directive honored: NOTHING committed — no `git add`, no `git commit`; all work sits
+  uncommitted in the working tree.
+- Deltas from the porting source, all listed in README §7: the ONE conf re-point
+  (`front-kannel.conf` `port = 14567 → 2775`, host unchanged; its route-comment diagram trued to
+  the proxied topology and anglicized per the repo language rule), the compose project
+  `name: smpp-bmad-sandbox` + `build: ./kannel` (self-contained layout). Everything else ported
+  byte-identical (`cmp`-verified: Dockerfile, init.sql, db.conf, front-sqlbox.conf,
+  smsc-kannel.conf, smsc-opensmppbox.conf, smsc-users.txt).
+- Two observed interop notes landed in the README troubleshooting table: zero-byte TCP probes
+  of 14567 make opensmppbox log `ERROR: Invalid SMPP PDU received` (probe artifact, box keeps
+  serving); Kannel boxes exit cleanly when their bearerbox exits (dependents need `up -d`).
+- The Kannel build was a full layer-cache hit (the playground images predate it); a genuinely
+  cold build compiles from the pinned source and was NOT re-timed here (no perf numbers by
+  contract).
+- Gradle inertness at T1 is structural: no build file references `sandbox/` (grepped
+  settings/build/buildSrc/proxy/codec) and `git status` shows no Gradle-file changes; the
+  formal `./gradlew clean build --console=plain` GREEN check stays with T4 per the task list.
+
 ### File List
+
+- `sandbox/compose.yml` — the 7-service chain (ported; +`name:`, `build: ./kannel`).
+- `sandbox/kannel/Dockerfile` — Kannel 1.5.0 pinned-source build, byte-identical port.
+- `sandbox/conf/front-kannel.conf` — the ONE wiring delta (2775) + trued route diagram.
+- `sandbox/conf/db.conf`, `front-sqlbox.conf`, `smsc-kannel.conf`, `smsc-opensmppbox.conf`,
+  `smsc-users.txt` — byte-identical ports.
+- `sandbox/init.sql` — the pgsql DLR tables, byte-identical port.
+- `sandbox/README.md` — the T1 bring-up guide (readiness table, failure-naming troubleshooting
+  table, teardown semantics, deltas list, findings discipline) + mermaid chain schema + §2.1
+  opensmppbox use case; T2/T3 append to it.
+- `sandbox/README.ru.md` — Russian translation of the README (EN normative; owner addition
+  2026-09-17).
+- `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T1 checkbox + this record.
