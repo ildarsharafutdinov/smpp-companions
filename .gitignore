@@ -32,3 +32,8 @@ out/
 .classpath
 .settings/
 .DS_Store
+
+# Story 6.3 sandbox — AD-18: the OIDC client secret rides a gitignored FILE consumed by path;
+# the operator-created sandbox/secrets/ never enters the repo (a debug replica of the deploy
+# contract, never a place where a secret value is "just sandbox data").
+sandbox/secrets/

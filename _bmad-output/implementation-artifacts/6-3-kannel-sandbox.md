@@ -76,7 +76,7 @@ context:
 
 **Execution:**
 - [x] **T1 — the Kannel rig in-repo** — `sandbox/` with the ported Dockerfile, `conf/` (the ONE delta: front SMSC re-pointed at `host.docker.internal:2775`), `init.sql`, and `compose.yml` (pg + both Kannel sides + healthchecks, ports 8080/13000/14000/14567 published, fakesmsc tty-attached for injection). Verify from a clean checkout: `docker compose up` → every healthcheck green; `docker compose config` validates. Mutation: any service's healthcheck removed or conf broken → the README's bring-up table names the failure instead of hiding it.
-- [ ] **T2 — Keycloak + the proxy launch recipe** — Compose Keycloak service (dev mode, realm export mirroring `KeycloakFixture`: DAG enabled, confidential client; pin ≥26.7.0 per the 3.1 verdict) + the gitignored client-secret file by path (AD-18); README section: build the jar (`./gradlew :proxy:bootJar`), the `java -jar` launch with the operator flag set + reverse.mode-b args (ingress 2775, egress 14567, OIDC → compose Keycloak, secret file path), expected `startup_summary` + Mode B banner, and the front bearerbox binding THROUGH the proxy (couple in logs + `/metrics`). Mutation: launch recipe pointed at a stale jar or wrong port → the bind never couples → the recipe's expected-observation step fails loudly.
+- [x] **T2 — Keycloak + the proxy launch recipe** — Compose Keycloak service (dev mode, realm export mirroring `KeycloakFixture`: DAG enabled, confidential client; pin ≥26.7.0 per the 3.1 verdict) + the gitignored client-secret file by path (AD-18); README section: build the jar (`./gradlew :proxy:bootJar`), the `java -jar` launch with the operator flag set + reverse.mode-b args (ingress 2775, egress 14567, OIDC → compose Keycloak, secret file path), expected `startup_summary` + Mode B banner, and the front bearerbox binding THROUGH the proxy (couple in logs + `/metrics`). Mutation: launch recipe pointed at a stale jar or wrong port → the bind never couples → the recipe's expected-observation step fails loudly.
 - [ ] **T3 — the correctness journeys + debugging guide** — README journeys, each with expected observations per hop: happy send + DLR round trip (postgres row + status pages); `deliver_sm` injection toward the ESME; `enquire_link` crossing the coupled pair (with the keepalive-vs-`pre-couple-idle-timeout` note); the two deny journeys (wrong SMSC credential → AD-32 case-4 verbatim non-ROK forward; bad OIDC credential → AD-33 collapsed generic deny on the wire, rich reason in JSON logs only); the debugging entry-point table (Kannel admin `status.txt`, log levels, proxy `/metrics` + JSON lines, pg tables, fakesmsc stdin). Mutation: a journey whose expected observation is unstated or unobservable → not shipped (the Always rule bites at review).
 - [ ] **T4 — proofs, catalog rows, ledger** — `./gradlew clean build --console=plain` GREEN untouched (the Gradle-inert claim verified, not assumed); sandbox journey rows land in the catalog as dated ops-tier entries (COMP-1/E2E-flavored, labeled manual-rig like OBS-035/037); any Kannel-quirk interop notes recorded in the README + deferred-work if actionable; `epic-6-context.md` regenerated to as-built.
 
@@ -115,6 +115,7 @@ context:
 ### Agent Model Used
 
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
+glm-5.2 (Claude Code dispatch agent), 2026-09-17, T2 only (this run).
 
 ### Debug Log References
 
@@ -136,6 +137,59 @@ glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
 - Teardown probes: a DLR row does NOT survive `down`/`up` (anonymous volume — fresh store,
   init.sql re-runs) but DOES survive `stop`/`start`; README §6 states this verified behavior.
   Final teardown `down -v` — no containers, network, or volumes left.
+
+T2 (2026-09-17):
+
+- `docker compose -f sandbox/compose.yml config` — VALID (re-checked after the keycloak service
+  landed; the spec's verification command form).
+- `docker compose up -d --build` — the 8-service rig: Kannel layers full cache hit; `keycloak`
+  (quay.io/keycloak/keycloak:26.7.0, already pulled by the test tier) reaches `(healthy)` in ~17 s
+  (TCP-connect probe); `Realm 'smpp-companions' imported`, `Import finished successfully`.
+- Host discovery curl (`--cacert keycloak/certs/ca.pem`) → 200 with
+  `"issuer":"https://localhost:8443/realms/smpp-companions"` and `"password"` in
+  `grant_types_supported`.
+- **The generated-secret design proven live:** the realm export (no `secret` field) imported with
+  a GENERATED client secret; fetched via `kcadm.sh config truststore … --trustpass` (positional
+  path — `--truststore-path` is NOT a valid option; kcadm rejects self-signed without the store) →
+  `config credentials` → `get clients/$CID/client-secret`; written to the gitignored
+  `sandbox/secrets/oidc-client-secret` (`git check-ignore` names `.gitignore:39:sandbox/secrets/`;
+  `git status` never sees it).
+- `./gradlew :proxy:bootJar` — BUILD SUCCESSFUL (UP-TO-DATE: the jar was current; Gradle's input
+  tracking is the no-stale-jar guarantee the README cites).
+- **The recipe, executed verbatim from README §5.2:** Mode B WARN banner JSON line →
+  `startup_summary` (`role reverse`, `mode b`, `smpp_bind_host 0.0.0.0`, `smpp_bind_port 2775`,
+  `metrics_port 9090`, `routing_system_ids []`, AD-30 interlock
+  `memory_budget_bytes == direct_memory_ceiling_bytes == 6442450944`) → **~11 s later
+  `bind_accept system_id=usr1 outcome=coupled`** — the front bearerbox bound THROUGH the
+  host-run proxy (ROPC Allow at the compose Keycloak → egress dial to opensmppbox 14567 → ROK).
+- The couple's three vantage points, all observed: `/metrics` `relay_binds_unknown_total 1.0`
+  (the honest reverse-cell observable — no routing table, AD-19; see the README §5.3 honesty note
+  vs the spec I/O matrix's `relay_binds_accepted_total` phrasing); front status page
+  `smsc1 … SMPP:host.docker.internal:2775/2775:usr1:smsc1 (online …)`; opensmppbox log's
+  `bind_transceiver_resp` dump `command_status: 0`. Post-couple keepalive:
+  `relay_pdus_total{INGRESS}`/`{EGRESS}` = 1 each (Kannel's `enquire_link` crossing both ways).
+- **Mutation run (live, wrong egress port 14568):** proxy stdout SILENT after `startup_summary`
+  (no `bind_accept` ever — and no `bind_reject`: the verdict was Allow, the failure is the
+  post-verdict dial, AD-27 pinned triggers); front log every 10 s
+  `SMSC rejected login to transmit, code 0x0000000d (Bind Failed)` (the AD-33 collapse on the
+  wire); `/metrics` `relay_connections_closed_total{direction="INGRESS",reason="EGRESS_CONNECT_FAILED"}`
+  climbing (10.0 after 10 retries), `relay_binds_*` at 0. Restore launch → couple again within
+  one retry. The stale-jar arm is structurally prevented by bootJar's input tracking (documented,
+  not mutated).
+- **Deny arms (live, second rig cycle — also re-proving the §5.1 regeneration semantics: the
+  fresh container generated a NEW secret, re-fetched per the documented steps):** (1) wrong
+  client secret → `bind_reject` lines `verdict":"DenyInvalid"` +
+  `bind_resp_command_status":"0x0000000D"`, `relay_binds_rejected_total` climbing, front wire
+  `code 0x0000000d (Bind Failed)`; (2) `docker compose stop keycloak` with the correct secret →
+  `bind_reject` `verdict":"DenyIndeterminate"`, SAME `0x0000000D` on the wire — the two arms are
+  wire-indistinguishable (AD-33; no IdP-availability enumeration), distinguished only by the
+  verdict field in the proxy's JSON log lines. Both arms' signatures are in README §5.4.
+- SIGTERM teardowns (2×, both launches with the coupled pair live): the OBS-020 drain WARN —
+  `shutdown drain deadline (PT10S) expired — force-closed 1 live pair(s) as SHUTDOWN_DRAIN` —
+  then exit **143** (captured on the exec-form run; Kannel never half-closes, so the drain always
+  force-closes at the deadline — documented as expected).
+- Final teardown `docker compose down -v` — no containers, network, or volumes left; no proxy
+  process running.
 
 ### Completion Notes List
 
@@ -176,6 +230,57 @@ glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
   settings/build/buildSrc/proxy/codec) and `git status` shows no Gradle-file changes; the
   formal `./gradlew clean build --console=plain` GREEN check stays with T4 per the task list.
 
+T2 completion notes (2026-09-17):
+
+- T2 executed per the one-task-per-conversational-step rule; T3 (correctness journeys +
+  debugging guide) and T4 (proofs/catalog/ledger) NOT started.
+- Owner directive honored again: NOTHING committed, no git state mutated — no `git add`, no
+  `git commit`; T1's staged index untouched, all T2 work lands in the working tree beside it
+  (including the root `.gitignore` edit — a tracked-file working-tree change, uncommitted).
+- The Keycloak service mirrors the test-tier `KeycloakContainer`'s VERIFIED launch line
+  (`start --import-realm --hostname-strict=false`, pinned 26.7.0, fixture server cert/key,
+  HTTPS-only, fixed 8443 bind) with exactly two posture deltas, both commented in
+  `compose.yml`: (1) `KC_HTTPS_CLIENT_AUTH` UNSET — the production adapter's IdP SSLContext is
+  trust-only (no client cert toward the provider; client auth is the ROPC `client_secret`),
+  unlike the test slice; (2) `KC_BOOTSTRAP_ADMIN_*` instead of the deprecated `KEYCLOAK_ADMIN`
+  (same semantics, no KC-SERVICES0110 warning). The frozen Decision's "dev-mode" is realized as
+  this local admin/admin + self-signed localhost posture; the literal `start-dev` verb was NOT
+  used because it would open a plaintext 8080 the rig has no use for (the fixture-verified
+  `start` with https-only is the closer mirror).
+- Healthcheck finding (live-probed): KC 26.7 serves the MANAGEMENT interface over TLS too —
+  `KC_HTTPS_CLIENT_AUTH`/`KC_HTTP_MANAGEMENT_ENABLED=true` notwithstanding, the log says
+  `Management interface listening on https://0.0.0.0:9000`, and the image ships no TLS-capable
+  client (no curl/wget; kcadm is a JVM fork per probe — too heavy at probe cadence). The
+  compose healthcheck is therefore a TCP-connect to 8443 (listener up), and realm READINESS is
+  the README §5.1 discovery curl, which the secret bootstrap runs anyway — the T1 pattern
+  (healthchecks only where a cheap authoritative probe exists) extended, not weakened.
+- The realm export carries TWO users, not one: `usr1`/`pwd1` (happy path — matches BOTH the
+  front conf and `smsc-users.txt`, so ROPC and opensmppbox both accept) and `usr2`/`pwd2`
+  (T3's wrong-SMSC-credential journey: ROPC-valid, smsc-users-ABSENT — the AD-32 case-4 pair).
+  Landed now because a realm edit after a re-create forces the secret re-fetch cycle
+  (regeneration semantics documented in README §5.1/§7).
+- AD-18 realization: the realm export deliberately has NO `secret` field → Keycloak GENERATES
+  one at import (verified live) → fetched via kcadm into the gitignored
+  `sandbox/secrets/oidc-client-secret` (`.gitignore` gains `sandbox/secrets/`). The committed
+  `keycloak/certs/` PKI is fixture-tier test material copied byte-identical from the committed
+  test resources (`cmp`-verified; SANs localhost/keycloak/127.0.0.1 serve BOTH the host recipe
+  and the docker variant), NOT a secret — the same class the test tier commits.
+- The spec I/O matrix's couple observable is trued as-built in README §5.3: on a REVERSE cell
+  `relay_binds_accepted_total` has no pre-registered series (no routing table; AD-19 forbids
+  free-form system_id labels) — the observable is `relay_binds_unknown_total` (+ the
+  `bind_accept` JSON line); the honesty note is stated in both READMEs.
+- §5.5 (the ratified docker-proxy variant) is documented with its load-bearing deltas (compose
+  network + service-name dials — the cert's `keycloak` SAN exists for this; `-p 2775:2775`
+  re-publish; :ro secret mounts 0444 for UID 65532) and honestly labeled "documented, not
+  re-proven here" — 6.2's ComposedDockerE2eTest proved the shape; T2's live proof is the host
+  recipe (the ratified default).
+- README section renumbering: the launch recipe inserted as §5; troubleshooting/teardown/
+  deltas/findings shifted to §6–§9 in BOTH languages with all cross-references trued
+  (EN normative, RU the committed translation twin).
+- Gradle inertness at T2 stays structural: `git status` shows zero Gradle-file changes (only
+  `.gitignore`, `sandbox/**`, and this spec file); the formal `clean build` GREEN check stays
+  with T4.
+
 ### File List
 
 - `sandbox/compose.yml` — the 7-service chain (ported; +`name:`, `build: ./kannel`).
@@ -190,3 +295,29 @@ glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
 - `sandbox/README.ru.md` — Russian translation of the README (EN normative; owner addition
   2026-09-17).
 - `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T1 checkbox + this record.
+
+T2 (2026-09-17) additions/changes:
+
+- `sandbox/compose.yml` — + the `keycloak` service (pinned 26.7.0, fixture-mirrored launch,
+  TCP healthcheck, 8443 published, cert/key/truststore/realm mounts) + the header comment trued
+  to the 8-service rig.
+- `sandbox/keycloak/realm-smpp-companions.json` — NEW: the realm export (mirrors the test-tier
+  realm; DAG-on confidential client with NO embedded secret — generated at import; ROPC users
+  `usr1`/`pwd1` + `usr2`/`pwd2`).
+- `sandbox/keycloak/certs/{server.pem, server-key.pem, ca.pem, truststore.p12}` — NEW: the
+  Keycloak TLS material, byte-identical copies of the committed test fixtures (SANs
+  localhost/keycloak/127.0.0.1; truststore pw `smpp-test`).
+- `sandbox/secrets/oidc-client-secret` — NEW, gitignored (AD-18): the operator-bootstrapped
+  generated client secret; never committed (`.gitignore` covers the directory).
+- `.gitignore` — + `sandbox/secrets/` (the AD-18 entry, commented).
+- `sandbox/README.md` — + §5 "The proxy launch recipe" (5.1 Keycloak + the one-time secret
+  bootstrap; 5.2 build+launch with the arg-rationale table; 5.3 the ordered expected
+  observations incl. the `/metrics` honesty note; 5.4 the fails-loudly table incl. the
+  live-run mutation signatures; 5.5 the optional docker-proxy variant); §1 mermaid + prose gain
+  the Keycloak node/ROPC edge; §2/§3/§4 tables gain the keycloak/certs/secrets rows, the 8443
+  (+9090) port rows, the keycloak readiness row, the discovery smoke line; §6–§9 renumbered
+  with new troubleshooting rows (keycloak health, discovery 404, SEC-060 refusal, stale-secret
+  deny) and the Keycloak teardown/regeneration semantics.
+- `sandbox/README.ru.md` — the Russian twin of every T2 change above (docs/ru conventions;
+  EN normative).
+- `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T2 checkbox + this record.

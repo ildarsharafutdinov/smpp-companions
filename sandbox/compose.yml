@@ -4,7 +4,9 @@
 # re-point in conf/front-kannel.conf (host.docker.internal:2775 — the host-run proxy).
 # Every inter-service hop hairpins through the host (host.docker.internal + the published
 # ports) — that is the ported pattern that lets the host-run proxy sit in the chain.
-# The Keycloak service (the ROPC adjudication the reverse cell requires) is added by T2.
+# Added by T2 on top of the ported 7: the keycloak service (the ROPC adjudication the
+# reverse cell requires, AD-17 fail-closed — no auth-bypass exists) + its committed material
+# under keycloak/ (realm export + fixture-tier PKI); the proxy launch recipe is README §5.
 name: smpp-bmad-sandbox
 
 services:
@@ -111,3 +113,46 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     command: [ sh, -c, /usr/local/kannel/sbin/fakesmsc -H host.docker.internal -r 10004 ]
+
+  # The ROPC adjudicator (T2). Mirrors the test-tier KeycloakContainer's verified launch
+  # (quay.io/keycloak/keycloak:26.7.0 — the ≥26.7.0 pin of the 3.1 verdict; `start
+  # --import-realm --hostname-strict=false`; the fixture server cert/key with SANs
+  # localhost/keycloak/127.0.0.1; the realm import) with two deliberate posture deltas:
+  # (1) KC_HTTPS_CLIENT_AUTH stays unset — the production proxy's IdP SSLContext is
+  # trust-ONLY (it presents no client cert toward the provider; client auth is the ROPC
+  # client_secret), unlike the test slice which additionally presents the fixture client
+  # cert; (2) the admin env uses the KC 26 bootstrap spelling (KC_BOOTSTRAP_ADMIN_*) — the
+  # fixture's KEYCLOAK_ADMIN works but logs a deprecation warning on every boot. The realm
+  # export deliberately carries NO client secret: Keycloak generates one at import, fetched
+  # once into the gitignored sandbox/secrets/oidc-client-secret (AD-18) — README §5.
+  # No kannel service depends on it: its only consumer is the host-run proxy (the front's
+  # bind credentials ride the ROPC password grant at every bind, AD-12).
+  # Healthcheck = TCP-connect to the HTTPS listener only: the rig's Keycloak is HTTPS-only
+  # (KC_HTTP_ENABLED=false), KC 26.7 serves the management interface over TLS as well
+  # (http-management-enabled notwithstanding — verified live), and the image ships no
+  # TLS-capable client (no curl); realm READINESS is asserted by the README §5 discovery
+  # curl, which the secret-bootstrap step runs anyway.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    command: [ start, --import-realm, --hostname-strict=false ]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "false"
+      KC_HTTPS_PORT: "8443"
+      KC_HOSTNAME: localhost
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/server.pem
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/server-key.pem
+    healthcheck:
+      test: [ "CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8443" ]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 30s
+    ports:
+      - 8443:8443
+    volumes:
+      - ./keycloak/certs/server.pem:/opt/keycloak/conf/server.pem:ro
+      - ./keycloak/certs/server-key.pem:/opt/keycloak/conf/server-key.pem:ro
+      - ./keycloak/certs/truststore.p12:/opt/keycloak/conf/truststore.p12:ro
+      - ./keycloak/realm-smpp-companions.json:/opt/keycloak/data/import/realm-smpp-companions.json:ro
