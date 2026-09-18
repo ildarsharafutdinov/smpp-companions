@@ -82,7 +82,7 @@ context:
 - [x] **T2 — Keycloak + the proxy launch recipe** — Compose Keycloak service (dev mode, realm export mirroring `KeycloakFixture`: DAG enabled, confidential client; pin ≥26.7.0 per the 3.1 verdict) + the gitignored client-secret file by path (AD-18); README section: build the jar (`./gradlew :proxy:bootJar`), the `java -jar` launch with the operator flag set + reverse.mode-b args (ingress 2775, egress 14567, OIDC → compose Keycloak, secret file path), expected `startup_summary` + Mode B banner, and the front bearerbox binding THROUGH the proxy (couple in logs + `/metrics`). Mutation: launch recipe pointed at a stale jar or wrong port → the bind never couples → the recipe's expected-observation step fails loudly.
 - [x] **T3 — the correctness journeys + debugging guide** — README journeys, each with expected observations per hop: happy send + DLR round trip (postgres row + status pages); `deliver_sm` injection toward the ESME; `enquire_link` crossing the coupled pair (with the keepalive-vs-`pre-couple-idle-timeout` note); the two deny journeys (wrong SMSC credential → AD-32 case-4 verbatim non-ROK forward; bad OIDC credential → AD-33 collapsed generic deny on the wire, rich reason in JSON logs only); the debugging entry-point table (Kannel admin `status.txt`, log levels, proxy `/metrics` + JSON lines, pg tables, fakesmsc stdin). Mutation: a journey whose expected observation is unstated or unobservable → not shipped (the Always rule bites at review).
 - [x] **T4 — proofs, catalog rows, ledger** — `./gradlew clean build --console=plain` GREEN untouched (the Gradle-inert claim verified, not assumed); sandbox journey rows land in the catalog as dated ops-tier entries (COMP-1/E2E-flavored, labeled manual-rig like OBS-035/037); any Kannel-quirk interop notes recorded in the README + deferred-work if actionable; `epic-6-context.md` regenerated to as-built.
-- [ ] **T5 — the three docker-packaged combo runbooks** — one runbook per deployment cell, every proxy instance the Epic-5 distroless image on `network_mode: host` with the host-built jar bind-mounted over the image's copy (a rebuilt jar swaps in on container restart — the debug story the docker posture keeps): (1) `reverse.mode-b` — the lone reverse, legacy clients direct (§5's cell, dockerized); (2) forward+reverse **mode A** — plaintext trusted-leg ingress + the one-way-TLS dial; (3) forward+reverse **mode C** — the mTLS dial (the `DockerRig.launchComposedModeCChain` shape). Each runbook, one file per combo under `sandbox/runbooks/` (EN normative + the RU twin, linked from both READMEs): the use case stated simply — the selling-point framing, what operator problem this combo solves — + a mermaid diagram, step-by-step bring-up commands (zero → rig healthy → `bind_accept coupled`), how to check (expected observation per step), where the logs live (proxy container stdout/`docker compose logs`, `/metrics`, Keycloak). A per-combo port plan where two host-network listeners would collide (the composed cells' reverse moves off 2775 — documented, not discovered). Verify every combo live on the rig; an image-side or Kannel-side blocker is documented honestly in the runbook, never papered over. Mutation: a runbook followed verbatim that does not reach `bind_accept coupled` → not shipped.
+- [x] **T5 — the three docker-packaged combo runbooks** — one runbook per deployment cell, every proxy instance the Epic-5 distroless image on `network_mode: host` with the host-built jar bind-mounted over the image's copy (a rebuilt jar swaps in on container restart — the debug story the docker posture keeps): (1) `reverse.mode-b` — the lone reverse, legacy clients direct (§5's cell, dockerized); (2) forward+reverse **mode A** — plaintext trusted-leg ingress + the one-way-TLS dial; (3) forward+reverse **mode C** — the mTLS dial (the `DockerRig.launchComposedModeCChain` shape). Each runbook, one file per combo under `sandbox/runbooks/` (EN normative + the RU twin, linked from both READMEs): the use case stated simply — the selling-point framing, what operator problem this combo solves — + a mermaid diagram, step-by-step bring-up commands (zero → rig healthy → `bind_accept coupled`), how to check (expected observation per step), where the logs live (proxy container stdout/`docker compose logs`, `/metrics`, Keycloak). A per-combo port plan where two host-network listeners would collide (the composed cells' reverse moves off 2775 — documented, not discovered). Verify every combo live on the rig; an image-side or Kannel-side blocker is documented honestly in the runbook, never papered over. Mutation: a runbook followed verbatim that does not reach `bind_accept coupled` → not shipped.
 
 **Acceptance Criteria:**
 - Given a clean checkout and Docker, when the README's bring-up is followed, then every compose service reaches healthy and the front bearerbox's SMPP transceiver binds through the host-run proxy — the couple visible in the proxy's logs and `/metrics`.
@@ -125,6 +125,7 @@ glm-5.2 (Claude Code dispatch agent), 2026-09-17, T1 only.
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T2 only.
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T3 only (this run).
 glm-5.2 (Claude Code dispatch agent), 2026-09-17, T4 only (this run).
+glm-5.2 (Claude Code dispatch agent), 2026-09-18, T5 only (this run).
 
 ### Debug Log References
 
@@ -301,6 +302,54 @@ T4 (2026-09-17):
 - `epic-6-context.md` regenerated to as-built (the 6.1/6.2 T4 precedent): the dated regeneration
   comment, the Goal status line, the 6.3 DONE summary.
 
+T5 (2026-09-18):
+
+- `./gradlew :proxy:bootJar :proxy:dockerImage --console=plain` — BUILD SUCCESSFUL (13s; the jar
+  byte-unchanged since T4, so the image rebuild was a full layer-cache hit — the assembled
+  context's `proxy.jar` md5 == `build/libs/proxy.jar` md5, `8cf3001e…`; the image's embedded jar
+  and the bind-mount source are the SAME bytes).
+- Rig bring-up: `docker compose up -d --build` → 8 services, `pg`/both bearerboxes/`keycloak`
+  `(healthy)`; the §5.1 bootstrap re-run against the fresh keycloak (regenerated secret fetched
+  via kcadm → `sandbox/secrets/oidc-client-secret`, `chmod 0444` for the docker shape;
+  `git check-ignore` names it).
+- **Combo 1 (`reverse.mode-b`, container `sandbox-proxy-b`, `--network host`, jar bind-mounted
+  over `/opt/proxy.jar`)**: Mode B banner → `startup_summary` (`role reverse`, `mode b`,
+  `0.0.0.0:2775`, `metrics 9090`, AD-30 interlock 6442450944) → **`bind_accept usr1 coupled`
+  ~4 s after ready**; `/metrics` scraped FROM THE HOST loopback (`relay_binds_unknown_total
+  1.0` — the host-network bonus); front status `smsc1 … (online`; `docker stop --timeout 30`
+  → the OBS-020 drain WARN (PT10S, 1 pair) → **exit 143**. Restart cycle: `docker restart` →
+  couple #2 within one retry.
+- **Combo 2 (mode A pair, `sandbox-reverse-a` 127.0.0.1:2776/metrics 9091 +
+  `sandbox-forward-a` 0.0.0.0:2775/metrics 9090)**: MODE A banner on the reverse only; forward
+  summary `role forward, mode a, routing_system_ids ["usr1"]`; **`bind_accept` on BOTH (the
+  reverse's 3 ms first)**; forward `relay_binds_accepted_total{system_id="usr1"} 1.0` (the
+  labeled series), reverse `relay_binds_unknown_total 1.0`; a `sendsms` crossed both proxies —
+  fakesmsc printed `modeA-combo` byte-intact, both instances 4/4 `relay_pdus_total` per leg,
+  front `sent: sms 1 / rcvd: dlr 2`. Stops: forward 143 + drain WARN, reverse 143.
+- **Combo 3 (mode C pair, same port plan, `smpp-reverse-server`/`smpp-forward-client`/
+  `smpp-truststore` = the `launchComposedModeCChain` material re-pointed at `localhost`)**: no
+  banner either side; `bind_accept` on BOTH (3 ms apart); sendsms `modeC-combo` intact; **the
+  REQUIRE gate live-probed three ways** — a plaintext PDU to 2776 got nothing; a NO-CERT
+  `openssl s_client` session (server `CertificateRequest` seen) never yielded SMPP
+  (`bind_accept`/`bind_reject` counters unmoved — the dials landed on INGRESS close counters
+  only); the same probe WITH the client cert completed `TLSv1.3 TLS_AES_256_GCM_SHA384`. Stops:
+  forward 143 + WARN, reverse 143.
+- **The composed reverse-down mutation (run on BOTH mode A and mode C pairs)**: reverse stopped
+  with the pair live → the forward SILENT per retry (no adjudication to report), its
+  `relay_connections_closed_total{INGRESS,EGRESS_CONNECT_FAILED}` climbing +1/retry, the front
+  wire the collapsed `0x0000000d` every 10 s; `docker start` the reverse → re-couple within one
+  retry (observed on both pairs).
+- **The jar-swap mechanism pinned** (the runbooks' debug story): a bind-mount inode test on this
+  host — a running container keeps the OLD file after an inode-replacing write (Gradle's atomic
+  move), `docker restart` re-resolves the source PATH and sees the NEW file. (A first attempt
+  through a sandbox-private `/tmp` produced the deployment guide's classic "Docker silently
+  creates a DIRECTORY" behavior — kept as a troubleshooting row.) One proxy-level restart cycle
+  executed (combo 1: couple → restart → couple #2).
+- Teardown of every proxy container after its verification (`docker rm`); the compose rig left
+  for the session, torn down `down -v` at task end. Gradle-inertness structural at T5: `git
+  status` names no Gradle file; no build file references `sandbox/` (re-grepped); the two Gradle
+  invocations of the day both GREEN with the sandbox tree present.
+
 ### Completion Notes List
 
 - T1 executed per the one-task-per-conversational-step rule; T2 (Keycloak + proxy launch
@@ -457,6 +506,44 @@ T4 completion notes (2026-09-17):
   line replaced by the T4 record: clean-build GREEN, the catalog rows, the epic-context
   regeneration). No T1–T3 journey/guide content was re-edited.
 
+T5 completion notes (2026-09-18):
+
+- T5 executed per the one-task-per-conversational-step rule; it completes the story's task list
+  (the story awaits its review round). Owner directive honored as in T1–T4: NOTHING committed —
+  no `git add`, no `git commit`; all T5 work sits uncommitted in the working tree.
+- **Every combo was followed verbatim — its own runbook text — to `bind_accept coupled` on the
+  live rig** (the mutation bar: a runbook that does not couple is not shipped; all three
+  coupled, sends included through both composed chains, byte-intact at fakesmsc). No image-side
+  or Kannel-side blocker was found — nothing to document as a blocker, nothing papered over.
+- The port plan realizes the spec's hint exactly: the front conf's `host.docker.internal:2775`
+  is BYTE-IDENTICAL across all three combos (the composed FORWARD takes 2775), the composed
+  cells' reverse moves to **2776**, and the second host-network process's `/metrics` moves to
+  **9091** (the load-bearing collision: two proxies share the host loopback; a second 9090 bind
+  refuses at boot). Mode A's reverse is loopback-scoped (`127.0.0.1`) — the banner's own
+  ACL-isolate mitigation demonstrated live; mode C's reverse is wildcard — the mTLS REQUIRE is
+  the gate, live-probed (no-cert dials never reach SMPP).
+- The committed PKI mapping (the ONE new material, `sandbox/certs/`, `cmp`-verified copies of
+  the test-tier fixtures): `smpp-reverse-server.pem` (SAN localhost/127.0.0.1 — the forward
+  dials `localhost` with hostname verification ON, AD-20; the docker-host SAN pair of
+  `launchComposedModeCChain` exists for the Testcontainers portal name and is NOT the right
+  cert for this host-network rig), `smpp-forward-client.pem` (the per-instance mTLS client),
+  `smpp-truststore.p12` (the shared smpp-test-ca anchor, dial-side and REQUIRE-side). The key
+  files ship `0644` — the copies land `0600` from the sources (cp preserves mode) and UID 65532
+  cannot read `0600`; the troubleshooting table carries the SEC-060 refusal row.
+- The §5.1 bootstrap writes the secret `0600` (host posture); the docker combos require `0444`
+  (UID 65532) — each runbook's prep step states the chmod and why; the READMEs' port/delta
+  sections note it. AD-18 is unchanged: the secret rides a gitignored path either way.
+- §5.5's "optional variant" text kept intact, with a dated pointer that T5 graduated the docker
+  shape into the first-class runbook set (§5.6 indexes the three, both languages); the
+  host-run `java -jar` recipe REMAINS the documented debugger posture per the amendment.
+- The teardown honesty note: the reverse's own drain WARN after a forward-first stop is a race
+  (was its pair still draining at ITS deadline?) — observed BOTH ways on this rig (no-WARN and
+  WARN, both clean 143); the runbooks state it rather than promising one outcome.
+- Gradle inertness at T5 is structural (the formal `clean build` GREEN proof is T4's record):
+  zero Gradle-file changes (`git status`), zero build-file references to `sandbox/`
+  (re-grepped), and the day's two Gradle invocations (`:proxy:bootJar :proxy:dockerImage`) ran
+  GREEN with the full sandbox tree present.
+
 ### File List
 
 - `sandbox/compose.yml` — the 7-service chain (ported; +`name:`, `build: ./kannel`).
@@ -529,3 +616,23 @@ T4 (2026-09-17) additions/changes:
   the clean-build GREEN proof, the catalog rows, the epic-context regeneration); no other content
   touched.
 - `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T4 checkbox + this record.
+
+T5 (2026-09-18) additions/changes:
+
+- `sandbox/runbooks/reverse-mode-b.md` + `.ru.md` — NEW: the dockerized lone-reverse combo (use
+  case, mermaid, port plan, bring-up, per-step observations, logs table, the jar-swap debug
+  story, teardown).
+- `sandbox/runbooks/forward-reverse-mode-a.md` + `.ru.md` — NEW: the mode A pair (the banner's
+  ACL-isolate mitigation live: reverse loopback-scoped), with the live reverse-down failure row.
+- `sandbox/runbooks/forward-reverse-mode-c.md` + `.ru.md` — NEW: the mode C pair
+  (`launchComposedModeCChain`'s topology against the real Kannel chain), with the live mTLS
+  REQUIRE-gate probes (plaintext / no-cert / with-cert).
+- `sandbox/certs/` — NEW: the SMPP-leg fixture PKI (5 files, `cmp`-verified byte-identical to
+  `proxy/src/test/resources/keycloak/certs/`, modes `0644` for UID 65532).
+- `sandbox/README.md` + `sandbox/README.ru.md` — T5 in the status headers; §2 rows (`certs/`,
+  `runbooks/`); §3 port rows (2775 trued, +2776, 9090 trued, +9091); §5.5's graduation pointer;
+  NEW §5.6 (the runbook index + the shared host-network/jar-bind-mount shape + the port plan);
+  §8 troubleshooting rows (SEC-060 unreadable mount, typo'd `-v` directory, metrics collision,
+  composed reverse-down); §9's docker-container teardown paragraph; §10 deltas item 6 (EN) /
+  item 7 (RU, after the translation item).
+- `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T5 checkbox + this record.
