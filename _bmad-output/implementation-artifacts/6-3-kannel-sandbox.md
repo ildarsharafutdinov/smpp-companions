@@ -2,7 +2,7 @@
 title: 'Story 6.3 — the Kannel sandbox: a real-SMPP docker-compose rig for debugging and correctness proof'
 type: 'feature'
 created: '2026-09-12'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 baseline_commit: 73e4813daf1138c7825041b65f2707518bbcf11f
 review_loop_iteration: 0
@@ -99,6 +99,21 @@ context:
 - 2026-09-17 (owner, mid-story): **T5 added** — three docker-packaged combo runbooks (`reverse.mode-b`; forward+reverse mode A; forward+reverse mode C), all proxy containers `network_mode: host` with the host-built jar bind-mounted over the image's (jar-replaceable when debug is needed). Amends frozen Decision 1's emphasis by owner directive: the host-run `java -jar` recipe (§5) REMAINS the documented debugger posture; the docker combos become first-class runbooks beside it (§5.5's "optional variant" graduates into the runbook set). T1–T4 stand as recorded.
 
 ## Review Triage Log
+
+Round 1 (2026-09-18, post-T5; layers: Blind Hunter ×14, Verification Gap ×1 gap + ×2 other, Edge Case Hunter ×6; every claim re-verified at its cited location):
+
+- **G1 ledger truing** — BH1 epic-6-context still reads "done 2026-09-17 (T1–T4)", zero T5 mentions (`medium`, verified at lines 64/110); VG2 same; ECH5 same. BH2 sprint-status `last_updated: 2026-09-17` + `6-3: in-progress` vs the story's in-review state (`low`, verified). BH3 catalog E2E-002..005 + the T4 note pin "executed live 2026-09-17" only — no dated trace of the 2026-09-18 combo executions §5.6 claims (`medium`, verified). → **patch** (dated T5 addendum per the T4 regen precedent; sprint-status true; catalog dated note/rows).
+- **G2 combo-journey claim vs routing-miss deny** — ECH6 README §5.6 "The §6 journeys all hold unchanged on any coupled combo" is FALSE for §6.4 D1: verified `BindInterceptor.java:396-406` — a forward routing-miss (usr2 off the table) is an AD-33 generic deny, log-only, BEFORE any dial; opensmppbox never sees the bind, no verbatim SMSC non-ROK (`medium`). ECH4 the mode A/C failure tables lack this row (`medium`, verified). → **patch** (scope the §5.6 sentence; add the routing-miss rows, EN+RU).
+- **G3 send-row PDU arithmetic** — BH8 runbooks' "+2/+2 per leg for the submit pair … observed 4/4" contradicts §6.1's live-verified accounting (+1/+1 submit pair, +1/+1 DLR per direction — lines 474/493; the observed 4/4 is 2/2 plus keepalive ticks per §6.3's +1/+1-per-interval); a counter mismatch here reads as a false transit-integrity alarm (`medium`, verified). → **patch** (fix the send rows in 3 EN runbooks + RU twins).
+- **G4 operator-docs stale pointers** — BH4 "Story 6.3 will own its README" future tense now stale in BOTH `docs/README.md:30` and `docs/deployment-guide.md:34-35` (`low`, verified both). → **patch** (become links to `../sandbox/README.md`).
+- **G5 Dockerfile Russian comment** — BH7 `sandbox/kannel/Dockerfile:6` Cyrillic comment violates the repo language rule (English outside docs/ru; the story itself anglicized conf comments) (`low`, verified). → **patch** (translate; zero build-behavior change).
+- **G6 dead smsbox group** — BH9 `smsc-kannel.conf:40-46` `group = smsbox` has no smsbox service on the SMSC side and its curl comment implies 8080 serves there (`low`, verified — the load-bearing group is the separate T3 `smsbox-route`, not this one). → **patch** (remove + §10 delta note, or re-caption as a front-side cross-reference).
+- **G7 leftover-proxy arm** — BH11/ECH3 no troubleshooting row names the §5.2 host proxy / prior combo holding 2775/9090 when a new combo launches (boot refuses bind-in-use, cause unnamed) (`low`, verified absent). → **patch** (row + one-posture-at-a-time sentence, EN+RU).
+- **G8 rig supply chain + cold path** — BH5 `postgres:latest` floats while everything else is pinned (`medium`, verified); BH6/ECH2 `curl -k`, no checksums, exact PGDG RPM URLs (devel 15.15 vs libs 15.17) that rot, cold build never exercised (`medium`, verified); BH12 the "clean checkout" clauses of AC lines 88/93 were proven warm-machine only (`medium`, verified — T1's notes disclose the layer-cache hit). Root = the frozen byte-for-byte port decision + disclosed cache-hit, so fixing exceeds this story's ratified shape. → **defer** (settling evidence: one `--no-cache` kannel build + fresh-checkout runbook bring-up; pg pinned to the tested version + §10 note).
+- **G9 AD-18 ignore-guard has no recurring check** — VG-gap (pre-verified, trusted as filed): `.gitignore:39` is the sole mechanism keeping the live OIDC secret out of VCS; a future narrowing silently stages it while `clean build` stays GREEN; a Java test asserting ignore state would break the story's Gradle-inertness property and the owner's no-doc-oracle test rule (`medium` as filed). → **defer** (per filed disposition).
+- **Rejected** — BH10 RU-only "Аудитория/Оракул" block (`low`, out of scope: the owner's own translation addition, §10 delta 6; both headers carry the EN-normative subordination clause that governs divergence). BH13 rig host-exposure unstated (`low`: a dev-box rig already framed "developer tooling, not shipped product"; the fix adds new caution content, not a correction). BH14 silent `baseline_commit` re-anchor 2f2b0e8→73e4813 (`low`: mechanical fallout of the owner's history-rewrite convention, provenance in git history; the fix edits the spec).
+
+No `intent_gap`, no `bad_spec` → no loopback. Seven patch groups → implementer re-engaged; two defer entries appended to `deferred-work.md`.
 
 ## Design Notes
 

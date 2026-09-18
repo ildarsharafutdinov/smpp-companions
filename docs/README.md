@@ -27,7 +27,8 @@ document goes through a story that touches the code AND the page).
 | [`a-1-carrier-test-plan.md`](a-1-carrier-test-plan.md) | the non-CI real-carrier falsification of assumption A-1 (concurrent binds under one `system_id` + DLR affinity): explicit PASS/FAIL criteria, the assertion procedure, evidence |
 
 Deliberately NOT here: performance numbers (Epic 7's report, Story 7.1, will publish them under
-the PERF-070/071 disclosure gates) and the Kannel sandbox rig (Story 6.3 will own its README).
+the PERF-070/071 disclosure gates) and the Kannel sandbox rig (Story 6.3's —
+[`../sandbox/README.md`](../sandbox/README.md)).
 The packaged-shape conformance-run instructions live in the
 [deployment guide](deployment-guide.md) (Story 6.2 landed them there). The SMPP 3.4
 specification PDF (`SMPP_v3_4_Issue1_2.pdf`) is kept beside these pages as reference material.

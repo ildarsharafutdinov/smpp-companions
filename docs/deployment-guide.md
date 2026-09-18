@@ -32,8 +32,9 @@ and the AD-17 role×mode matrix — [`configuration.md`](configuration.md); the 
 `/metrics`, the deny surface, and shutdown internals — [`runbooks.md`](runbooks.md); the TLS
 cipher policy — [`cipher-allowlist-policy.md`](cipher-allowlist-policy.md). There are no
 performance numbers anywhere in this documentation (Epic 7 will publish them) and no sandbox rig
-(Story 6.3 will own its README). The packaged-shape conformance run — the composed two-instance
-journeys — has its own section at the bottom of this page (Story 6.2 landed it there).
+(that is Story 6.3's, [`../sandbox/README.md`](../sandbox/README.md)). The packaged-shape
+conformance run — the composed two-instance journeys — has its own section at the bottom of this
+page (Story 6.2 landed it there).
 
 ## The two shapes
 

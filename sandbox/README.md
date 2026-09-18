@@ -445,8 +445,16 @@ changes between combos — the composed cells' **reverse moves to 2776**, and th
 process's `/metrics` moves to **9091** (two host-network processes cannot share the 9090 loopback
 bind). All three runbooks were followed verbatim to `bind_accept coupled` on the live rig
 (2026-09-18), sends included; their failure tables carry the live-observed arms (reverse-down in
-the composed chain; the UID-65532 mount refusals; the metrics-port collision). The §6 journeys
-all hold unchanged on any coupled combo — the sends above were run through each.
+the composed chain; the UID-65532 mount refusals; the metrics-port collision). What held live on
+the composed combos is the §6.1 send journey (byte-intact at fakesmsc through both hops) and
+§6.3's keepalives — the sends above were run through each. The §6.4 **D1** deny journey does NOT
+cross a composed combo unchanged: `usr2` is off the forward's routing table (`usr1` is its one
+entry), so the FORWARD itself denies the bind — the AD-33 generic 0x0d on the wire, a log-only
+`routing miss: system_id not in the routing table — AD-33 deny (AD-29/AD-11)` WARN, NO dial
+(opensmppbox never sees the bind, so the AD-32 case-4 verbatim non-ROK forward is unreachable in
+this shape — D1 belongs to the single-proxy postures: §5's host launch, the mode B runbook).
+**D2** (a wrong password for the routed `usr1`) does reach the reverse and denies there — §6.4's
+D2 shape unchanged; the composed runbooks' failure tables carry this routing-miss row.
 
 ## 6. The correctness journeys (T3)
 
@@ -646,6 +654,7 @@ Debugging heuristics — the §6.4 skill generalized:
 | A `docker run` from a runbook reports `is a directory, not a file (OIDC client secret)` (or cert) at boot | The `-v` SOURCE path had a typo — Docker silently creates a DIRECTORY at a nonexistent source path, and the proxy names it (SEC-060) instead of a mount error appearing | Fix the `-v` path (runbooks are root-relative — run them from the repository root); remove the accidentally created directory |
 | A §5.6 composed combo's SECOND container refuses at boot with a bind-in-use refusal naming `metrics.port` | Both proxy containers were left on the yml-default 9090 — the port-plan miss | Move the reverse's metrics to `--companion.metrics.port=9091` (the runbook's launch already does) |
 | A §5.6 composed chain never couples: the forward's stdout silent, its `relay_connections_closed_total{INGRESS,EGRESS_CONNECT_FAILED}` climbing, the front wire the usual 0x0d | The REVERSE container is down (or its port/cert is wrong) — the forward's egress dial is the TLS leg | `docker ps` for the reverse container; `docker start` it (re-couples within one retry — observed), or re-check the runbook's port plan and cert SAN vs `routing[0].host` |
+| A §5.6 combo's container refuses at boot with a bind-in-use error on 2775 (or the `/metrics` loopback 9090/9091) | A leftover proxy still holds the port — the §5.2 host-run proxy still running, or a prior combo's container not stopped (one front conf means ONE 2775 listener; the loopback metrics ports are single-occupancy too) | One proxy posture at a time: `kill -TERM <pid>` the host proxy (`pgrep -f proxy/build/libs/proxy.jar`), or `docker stop --timeout 30 <name>` the prior combo's containers (exit 143 each), then launch — the refusal names the port and fires before any listener serves |
 
 ## 9. Teardown
 

@@ -3,7 +3,7 @@ FROM redhat/ubi10:10.1 AS builder
 RUN yum update -y &&\
     yum install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-x86_64/pgdg-redhat-repo-latest.noarch.rpm &&\
     yum install -y gcc libxml2-devel openssl openssl-devel automake libtool postgresql15-libs &&\
-    # bootstrap некорректно определяет версию automake поэтому прикидываемся 1.11
+    # bootstrap mis-detects the automake version, so we masquerade as 1.11
     ln -s /usr/bin/automake /usr/bin/automake-1.11 &&\
     ln -s /usr/bin/aclocal /usr/bin/aclocal-1.11 &&\
     curl -o postgresql15-devel-15.15-1PGDG.rhel10.x86_64.rpm https://download.postgresql.org/pub/repos/yum/15/redhat/rhel-10.1-x86_64/postgresql15-devel-15.15-1PGDG.rhel10.x86_64.rpm &&\

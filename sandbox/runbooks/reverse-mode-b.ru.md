@@ -130,7 +130,7 @@ docker run -d --name sandbox-proxy-b --network host \
 | `curl -s http://127.0.0.1:9090/metrics` (с ХОСТА — бонус host-network) | `relay_binds_unknown_total 1.0` (честный счётчик сопряжения reverse-варианта — без таблицы маршрутизации, AD-19; `relay_binds_accepted_total{system_id=…}` — серия forward-варианта). Keepalive тикают `relay_pdus_total{direction}` по +1 на плечо каждые ~30 с (`enquire_link` Kannel) |
 | `curl "http://127.0.0.1:13000/status.txt?password=test"` | `smsc1 … SMPP:host.docker.internal:2775/2775:usr1:smsc1 (online …)` — и строки ERROR переподключения из §4 прекращаются |
 | `docker compose -f sandbox/compose.yml logs smsc-opensmpp-box` | дамп `bind_transceiver_resp` с `command_status: 0` — ROK, вернувшийся через прокси |
-| Отправка (необязательно — сценарий README §6.1) | `curl ".../cgi-bin/sendsms?...&dlr-mask=31...&text=hello"` → HTTP 202, fakesmsc печатает текст нетронутым, `relay_pdus_total` по +2/+2 на плечо для пары submit и ещё +2/+2 с возвратом DLR |
+| Отправка (необязательно — сценарий README §6.1) | `curl ".../cgi-bin/sendsms?...&dlr-mask=31...&text=hello"` → HTTP 202, fakesmsc печатает текст нетронутым; `relay_pdus_total` движется по бухгалтерии §6.1 — +1 `INGRESS` (`submit_sm`) и +1 `EGRESS` (его `submit_sm_resp`), затем ещё +1/+1 с возвратом DLR (`deliver_sm` приходит на плечо EGRESS, его resp пересекает INGRESS): итого 2/2 на плечо за весь сценарий. Всё сверх этого — keepalive-трафик из метрики-строки выше (`enquire_link`, +1/+1 за ~30 с на сопряжённой сессии, README §6.3) |
 
 Плечи отказа (неверный порт egress, устаревший секрет, недоступный Keycloak, отсутствующий
 файл секрета) дают в точности сигнатуры README §5.4 — тот же вариант, те же аргументы, меняется

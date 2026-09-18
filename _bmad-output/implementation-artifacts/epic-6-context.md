@@ -45,6 +45,20 @@
      the OBS-035/037 precedent; the Kannel quirks stay README interop notes — neither actionable, so
      no deferred-work entry; this file regenerated). Nothing bounced: no proxy defect surfaced via
      Kannel. -->
+<!-- Amended 2026-09-18 (Story 6.3 T5, the owner-added task — dated addendum, not a regeneration):
+     the three docker-packaged combo runbooks landed under sandbox/runbooks/ (reverse.mode-b;
+     forward+reverse mode A; forward+reverse mode C — EN + RU twins, indexed by README §5.6 in
+     both languages), every proxy instance the Epic-5 distroless image on network_mode: host with
+     the host-built jar bind-mounted over the image's copy (rebuild + docker restart = jar swap,
+     no image rebuild). Each runbook was followed verbatim to bind_accept coupled on the live rig
+     2026-09-18: sends byte-intact through both composed chains, the mTLS REQUIRE-gate three-way
+     probe (no-cert dials never reach SMPP), the composed reverse-down mutation on both pairs,
+     and the jar-swap restart cycle. The ONE new material is sandbox/certs/ — the SMPP-leg
+     fixture PKI, cmp-verified copies of the committed test resources (the T2 keycloak/certs/
+     precedent). Zero Gradle, build-file, or main-source changes; nothing committed by the agent.
+     T5's runs are dated into the test catalog (E2E-002..005's families, manual rig, non-CI ops
+     tier); the §6.4 D1 deny journey stays single-proxy by design (an off-table system_id is
+     denied at the forward's routing table — the runbooks' routing-miss rows state the shape). -->
 
 ## Goal
 

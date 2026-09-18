@@ -127,7 +127,7 @@ by-path channel (`docker inspect` carries paths only, never values).
 | `curl -s http://127.0.0.1:9090/metrics` (from the HOST — the host-network bonus) | `relay_binds_unknown_total 1.0` (the honest reverse-cell couple counter — no routing table, AD-19; `relay_binds_accepted_total{system_id=…}` is a forward-cell series). Keepalives tick `relay_pdus_total{direction}` +1 per leg per ~30 s (Kannel's `enquire_link`) |
 | `curl "http://127.0.0.1:13000/status.txt?password=test"` | `smsc1 … SMPP:host.docker.internal:2775/2775:usr1:smsc1 (online …)` — and the §4 reconnect ERROR lines stop |
 | `docker compose -f sandbox/compose.yml logs smsc-opensmpp-box` | the `bind_transceiver_resp` PDU dump with `command_status: 0` — the ROK that crossed the proxy back |
-| A send (optional — README §6.1's journey) | `curl ".../cgi-bin/sendsms?...&dlr-mask=31...&text=hello"` → HTTP 202, fakesmsc prints the text intact, `relay_pdus_total` +2/+2 per leg for the submit pair, +2/+2 more when the DLR returns |
+| A send (optional — README §6.1's journey) | `curl ".../cgi-bin/sendsms?...&dlr-mask=31...&text=hello"` → HTTP 202, fakesmsc prints the text intact; `relay_pdus_total` moves per §6.1's accounting — +1 `INGRESS` (the `submit_sm`) and +1 `EGRESS` (its `submit_sm_resp`), then +1/+1 more when the DLR returns (the `deliver_sm` arriving on the EGRESS leg, its resp crossing INGRESS): 2/2 per leg for the whole journey. Anything above that is the keepalive traffic named in the metrics row above (`enquire_link`, +1/+1 per ~30 s on a coupled session, README §6.3) |
 
 The failure arms (wrong egress port, stale secret, Keycloak down, missing secret file) produce
 exactly README §5.4's signatures — same cell, same args, only the stdout surface is

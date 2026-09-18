@@ -136,7 +136,7 @@ instance — nothing was weakened to get here.
 | The metrics, one port per instance | forward (9090): `relay_binds_accepted_total{system_id="usr1"} 1.0`; reverse (9091): `relay_binds_unknown_total 1.0` |
 | `curl "http://127.0.0.1:13000/status.txt?password=test"` | `smsc1 … (online …)` — through BOTH proxies and the mTLS leg |
 | **The mTLS gate holds** (the mode-C-specific probe, live run) | (a) a plaintext SMPP PDU sent straight to `127.0.0.1:2776` gets NOTHING back — the listener speaks TLS only; (b) `openssl s_client -connect 127.0.0.1:2776` WITHOUT a client cert: the server sends its `CertificateRequest`, the session never yields SMPP — `bind_accept`/`bind_reject` counters on the reverse DO NOT MOVE (no adjudication, no SMSC activity; the dials land on the INGRESS `relay_connections_closed_total` counters only); (c) the SAME probe WITH `-cert sandbox/certs/smpp-forward-client.pem -key …-key.pem` completes `New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384` — the certificate is the difference |
-| A send (README §6.1's journey, unchanged) | HTTP 202; fakesmsc prints the text byte-intact (`modeC-combo` in the live run); BOTH instances' `relay_pdus_total{direction}` move symmetrically (+2/+2 per leg for the submit pair, +2/+2 more when the DLR returns) |
+| A send (README §6.1's journey, unchanged) | HTTP 202; fakesmsc prints the text byte-intact (`modeC-combo` in the live run); BOTH instances' `relay_pdus_total{direction}` move per §6.1's accounting — +1 `INGRESS` (the `submit_sm`) and +1 `EGRESS` (its `submit_sm_resp`), then +1/+1 more when the DLR returns (the `deliver_sm` arriving on the EGRESS leg, its resp crossing INGRESS): 2/2 per leg for the whole journey, identically on each instance. Ticks beyond that 2/2 are keepalive — `enquire_link` adds +1/+1 per ~30 s interval on a coupled session (README §6.3) |
 
 ## 5. Where the logs live
 
@@ -157,6 +157,7 @@ instance — nothing was weakened to get here.
 | Stale Keycloak secret / Keycloak down | README §5.4's signatures on the REVERSE only (`bind_reject` `DenyInvalid`/`DenyIndeterminate`); the forward stays silent; the front sees the collapsed 0x0d |
 | A mounted key file unreadable by UID 65532 | Boot refuses, exit 1, no `startup_summary`, the refusal naming the path (SEC-060) — `sandbox/certs/` ships `0644` |
 | Both metrics on 9090 | The second container's boot refuses naming `metrics.port` — the port plan exists to prevent this |
+| An off-table `system_id` at the front — §6.4 D1's `usr2`/`pwd2` run against a composed combo (arm code-pinned: the forward's routing-miss deny; not re-run live on this rig) | The FORWARD denies the bind itself, before any dial and any adjudication: the AD-33 generic 0x0d on the wire, ONE log-only WARN on the forward's stdout — `routing miss: system_id not in the routing table — AD-33 deny (AD-29/AD-11): usr2` — and NOTHING anywhere else (the reverse's `relay_binds_*` unmoved, zero `bind_transceiver` at opensmppbox). `usr2` is simply not in the forward's routing table (`usr1` is its one entry), so the AD-32 case-4 verbatim non-ROK forward of §6.4 D1 is unreachable in the composed shape — D1 belongs to the single-proxy postures (§5's host launch; the mode B runbook). D2 (a wrong password for the ROUTED `usr1`) does cross the forward and deny at the reverse — §6.4's D2 shape unchanged |
 
 ## 7. Teardown (and the jar-swap debug story)
 
