@@ -116,9 +116,28 @@ development_status:
   epic-6-retrospective: optional
 
   # --- Epic 7: Validate all performance — the measurement harness and published evidence ---
+  # DEFERRED 2026-09-19 (owner direction "favour correctness proof over performance",
+  # sprint-change-proposal-2026-09-19): execution runs AFTER Epics 8–9; status stays
+  # in-progress (story file exists) — the deferral is priority, not regression. At epic
+  # start: mandatory load-gen decision gate (JMeter SMPP plugin vs Story 7.1's custom
+  # open-model harness; adopting JMeter = AD-24 amendment decided then).
   epic-7: in-progress
   7-1-perf-validation-harness: ready-for-dev
   epic-7-retrospective: optional
+
+  # --- Epic 8: Make it observable and installable — measurability close-out, sandbox
+  #     Prometheus, Docker Hub publishing via CI ---
+  # (Added 2026-09-19 — depends on Epic 5 + Epic 6; execution priority E6 → E8 → E9 → E7.
+  # Story keys appended here as story files are created, per the project note above.)
+  epic-8: backlog
+  epic-8-retrospective: optional
+
+  # --- Epic 9: The whole-codebase meaty review — review prep and the human read ---
+  # (Added 2026-09-19, owner direction — the review sliced into its own distinct epic;
+  # depends on Epic 8; review-prep package → owner's human read → findings triage,
+  # fixes bounce to owning areas per the honest-exception pattern.)
+  epic-9: backlog
+  epic-9-retrospective: optional
 
 action_items:
   - epic: 1

@@ -343,7 +343,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 ## Epic List
 
-**Dependency chain:** Epic 1 → Epic 2 → Epic 3 → Epic 4 → Epic 5 → {Epic 6, Epic 7} (linear spine through Epic 5, then two independent successors — re-scoped 2026-09-12 from the former single Epic 6; no forward references; every epic standalone). Risk boundaries drive the split: Epic 2 retires the A-1 statelessness assumption; Epic 3 isolates the fragile ROPC + preview-STS dependencies; Epic 6 retires the real-stack correctness + docs bets; Epic 7 retires the performance bets.
+**Dependency chain (build graph):** Epic 1 → Epic 2 → Epic 3 → Epic 4 → Epic 5 → {Epic 6, Epic 7}; Epic 8 → Epic 9 (added 2026-09-19, owner direction "favour correctness proof over performance": Epic 8 depends on Epic 5 + Epic 6, Epic 9 depends on Epic 8). **Execution priority (2026-09-19):** E6 → E8 → E9 → E7 — Epic 7 is deferred to last, unchanged in substance. (Linear spine through Epic 5, then two independent successors — re-scoped 2026-09-12 from the former single Epic 6; no forward references; every epic standalone.) Risk boundaries drive the split: Epic 2 retires the A-1 statelessness assumption; Epic 3 isolates the fragile ROPC + preview-STS dependencies; Epic 6 retires the real-stack correctness + docs bets; Epic 7 retires the performance bets.
 
 ### Epic 1: Foundation — build substrate, pure SMPP 3.4 codec, and fail-fast configuration
 
@@ -414,6 +414,8 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 
 *(SPLIT from Epic 6 2026-09-12, owner direction — the performance-measurement half unchanged in substance.)*
 
+*(DEFERRED 2026-09-19, owner direction "favour correctness proof over performance": Epic 7 runs AFTER Epics 8–9. Additionally, at epic start a load-gen decision gate is mandatory — evaluate a JMeter SMPP plugin (an existing one, or the PRD §13 future-family sibling) against Story 7.1's custom open-model harness BEFORE building; adopting JMeter is an AD-24 amendment decided then. Story 7.1 carries the matching amendment block.)*
+
 **Goal:** Every locked performance bet is validated via a reproducible load-test harness — a no-crypto baseline (to attribute relay cost vs. crypto cost) and the final measured numbers: ≥10,000 `submit_sm`/sec (stretch ~25K) with a published p50/p90/p99/p99.9 percentile table, 10,000 idle socket pairs in <1 GB heap / <1 vCPU, sub-ms per-PDU relay latency, and codec JMH microbench bands — measured on the packaged shapes, published under the disclosure/report gates (PERF-070/071). The portfolio "craft is the headline" claim is proven with published evidence. *Note (2026-09-12): PERF-1's "mTLS both legs" anchor predates the [B] topology (the SMSC leg is plaintext by design, one TLS leg per instance) — the published mTLS number is the Mode-C cell, the baseline isolates crypto cost; see `epic-7-context.md`.*
 
 - **FRs covered:** *(none — NFR-driven epic)*
@@ -421,6 +423,30 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - **Key ADs:** AD-21 (load-test allocator choice), AD-23, AD-24 (perf harness + first-of-kind scope), AD-29 (packaged), AD-30 (memory formula)
 - **Depends on:** Epic 5 *(independent of Epic 6 — either order or parallel; Epic 7 authors its own perf-report page)*
 - **Packages owned:** no main source package — perf harness in `proxy/src/test/` (open-model load rig, end-to-end relay percentile harness, idle-CPU-at-N demo), the JMH bench publication, the published perf report. *Honest exception: if final PERF-1 validation exposes a genuine hot-path defect, the fix returns to the owning epic (relay/ Epic 2 or codec/ Epic 1), not patched here.*
+
+### Epic 8: Make it observable and installable — measurability close-out, sandbox Prometheus, Docker Hub publishing via CI
+
+*(Added 2026-09-19, owner direction — the correctness-first half of the re-prioritization that defers Epic 7 to last.)*
+
+**Goal:** The proxy's observability surface is audited against operator needs and closed where measurable gaps remain (candidate: latency/timer histograms — the spine-Deferred "Prometheus histogram buckets" item — under AD-19's cardinality rules, no new labels); the docker-compose sandbox gains a Prometheus service that actually scrapes the packaged proxy's loopback-only `/metrics` via a sandbox-only, AD-19-preserving access pattern (recommended: the Prometheus compose service joins the proxy's network namespace; story-owned detail — the product's loopback-only binding and fail-closed posture are untouched); and the distroless image is PUBLISHED to Docker Hub automatically by a GitHub Actions workflow (build + test gate + push), so `docker compose up` works from a pull instead of a local build. Operator docs follow: deployment-guide publish path, runbook scrape section, sandbox README (+ ru mirror, terminology glossary). Reverses the 2026-09-11 no-CI stance (owner direction 2026-09-19) — Story 7.1's "No CI scaffolding" Never-item is amended accordingly.
+
+- **FRs covered:** *(none new — FR-DEPLOY-1 execution completed by publishing; FR-OBS-2 close-out where the audit finds gaps)*
+- **NFRs:** OBS-1, OBS-2, DEP-1 (published shape), OPS-1 (doc updates), SEC-5 (CI pins the toolchain the CVE policy points at)
+- **Key ADs:** AD-19 (loopback-only + cardinality + the deferred histogram-buckets item), AD-16 (Micrometer model), AD-31 (docs as operator surface), AD-23
+- **Depends on:** Epic 5, Epic 6
+- **Packages owned:** `proxy/observability/` (gap close only — audit first), `sandbox/` (Prometheus service + conf + README/ru), `.github/workflows/` (CI), Docker Hub publish path, `docs/` updates (deployment-guide, runbooks + ru)
+
+### Epic 9: The whole-codebase meaty review — review prep and the human read
+
+*(Added 2026-09-19, owner direction — the review lives in its own distinct epic, sliced from the correctness-first re-prioritization.)*
+
+**Goal:** The owner performs ONE meaty human read of the WHOLE codebase — code and tests, every epic's output including Epic 8's — prepared by a review-prep package (change inventory, hot-spot map, risk annotations, recommended reading order) so the read is systematic instead of archaeological. Findings land in a triage ledger and bounce to their owning area (the epics.md honest-exception pattern: the review never patches what it reviews); fixes taken in a follow-up round inside this epic. Partially serves SM-2 (the trust model read hardening) and precedes Epic 7 — performance proofs are built on reviewed ground.
+
+- **FRs covered:** *(none — process epic)*
+- **NFRs:** MAINT-4 (test-strategy review), SEC-2/SEC-4 posture read
+- **Key ADs:** *(none new — the review reads all of them; AD-24 test posture)*
+- **Depends on:** Epic 8
+- **Packages owned:** no main source — review-prep artifact + findings/triage ledger; fix rounds touch owning packages only
 
 <!-- Repeat for each epic in epics_list (N = 1, 2, 3...) -->
 

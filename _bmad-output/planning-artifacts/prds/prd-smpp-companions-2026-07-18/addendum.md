@@ -2,7 +2,7 @@
 title: SMPP 3.4 Security Proxy — PRD Addendum (technical-how)
 project: smpp-companions
 status: final
-updated: 2026-07-20
+updated: 2026-09-19
 ---
 
 # Addendum — Technical How (Companions v1 PRD)
@@ -67,3 +67,11 @@ The two-proxy topology: enterprise runs the **forward proxy** (fronts legacy; tr
 - DLR-splice mechanics (how `deliver_sm` reaches the originating bind without message-state) — architecture, contingent on OQ-2 (splice vs inspect).
 - Carrier-multi-bind verification method (OQ-1) — architecture/ops.
 - Specific config-file format and secret-injection mechanism for the Docker shape — architecture/addendum follow-up.
+
+## A7. Post-final notes — 2026-09-19 (sprint-change-proposal, correctness-first re-prioritization)
+
+*Owner direction 2026-09-19; ratified via `_bmad-output/planning-artifacts/sprint-change-proposal-2026-09-19.md`. No PRD contract text changes — these notes scope and trace; they do not amend requirements.*
+
+- **Sandbox Prometheus is fixture scope, not product surface.** §13's non-goal ("no metrics dashboard / telemetry backend") governs the PRODUCT. The repo-local docker-compose sandbox (a debugging playground — the same category as its bundled Keycloak vs "no bundled authority provider") gains a Prometheus scraper service in Epic 8. Product posture unchanged: read-only, loopback-only `/metrics` exposition (A2, architecture AD-19); no dashboard, no backend, no management API.
+- **Docker Hub publishing is FR-DEPLOY-1 execution, not a new requirement.** The distroless image published automatically via GitHub Actions CI (Epic 8) completes "two first-class shapes" (§6.4) and SM-1's "shippable OSS release"; the published image honors the DEP-1 secrets contract unchanged.
+- **Re-sequencing, not descoping.** PERF-1..4 (§7.1) and SM-3 stay locked; Epics 8–9 (observability/installability, whole-codebase review) precede Epic 7 by owner priority. A JMeter-plugin load-gen option is evaluated at Epic 7's start (story-level gate; an architecture AD-24 matter if adopted).

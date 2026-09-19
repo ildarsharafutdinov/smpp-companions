@@ -60,6 +60,14 @@ context:
 
 </frozen-after-approval>
 
+## Amendment 2026-09-19 — sprint-change-proposal (correctness-first re-prioritization)
+
+*(Owner direction 2026-09-19, ratified via `sprint-change-proposal-2026-09-19.md`. The frozen block above stays byte-identical; this amendment is the sanctioned renegotiation its header requires.)*
+
+1. **Deferral:** Epic 7 / this story execute AFTER Epic 8 (observability close-out, sandbox Prometheus, Docker Hub via CI) and Epic 9 (whole-codebase meaty review). Priority change only — scope and status (ready-for-dev) unchanged. `baseline_commit` is re-pinned at story start, after Epics 8–9 land.
+2. **Never-list supersession — CI:** "No CI scaffolding (none exists, owner 2026-09-11)" is SUPERSEDED: GitHub Actions CI exists from Epic 8 (build + test gate + Docker Hub publish). Residual constraint: this story authors no CI workflow of its own and leaves the Epic-8 pipeline untouched unless a task explicitly requires it — any such change is a visible edit, never a side effect.
+3. **Load-gen decision gate (mandatory before building the harness):** evaluate a JMeter SMPP plugin (an existing one, or the PRD §13 future-family sibling) against the Approach's custom open-model harness BEFORE implementation. Adopting JMeter is an AD-24 amendment decided at that time and reopens this story's Approach for a further owner-approved amendment; rejection is recorded with reasons. Either way the methodology bar survives unchanged — percentile tables (never a peak alone), the coordinated-omission self-proof, saturation knee + first-failure-mode, full environment disclosure (PERF-070/071).
+
 ## Code Map
 
 - `proxy/src/test/java/smpp/companion/proxy/relay/MockSmsc.java` -- the AD-24(2) in-JVM mock SMSC on the production codec: N concurrent binds (every bind ESME_ROK), per-socket `deliver_sm` injection (`Session.deliver/deliverAll`), injectable bind delay/stall (`start(long)`/`stallBinds()`/`releaseBinds()`), byte-exact captures (`bindFrame()`/`received()`/`awaitPdus(n)`). The harness sink — needs a per-PDU delay-injection arm for PERF-010's coordinated-omission check (bind-delay arms exist; the mid-stream PDU pause is new, test-tier).
