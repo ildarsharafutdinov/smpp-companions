@@ -59,6 +59,14 @@
      T5's runs are dated into the test catalog (E2E-002..005's families, manual rig, non-CI ops
      tier); the §6.4 D1 deny journey stays single-proxy by design (an off-table system_id is
      denied at the forward's routing table — the runbooks' routing-miss rows state the shape). -->
+<!-- Flipped done 2026-09-19: review round 1 closed 2026-09-18 (7cb0d8f — doc-consistency fixes +
+     ledger truing; the story file's status rode with it), then T6, the owner-added operator-first
+     docs task, landed 2026-09-19 (3e38797) — the root project README (EN + RU), the three runbooks
+     restructured with every command and live-observed value preserved verbatim, the README
+     orientation tables, and the owner terminology sweep (use case = role + mode; connect for wire
+     interactions; coupling for app/memory; measurement is within Epic 7's scope); clean build
+     re-verified GREEN (3m 7s). Epic-6 done with it — all three stories closed; the epic-6
+     retrospective stays optional. -->
 
 ## Goal
 
@@ -70,13 +78,14 @@ correctness-proof rig against a REAL unmodified SMPP 3.4 stack (COMP-1 evidence 
 jSMPP); the composed two-instance forward↔reverse flow (E2E-001) and the packaged-shape journey matrix run
 their final conformance. Documentation: the complete operator surface per AD-31/OPS-1 — config reference,
 per-mode A/B/C deployment guide (carrying the ROPC removal-track warning and the `docker run` recipe),
-runbooks, cipher-allowlist policy, Mode B warning text. Status: Epics 1–5 done (`2f2b0e8`); Epic 7
+runbooks, cipher-allowlist policy, Mode B warning text. Status: Epics 1–6 done; Epic 7
 (performance) split out the same day — independent of this epic; **Story 6.1 (the docs half) done
 2026-09-13 — the operator surface exists as-built under `docs/` (see Stories); Story 6.2 (the
 composed-conformance half) done 2026-09-16, review round 1 closed same date — E2E-001 landed as
 three rungs, the journey matrix widened per the ratified decision, the operator docs trued
-(see Stories); Story 6.3 (the sandbox capstone) done 2026-09-17 — the Kannel rig, the compose
-Keycloak, the host-run launch recipe, and the four live-executed correctness journeys under
+(see Stories); Story 6.3 (the sandbox capstone) done 2026-09-19 — the Kannel rig, the compose
+Keycloak, the host-run launch recipe, the four live-executed correctness journeys, the T5 docker
+combo runbooks, and the T6 operator-first docs pass under
 `sandbox/`, closed out with the catalog rows and the Gradle-inert GREEN build (see Stories)**.
 
 ## Stories

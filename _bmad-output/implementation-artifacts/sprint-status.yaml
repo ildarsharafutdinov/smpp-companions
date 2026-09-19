@@ -1,5 +1,5 @@
 # generated: 2026-07-24
-# last_updated: 2026-09-18
+# last_updated: 2026-09-19
 # project: smpp-companions
 # project_key: NOKEY
 # tracking_system: file-system
@@ -64,7 +64,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-09-18
+last_updated: 2026-09-19
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -109,10 +109,10 @@ development_status:
   epic-5-retrospective: optional
 
   # --- Epic 6: Correct and document the proxy — Kannel sandbox, composed conformance, operator docs ---
-  epic-6: in-progress
+  epic-6: done
   6-1-operator-docs-surface: done
   6-2-composed-packaged-conformance: done
-  6-3-kannel-sandbox: review
+  6-3-kannel-sandbox: done
   epic-6-retrospective: optional
 
   # --- Epic 7: Validate all performance — the measurement harness and published evidence ---
