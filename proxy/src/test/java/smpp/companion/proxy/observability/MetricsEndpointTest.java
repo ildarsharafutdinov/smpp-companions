@@ -196,6 +196,38 @@ class MetricsEndpointTest {
     }
 
     @Test
+    @DisplayName("histogram row (Story 8.1 T3): the scrape carries BOTH pre-registered histograms' "
+            + "_bucket/_sum/_count rows — adjudication UNLABELED, transit {direction} only — all "
+            + "zero-valued on an idle boot")
+    void scrapeCarriesBothHistogramFamiliesPreRegistered(@TempDir Path dir) throws IOException {
+        int port = RelayTestFixtures.freePort();
+        try (ConfigurableApplicationContext ctx = bootForwardA(dir, port)) {
+            String body = exchange(port, get(MetricsHttpHandler.SCRAPE_PATH));
+            assertThat(body)
+                    .as("both Story 8.1 T2 histogram families are declared on the exposition")
+                    .contains("# TYPE relay_binds_adjudication_seconds histogram")
+                    .contains("# TYPE relay_pdus_transit_seconds histogram")
+                    .as("the bind-adjudication histogram is UNLABELED — the bucket rows carry ONLY "
+                            + "le (a verdict/system_id dimension would betray itself in the braces)")
+                    .contains("relay_binds_adjudication_seconds_bucket{le=\"0.05\"}")
+                    .contains("relay_binds_adjudication_seconds_bucket{le=\"+Inf\"}")
+                    .contains("relay_binds_adjudication_seconds_count 0")
+                    .contains("relay_binds_adjudication_seconds_sum 0")
+                    .as("the transit histogram rides the closed direction dimension — both series, "
+                            + "direction FIRST in the braces, the +Inf overflow present")
+                    .contains("relay_pdus_transit_seconds_bucket{direction=\"INGRESS\",le=\"1.0E-4\"}")
+                    .contains("relay_pdus_transit_seconds_bucket{direction=\"EGRESS\",le=\"+Inf\"}")
+                    .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 0")
+                    .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 0")
+                    .contains("relay_pdus_transit_seconds_sum{direction=\"INGRESS\"} 0");
+            // An idle forward boot adjudicates and relays nothing — every histogram value is the
+            // PRE-REGISTERED zero (construction-time cardinality, AD-19; nothing runtime-created).
+            // Shape-idempotence across scrapes stays row 1's contract — the histograms are inside
+            // its shape comparison — and the 405/404/413 rows (rows 2-4) are untouched by them.
+        }
+    }
+
+    @Test
     @DisplayName("shutdown row: close -> port released (later scrape refused), dedicated companion-metrics loop gone")
     void stopReleasesPortAndQuiescesTheDedicatedLoop(@TempDir Path dir) throws IOException {
         int port = RelayTestFixtures.freePort();

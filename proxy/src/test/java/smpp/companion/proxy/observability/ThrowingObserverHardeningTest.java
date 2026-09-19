@@ -41,10 +41,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Story 4.1 T4 (checkpoint 20) &mdash; the seam-hardening proof: a {@link ThrowingRelayObserver}
- * armed on each of the four seam methods in turn (and on all four at once for the full cycle)
- * leaves EVERY relay invariant intact &mdash; PDU forwarded, deny synthesized, teardown complete, close
- * exactly-once &mdash; and each swallowed throw produced exactly one bounded WARN (AC2, the I/O
- * matrix's throwing-observer row). The isolation under test lives at the FIRE SITES
+ * armed on each of the five seam methods in turn (the four couple-cycle triggers also all at once
+ * for the full cycle; the fifth &mdash; the adjudication settle &mdash; gets its own
+ * {@code BindInterceptor}-wired row) leaves EVERY relay invariant intact &mdash; PDU forwarded, deny
+ * synthesized, teardown complete, close exactly-once &mdash; and each swallowed throw produced
+ * exactly one bounded WARN (AC2, the I/O matrix's throwing-observer row). The isolation under test
+ * lives at the FIRE SITES
  * ({@code CoupledRelayHandler.fireGuarded}), not inside any observer impl, which is why the double
  * throws instead of self-guarding.
  *
@@ -220,11 +222,57 @@ class ThrowingObserverHardeningTest extends ObservabilityPairHarness {
                 .as("the (unarmed) close trigger neither threw nor WARNed").isZero();
     }
 
-    // ---------- the full cycle with ALL FOUR armed ----------
+    // ---------- row 5: a throwing onBindAdjudication — the settle fire — never eats the verdict path ----------
 
     @Test
-    @DisplayName("full bind→relay→close cycle with ALL FOUR methods throwing: couple, forwards, and "
-            + "exactly-once closes all hold; 5 WARNs total (1 accept + 2 PDU + 2 close)")
+    @DisplayName("onBindAdjudication throws → the verdict path STILL completes (deny synthesized, frame "
+            + "released, teardown, onBindReject fires), the trigger was delivered before the throw, "
+            + "exactly ONE WARN")
+    void throwingOnBindAdjudicationStillCompletesTheVerdictPath(CapturedOutput out) {
+        ThrowingRelayObserver observer =
+                new ThrowingRelayObserver(EnumSet.of(ThrowingRelayObserver.Trigger.BIND_ADJUDICATION));
+        ingress = channel(new SmppFrameDecoder(), new SmppCodec(),
+                new BindInterceptor(denyingVerifier(), manager, observer, properties,
+                        new RelayEgressInitializer(manager, observer), channelOptions, routingTable, tlsFactory,
+                        gate),
+                new RelayIngressHandler(manager, observer));
+
+        ByteBuf frame = inbound(bindRequest(SmppCommandIds.BIND_TRANSCEIVER, 43, "legacy1", "pw123456"));
+        ingress.writeInbound(frame);
+
+        assertThat(observer.bindAdjudications())
+                .as("the settle fired exactly once and was delivered BEFORE the throw")
+                .hasSize(1);
+        assertThat(observer.bindAdjudications().get(0).toNanos())
+                .as("the latency is a monotonic delta — never negative")
+                .isNotNegative();
+        ByteBuf deny = ingress.readOutbound();
+        assertThat(deny).as("the verdict path is unaffected by the settle throw — the deny is still "
+                + "synthesized (the client never hangs)").isNotNull();
+        assertThat(deny.readableBytes()).as("header-only synth — the ONE PDU the relay builds").isEqualTo(HEADER);
+        assertThat(deny.getInt(8)).as("AD-33: the generic ESME_RBINDFAIL 0x0000000D").isEqualTo(ESME_RBINDFAIL);
+        assertThat(deny.getInt(12)).as("sequence_number correlates the denied request").isEqualTo(43);
+        deny.release(); // readOutbound hands the reader ownership (the T7 trap)
+        assertThat(frame.refCnt()).as("the original pooled frame is released — no leak past the throw").isZero();
+        assertThat(ingress.isOpen()).as("deny → then close").isFalse();
+        assertThat(registry.size()).as("the optimistically-registered entry is removed").isZero();
+        assertThat(observer.bindRejects())
+                .as("the REST of the settle path ran on — the unarmed reject trigger fired (the "
+                        + "record-then-throw settle cannot eat the verdict collapse)")
+                .singleElement()
+                .satisfies(reject -> assertThat(reject.verdict()).isEqualTo(new Verdict.DenyInvalid()));
+        assertThat(isolationWarns(out, "onBindAdjudication"))
+                .as("exactly one bounded WARN per swallowed settle throw").isEqualTo(1);
+        assertThat(isolationWarns(out, "onBindReject"))
+                .as("the unarmed reject trigger neither threw nor WARNed").isZero();
+    }
+
+    // ---------- the full cycle with ALL FIVE armed (the couple fixture adjudicates nothing, so four fire) ----------
+
+    @Test
+    @DisplayName("full bind→relay→close cycle with ALL FIVE methods armed (the couple fixture "
+            + "adjudicates nothing, so four fire): couple, forwards, and exactly-once closes all "
+            + "hold; 5 WARNs total (1 accept + 2 PDU + 2 close)")
     void fullCycleWithEveryTriggerThrowingHoldsEveryInvariant(CapturedOutput out) {
         ThrowingRelayObserver observer = new ThrowingRelayObserver(EnumSet.allOf(ThrowingRelayObserver.Trigger.class));
         coupledPair(observer);
@@ -254,6 +302,10 @@ class ThrowingObserverHardeningTest extends ObservabilityPairHarness {
         assertThat(observer.framedPdus())
                 .as("both relayed PDUs were counted before their throws")
                 .containsExactly(Direction.INGRESS, Direction.EGRESS);
+        assertThat(observer.framedPduEvents())
+                .as("Story 8.1 T2: each fire also carried its transit — a monotonic delta, never "
+                        + "negative, on either leg")
+                .allSatisfy(f -> assertThat(f.transit().toNanos()).isNotNegative());
         assertThat(isolationWarns(out, "onBindAccept")).isEqualTo(1);
         assertThat(isolationWarns(out, "onFramedPdu")).isEqualTo(2);
         assertThat(isolationWarns(out, "onConnectionClosed")).isEqualTo(2);

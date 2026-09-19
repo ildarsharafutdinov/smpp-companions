@@ -176,11 +176,13 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
      * when the peer's outbound buffer was over the high mark, which is the AD-30 per-channel bound.
      *
      * <p><b>Story 8.1 T2 — the transit stamp:</b> entry into this method is the framed PDU's ARRIVAL
-     * at the relay seam and the fire below is its FORWARD; the monotonic delta between the two is the
-     * PDU's relay transit, computed HERE at the seam (one {@code nanoTime} stamp + one read per
-     * relayed PDU) and carried to the observer by the ratified Q1=B seam change — the two clock reads
-     * book-end exactly the pre-forward processing (entry lookup, coupled check, peer-liveness,
-     * observer fire), which is the sub-ms PERF-4 budget the transit histogram's low buckets expose.
+     * at the relay seam and the forward below is its egress point; the monotonic delta between the
+     * two clock reads is the PDU's relay transit, computed HERE at the seam (one {@code nanoTime}
+     * stamp + one read per relayed PDU) and carried to the observer by the ratified Q1=B seam
+     * change — the two reads book-end exactly the pre-forward processing (entry lookup, coupled
+     * check, peer-liveness), while the observer fire itself runs only AFTER the second read,
+     * deliberately, so a throwing observer cannot stretch the measurement (which is the sub-ms
+     * PERF-4 budget the transit histogram's low buckets expose).
      */
     private void relayFramedPdu(ChannelHandlerContext ctx, ConnectionEntry entry, ByteBuf frame) {
         long arrivalNanos = System.nanoTime(); // Story 8.1 T2: the transit stamp (framed-PDU arrival)
