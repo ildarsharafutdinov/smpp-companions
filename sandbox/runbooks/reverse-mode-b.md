@@ -1,37 +1,21 @@
-# Runbook — the dockerized `reverse.mode-b` combo (the lone reverse, legacy clients direct)
+# Runbook — the `reverse.mode-b` use case (the lone reverse; legacy clients direct)
 
-> **Status:** Story 6.3 T5 (2026-09-18). One of the three docker-packaged combo runbooks beside the
-> sandbox's host-run `java -jar` recipe (README §5 — that recipe stays the debugger posture; these
-> runbooks are the deployment-shaped way to run the same rig). This page is documentation only;
-> nothing in the repository parses it. The cell's authoritative key reference is
-> [`docs/configuration.md`](../../docs/configuration.md) (the AD-17 role × mode matrix); the image's
-> facts live in [`docs/deployment-guide.md`](../../docs/deployment-guide.md) and
-> [`docs/operator-jvm-flag-contract.md`](../../docs/operator-jvm-flag-contract.md).
+> One of the three docker runbooks, one per use case (role + mode) — siblings: [forward+reverse, Mode A](forward-reverse-mode-a.md) ·
+> [forward+reverse, Mode C](forward-reverse-mode-c.md). For the host-run `java -jar` recipe (the debugger
+> posture) see the [sandbox README](../README.md) §5. Every expected observation below was executed live on
+> the rig, 2026-09-18. Documentation only — nothing parses this page.
 > Русский перевод: [`reverse-mode-b.ru.md`](reverse-mode-b.ru.md).
-> Every expected observation in this runbook was executed live on 2026-09-18's rig.
 
-## 1. The use case — what operator problem this combo solves
+## What it's for
 
-You have **legacy ESMEs that speak plaintext SMPP and cannot be changed** (no TLS stack, no cert
-management), and one aggregator SMSC whose credential authority you must put behind a central
-adjudication screen. `reverse.mode-b` is the cheapest cell that solves it: ONE proxy instance,
-the clients connect DIRECTLY to it (there is no forward tier in Mode B — it is reverse-only by
-structure), every bind's password is adjudicated over ROPC at your IdP, and the SMSC stays the
-sole credential authority beyond it (`smsc-users.txt` decides the last word, AD-32 case 4).
+You have legacy ESMEs that speak plaintext SMPP and cannot be changed, and you want every bind's
+password checked at your IdP before it reaches the SMSC. Mode B is the cheapest use case that does
+it: **one** proxy instance, the clients connect directly to it, every bind is adjudicated over
+ROPC at your IdP, and the SMSC keeps the last word on credentials beyond it (`smsc-users.txt`
+decides).
 
-What you accept: the client-facing leg is PLAINTEXT — SMPP passwords transit it in the clear.
-That is the registered accepted risk; the launch refuses without the explicit
-`acknowledged=true` opt-in (SEC-052) and boots with the loud MODE B WARN banner as part of the
-contract. What you get: central adjudication, the AD-33 collapsed wire deny (no enumeration
-oracle for attackers), verbatim forwarding of the SMSC's own verdicts, and the full JSON-lines +
-`/metrics` observability surface — with zero certificates to manage.
-
-In this rig the "legacy ESME" is the front Kannel bearerbox (`usr1`/`pwd1` over
-`host.docker.internal:2775`), the SMSC is opensmppbox + fakesmsc, and the IdP is the compose
-Keycloak. It is README §5's cell exactly — one deployment shape over: the distroless image
-instead of the host `java -jar`.
-
-## 2. The chain
+In this rig the "legacy ESME" is the front Kannel bearerbox (`usr1`/`pwd1`), the SMSC is
+opensmppbox + fakesmsc, and the IdP is the compose Keycloak.
 
 ```mermaid
 flowchart TD
@@ -43,36 +27,39 @@ flowchart TD
 
     fbearer -- "bind_transceiver usr1/pwd1<br/>(PLAINTEXT — the accepted risk)" --> proxy
     proxy -- "ROPC usr1/pwd1 (TLS, every bind)" --> keycloak
-    proxy -- "SMPP 3.4 (plaintext dial, host loopback)" --> osmpp
+    proxy -- "SMPP 3.4 (plaintext connection, host loopback)" --> osmpp
     osmpp --> fake
 ```
 
-### The port plan (collision-checked — this combo has none)
+- **You accept:** the client-facing leg is plaintext — SMPP passwords cross it in the clear.
+  That is the registered accepted risk: the launch refuses without the explicit
+  `acknowledged=true` opt-in and boots with a loud WARN banner. The banner is part of the
+  contract, not noise to silence.
+- **You get:** central adjudication; every proxy-side denial collapses to the same generic wire
+  code, so an attacker learns nothing from the response; the SMSC's own verdicts forwarded
+  verbatim; full JSON logs + `/metrics` — and zero certificates to manage.
 
-| Port | Bound by | Notes |
-|------|----------|-------|
-| 2775 | the proxy container (`0.0.0.0`, host network) | The rig's wiring contract — the front conf dials `host.docker.internal:2775`; with `network_mode: host` the listener binds the host's own stack, so NO `-p` publish exists or is needed |
-| 9090 | the proxy container (`127.0.0.1`, `/metrics`) | Host-network bonus over the bridge shape: the loopbound endpoint is scrapeable from the HOST directly — `curl http://127.0.0.1:9090/metrics` |
-| 14567, 8443, others | the compose rig | Untouched — see README §3 |
+## Quick start
 
-One proxy listener + one metrics bind: nothing collides. The two-instance combos (mode A/C
-runbooks) are where the port plan has to move things — see their tables.
-
-## 3. Bring-up (zero → `bind_accept coupled`)
-
-Run everything from the **repository root** (the `-v` sources are root-relative). Preconditions:
-Docker up; once per machine, the image and jar built:
+Run everything from the **repository root** (the `-v` mounts are root-relative). Docker must be
+up. Once per machine, build the image and jar:
 
 ```bash
 ./gradlew :proxy:bootJar :proxy:dockerImage   # -> proxy/build/libs/proxy.jar + smpp-proxy:local
 ```
 
-Then the rig + the one secret (README §4 and §5.1 are the full guides; the essentials):
+**1 — Start the rig** (full bring-up guide: [sandbox README §4](../README.md)):
 
 ```bash
 cd sandbox && docker compose up -d --build && cd ..
 # wait for pg + both bearerboxes + keycloak healthy: docker compose ps
-# the §5.1 secret bootstrap (fresh keycloak containers REGENERATE the client secret):
+```
+
+**2 — Fetch the OIDC client secret.** Fresh Keycloak containers regenerate it, so re-run this
+after any `down` + `up` cycle (the full guide, including the admin-console alternative, is
+README §5.1):
+
+```bash
 curl --cacert sandbox/keycloak/certs/ca.pem \
      https://localhost:8443/realms/smpp-companions/.well-known/openid-configuration
 docker compose -f sandbox/compose.yml exec keycloak /opt/keycloak/bin/kcadm.sh config truststore \
@@ -87,7 +74,9 @@ mkdir -p sandbox/secrets && printf '%s\n' '<generated>' > sandbox/secrets/oidc-c
 chmod 0444 sandbox/secrets/oidc-client-secret   # 0444, not §5.1's 0600: the container's UID 65532 must read it
 ```
 
-Launch the combo:
+**3 — Launch the proxy.** Nothing collides in this use case: the proxy takes 2775 (the port the
+front conf connects to) and 9090 (`/metrics`). It's the two-instance use cases whose ports move — see
+their runbooks.
 
 ```bash
 docker run -d --name sandbox-proxy-b --network host \
@@ -109,74 +98,91 @@ docker run -d --name sandbox-proxy-b --network host \
       --companion.reverse.mode-b.oidc.max-in-flight=64
 ```
 
-The shape, in one breath: `--network host` puts the proxy in the host's network namespace — its
-`127.0.0.1` dials reach the compose-published opensmppbox (14567) and Keycloak (8443), its 2775
-listener is the host's 2775 (which `host.docker.internal` hairpins into), and its loopbound
-`/metrics` is scrapeable from your shell. The jar bind-mount over `/opt/proxy.jar` (the image's
-own copy of the same bytes) is the debug story — §5 below. The cell args are README §5.2's
-exactly: the ONE flag set rides the image's exec-form ENTRYPOINT (never repeated here), the
-`acknowledged=true` opt-in is the Mode B contract, and the two `:ro` secret mounts are the AD-18
-by-path channel (`docker inspect` carries paths only, never values).
+✅ **You're up when** `docker logs sandbox-proxy-b` shows `"event":"bind_accept"`,
+`"system_id":"usr1"`, `"outcome":"coupled"` — within ~10 s.
 
-## 4. How to check — the expected observation per step (all live-observed 2026-09-18)
+## What you should see
 
-| Step | Expected observation |
-|------|----------------------|
-| `docker logs sandbox-proxy-b` — boot | ONE WARN JSON line, the MODE B banner text verbatim (`MODE B (plaintext) is ACTIVE on a REVERSE instance` — `CompanionModeBWarning`; it is part of the contract, not noise to silence), then `"event":"startup_summary"` with `"role":"reverse"`, `"mode":"b"`, `"smpp_bind_host":"0.0.0.0"`, `"smpp_bind_port":2775`, `"metrics_port":9090`, and the AD-30 interlock `"memory_budget_bytes":6442450944` == `"direct_memory_ceiling_bytes":6442450944` |
-| The couple — within ~10 s (the front bearerbox's retry interval; observed ~4 s after ready) | `"event":"bind_accept"`, `"system_id":"usr1"`, `"outcome":"coupled"` — the front's bind crossed the container, ROPC-succeeded at the compose Keycloak, dialed opensmppbox, coupled on its ROK |
-| `curl -s http://127.0.0.1:9090/metrics` (from the HOST — the host-network bonus) | `relay_binds_unknown_total 1.0` (the honest reverse-cell couple counter — no routing table, AD-19; `relay_binds_accepted_total{system_id=…}` is a forward-cell series). Keepalives tick `relay_pdus_total{direction}` +1 per leg per ~30 s (Kannel's `enquire_link`) |
-| `curl "http://127.0.0.1:13000/status.txt?password=test"` | `smsc1 … SMPP:host.docker.internal:2775/2775:usr1:smsc1 (online …)` — and the §4 reconnect ERROR lines stop |
-| `docker compose -f sandbox/compose.yml logs smsc-opensmpp-box` | the `bind_transceiver_resp` PDU dump with `command_status: 0` — the ROK that crossed the proxy back |
-| A send (optional — README §6.1's journey) | `curl ".../cgi-bin/sendsms?...&dlr-mask=31...&text=hello"` → HTTP 202, fakesmsc prints the text intact; `relay_pdus_total` moves per §6.1's accounting — +1 `INGRESS` (the `submit_sm`) and +1 `EGRESS` (its `submit_sm_resp`), then +1/+1 more when the DLR returns (the `deliver_sm` arriving on the EGRESS leg, its resp crossing INGRESS): 2/2 per leg for the whole journey. Anything above that is the keepalive traffic named in the metrics row above (`enquire_link`, +1/+1 per ~30 s on a coupled session, README §6.3) |
+| Check | What you should see |
+|-------|---------------------|
+| `docker logs sandbox-proxy-b` (boot) | One WARN line — the Mode B banner, `MODE B (plaintext) is ACTIVE on a REVERSE instance` — then `"event":"startup_summary"` with `"role":"reverse"`, `"mode":"b"`, `"smpp_bind_host":"0.0.0.0"`, `"smpp_bind_port":2775`, `"metrics_port":9090`, and `memory_budget_bytes` == `direct_memory_ceiling_bytes` == `6442450944`. |
+| The couple — within ~10 s (observed ~4 s after ready) | `"event":"bind_accept"`, `"system_id":"usr1"`, `"outcome":"coupled"` — the bind crossed the proxy, passed ROPC at Keycloak, connected to opensmppbox, coupled on its ROK. |
+| `curl -s http://127.0.0.1:9090/metrics` (from the host) | `relay_binds_unknown_total 1.0` — the reverse cell's couple counter (no routing table here; the labeled `relay_binds_accepted_total{system_id=…}` series exists only on forward cells). Keepalives add +1 to `relay_pdus_total{direction}` per leg every ~30 s (Kannel's `enquire_link`). |
+| `curl "http://127.0.0.1:13000/status.txt?password=test"` | `smsc1 … SMPP:host.docker.internal:2775/2775:usr1:smsc1 (online …)` — and the reconnect ERROR lines stop. |
+| `docker compose -f sandbox/compose.yml logs smsc-opensmpp-box` | The `bind_transceiver_resp` PDU dump with `command_status: 0` — the ROK that crossed the proxy back. |
+| A send — optional | `curl ".../cgi-bin/sendsms?...&dlr-mask=31...&text=hello"` → HTTP 202; fakesmsc prints the text intact; counters move 2/2 per leg for the journey (submit + resp, then the DLR pair) — beyond that, keepalive (`enquire_link`). Full journey: [README §6.1](../README.md). |
 
-The failure arms (wrong egress port, stale secret, Keycloak down, missing secret file) produce
-exactly README §5.4's signatures — same cell, same args, only the stdout surface is
-`docker logs` instead of a terminal. Two arms are docker-specific (both pinned by the 5.2
-Docker suites): a mounted secret file UID 65532 cannot read → the boot itself refuses, exit 1,
-no `startup_summary`, the refusal naming the path (SEC-060); a typo'd `-v` source → Docker
-silently creates a DIRECTORY there and the proxy answers `is a directory, not a file (OIDC
-client secret) — refusing to start (SEC-060/AD-18)` instead of a mount error.
+## Troubleshooting
 
-## 5. The debug story — swap the jar, restart the container
+| Symptom | What it means · what to do |
+|---------|----------------------------|
+| Boots, but never couples — silence, no `bind_accept` | The classic arms (wrong egress port, stale secret, Keycloak down) produce exactly the signatures in [sandbox README §5.4](../README.md) — same cell, same args; only the stdout surface is `docker logs`. |
+| Boot refuses, exit 1, refusal names the secret path | The mounted secret file is unreadable by the image's UID 65532 — check the mode: `0444`, not `0600`. No `startup_summary` appears; nothing partially starts. |
+| Boot refuses: `is a directory, not a file (OIDC client secret)` | A typo'd `-v` source — Docker silently creates a **directory** at a missing path. Fix the path, remove the stray directory. |
 
-The image's `/opt/proxy.jar` is bind-mounted over, so the jar your container runs is the HOST
-build output — the image itself can go stale without the rig noticing:
-
-```bash
-./gradlew :proxy:bootJar          # rebuild after any source edit (inputs tracked — no stale jar)
-docker restart sandbox-proxy-b    # the running container keeps the OLD inode until the restart
-```
-
-The mechanics (verified live on this host, 2026-09-18): a bind mount pins the source file's
-inode, and Gradle's jar write replaces the file atomically — a RUNNING container keeps reading
-the old inode; `docker restart` re-resolves the source PATH and the next boot runs the new
-bytes. Observed on this exact combo: first start couples (`bind_accept` #1), `docker restart`
-re-couples within one front retry (`bind_accept` #2) — no image rebuild anywhere in the loop.
-What you still lose versus README §5's host launch is the IDE debugger and the JDK toolbox
-(`jcmd`, JFR) — when a session needs them, that recipe is the posture; this runbook is the
-deployment-shaped one.
-
-## 6. Where the logs live
+## Logs
 
 | Surface | How |
 |---------|-----|
-| The proxy's JSON stdout | `docker logs sandbox-proxy-b` — the event spine (`startup_summary`, `bind_accept`/`bind_reject`, the WARN catalog); grep `"event":` |
-| The proxy's `/metrics` | `curl -s http://127.0.0.1:9090/metrics` (host loopback — the host-network shape makes it directly scrapeable) |
-| Keycloak | `docker compose -f sandbox/compose.yml logs keycloak` (`Realm 'smpp-companions' imported` at boot; ROPC traffic is not logged per-bind — the proxy's verdict lines are that surface) |
-| Kannel (both sides) | `docker compose -f sandbox/compose.yml logs front-bearer-box` / `smsc-opensmpp-box` / … — full SMPP PDU dumps (`log-level = 4`), the wire tap AROUND the proxy |
-| pg / fakesmsc | README §7's entry-point table |
+| The proxy's JSON stdout | `docker logs sandbox-proxy-b` — grep `"event":` (`startup_summary`, `bind_accept`/`bind_reject`, the WARN catalog). |
+| The proxy's `/metrics` | `curl -s http://127.0.0.1:9090/metrics` (host loopback — directly scrapeable in this shape). |
+| Keycloak | `docker compose -f sandbox/compose.yml logs keycloak` (`Realm 'smpp-companions' imported` at boot). ROPC traffic is not logged per-bind — the proxy's verdict lines are that surface. |
+| Kannel, both sides | `docker compose -f sandbox/compose.yml logs front-bearer-box` / `smsc-opensmpp-box` / … — full SMPP PDU dumps; the wire tap around the proxy. |
+| pg / fakesmsc | The entry-point table in [sandbox README §7](../README.md). |
 
-## 7. Teardown
+## Teardown
 
 ```bash
-docker stop --timeout 30 sandbox-proxy-b   # -> exit 143 (docker inspect --format '{{.State.ExitCode}}')
+docker stop --timeout 30 sandbox-proxy-b   # -> exit 143 (docker inspect --format '{{.State.ExitCode}}' sandbox-proxy-b)
 docker rm sandbox-proxy-b
 ```
 
-`--timeout 30` is deliberate (the deployment guide's rule): the walk can spend the full 10s
-drain deadline plus release — a shorter wait lets the daemon SIGKILL mid-drain (exit 137).
-Expected stream order (live-observed): `startup_summary` < `bind_accept` < the drain WARN
-`shutdown drain deadline (PT10S) expired — force-closed 1 live pair(s) as SHUTDOWN_DRAIN
-(OBS-020: …)` — Kannel never half-closes, so the force-close at the deadline is the norm here —
-then exit 143. The front bearerbox returns to its §4 retry loop and re-couples on the next
-launch. The compose rig itself tears down per README §9.
+The 30 s wait is deliberate — the shutdown walk can spend the full 10 s drain deadline plus
+release; a shorter wait lets the daemon SIGKILL mid-drain (exit 137). Expected stream order:
+`startup_summary` < `bind_accept` < the drain WARN (`shutdown drain deadline (PT10S) expired —
+force-closed 1 live pair(s) as SHUTDOWN_DRAIN (OBS-020: …)`) — Kannel never half-closes, so the
+force-close at the deadline is the norm here — then exit 143. The front bearerbox returns to its
+retry loop and re-couples on the next launch. The rig itself tears down per
+[sandbox README §9](../README.md).
+
+## Details & references
+
+### Why `--network host`
+
+- The proxy shares the host's network stack: its `127.0.0.1` connections reach the compose-published
+  opensmppbox (14567) and Keycloak (8443) directly.
+- Its 2775 listener is the host's own 2775 — the one the front conf connects to via
+  `host.docker.internal` (which hairpins into it). No `-p` publish exists or is needed.
+- Its loopback `/metrics` is scrapeable straight from your shell.
+
+### Swapping the jar
+
+The image's `/opt/proxy.jar` is bind-mounted over, so the container runs your **host build** —
+the image itself can go stale without the rig noticing:
+
+```bash
+./gradlew :proxy:bootJar          # rebuild after any source edit (inputs tracked — no stale jar)
+docker restart sandbox-proxy-b    # a running container keeps the OLD jar until the restart
+```
+
+A bind mount pins the source file's inode and Gradle replaces the file atomically — a running
+container keeps the old bytes; the restart re-resolves the path (verified live: a restart
+re-couples within one front retry, no image rebuild in the loop). What you lose versus the host
+launch is the IDE debugger and the JDK toolbox (`jcmd`, JFR) — [sandbox README §5](../README.md)
+is the recipe for those sessions.
+
+### Notes
+
+- The JVM flag set rides the image's exec-form ENTRYPOINT — you never pass JVM flags in the
+  `docker run` (the contract: [docs/operator-jvm-flag-contract.md](../../docs/operator-jvm-flag-contract.md)).
+- The two `:ro` secret mounts are the by-path channel — `docker inspect` carries paths, never
+  values.
+- The use case's arguments are exactly the README §5.2 host-launch set; the authoritative key
+  reference is [docs/configuration.md](../../docs/configuration.md).
+
+### References
+
+- Rig bring-up, the secret bootstrap in full, failure signatures, the correctness journeys,
+  debugging: the [sandbox README](../README.md) (§4–§9).
+- The image's facts: [docs/deployment-guide.md](../../docs/deployment-guide.md),
+  [docs/operator-jvm-flag-contract.md](../../docs/operator-jvm-flag-contract.md).

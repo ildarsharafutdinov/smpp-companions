@@ -83,6 +83,25 @@ context:
 - [x] **T3 — the correctness journeys + debugging guide** — README journeys, each with expected observations per hop: happy send + DLR round trip (postgres row + status pages); `deliver_sm` injection toward the ESME; `enquire_link` crossing the coupled pair (with the keepalive-vs-`pre-couple-idle-timeout` note); the two deny journeys (wrong SMSC credential → AD-32 case-4 verbatim non-ROK forward; bad OIDC credential → AD-33 collapsed generic deny on the wire, rich reason in JSON logs only); the debugging entry-point table (Kannel admin `status.txt`, log levels, proxy `/metrics` + JSON lines, pg tables, fakesmsc stdin). Mutation: a journey whose expected observation is unstated or unobservable → not shipped (the Always rule bites at review).
 - [x] **T4 — proofs, catalog rows, ledger** — `./gradlew clean build --console=plain` GREEN untouched (the Gradle-inert claim verified, not assumed); sandbox journey rows land in the catalog as dated ops-tier entries (COMP-1/E2E-flavored, labeled manual-rig like OBS-035/037); any Kannel-quirk interop notes recorded in the README + deferred-work if actionable; `epic-6-context.md` regenerated to as-built.
 - [x] **T5 — the three docker-packaged combo runbooks** — one runbook per deployment cell, every proxy instance the Epic-5 distroless image on `network_mode: host` with the host-built jar bind-mounted over the image's copy (a rebuilt jar swaps in on container restart — the debug story the docker posture keeps): (1) `reverse.mode-b` — the lone reverse, legacy clients direct (§5's cell, dockerized); (2) forward+reverse **mode A** — plaintext trusted-leg ingress + the one-way-TLS dial; (3) forward+reverse **mode C** — the mTLS dial (the `DockerRig.launchComposedModeCChain` shape). Each runbook, one file per combo under `sandbox/runbooks/` (EN normative + the RU twin, linked from both READMEs): the use case stated simply — the selling-point framing, what operator problem this combo solves — + a mermaid diagram, step-by-step bring-up commands (zero → rig healthy → `bind_accept coupled`), how to check (expected observation per step), where the logs live (proxy container stdout/`docker compose logs`, `/metrics`, Keycloak). A per-combo port plan where two host-network listeners would collide (the composed cells' reverse moves off 2775 — documented, not discovered). Verify every combo live on the rig; an image-side or Kannel-side blocker is documented honestly in the runbook, never papered over. Mutation: a runbook followed verbatim that does not reach `bind_accept coupled` → not shipped.
+- [x] **T6 (2026-09-19, owner-added): operator-first docs** — the three combo runbooks
+  restructured to the operator-first skeleton (What it's for → Quick start with an ✅ success
+  line → What you should see → Troubleshooting → Logs → Teardown → Details & references);
+  every command and live-observed value preserved **verbatim** (verified by extracting all
+  command lines and diffing against HEAD — only trailing comments differ), zero
+  factual/behavioral change, AD-xx/SEC-xx citation chains pruned from the body into
+  Details/References. NEW project-root `README.md` + `README.ru.md` (what it is / what it is
+  for, the module map with per-module status — proxy and sandbox WIP, codec in development,
+  jmeter plugin planned — loud links to the runbooks as usage samples and the sandbox README as
+  the in-depth page). Sandbox READMEs reoriented (unnumbered "Start here — which page do I
+  need?" tables; §-numbering untouched so every cross-ref holds) and §5.6 trued to the new
+  vocabulary. Owner terminology applied across the whole scope (root README, both sandbox
+  READMEs, all six runbooks): **use case = role + mode** (RU: `use case` or «вариант
+  использования», never «сценарий использования»), **connect** for over-the-wire interactions
+  (RU соединение; `dial` eliminated), **coupling/couple/coupled** for app/memory interactions
+  (RU сопряжение; log values like `"outcome":"coupled"` stay verbatim). RU twins conformed
+  (glossary; the conformance sweep: zero дозвон/звонить/dial/«сценарий использования» in the
+  scope, EN↔RU section parity 7/7 per runbook, all links resolve). Docs-only — no Gradle
+  input touched; `./gradlew clean build --console=plain` re-run GREEN (3m 7s, zero failures).
 
 **Acceptance Criteria:**
 - Given a clean checkout and Docker, when the README's bring-up is followed, then every compose service reaches healthy and the front bearerbox's SMPP transceiver binds through the host-run proxy — the couple visible in the proxy's logs and `/metrics`.
@@ -651,3 +670,21 @@ T5 (2026-09-18) additions/changes:
   composed reverse-down); §9's docker-container teardown paragraph; §10 deltas item 6 (EN) /
   item 7 (RU, after the translation item).
 - `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T5 checkbox + this record.
+
+T6 (2026-09-19, owner-added) additions/changes — docs only, zero Gradle/main-source touch:
+
+- `README.md` + `README.ru.md` (repo root) — NEW: the project's front page (what it is / what
+  it is for, the module map — codec, proxy, jmeter plugin (planned), sandbox, docs — with
+  per-module status, loud links to the runbooks as usage samples and the sandbox README as the
+  in-depth page).
+- `sandbox/runbooks/reverse-mode-b.md` + `.ru.md` — RESTRUCTURED to the operator-first
+  skeleton (commands and observations byte-identical to the T5 originals; terminology swept).
+- `sandbox/runbooks/forward-reverse-mode-a.md` + `.ru.md` — RESTRUCTURED likewise.
+- `sandbox/runbooks/forward-reverse-mode-c.md` + `.ru.md` — RESTRUCTURED likewise.
+- `sandbox/README.md` + `sandbox/README.ru.md` — T6 in the status headers; the unnumbered
+  "Start here" orientation tables; §5.6 trued to the use-case vocabulary; the term sweep
+  across living prose (connect/coupling/use case; the dated T1–T5 status entries left as
+  history).
+- `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md` — T6 checkbox + this record.
+  Evidence: command-line diffs vs HEAD clean for all six runbooks; link check green; RU
+  conformance sweep green; `./gradlew clean build --console=plain` GREEN (3m 7s).

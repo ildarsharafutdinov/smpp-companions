@@ -16,8 +16,29 @@
 > REMAINS the debugger posture. Spec:
 > `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md`. The sandbox is developer tooling,
 > not shipped product: it changes zero main-source lines, is inert to Gradle (`./gradlew clean build`
-> untouched), wires into no CI, and publishes no performance numbers (Epic 7 owns measurement).
+> untouched), wires into no CI, and publishes no performance numbers (measurement is within
+> Epic 7's scope).
+> T6 (2026-09-19, owner-added): operator-first docs — the three runbooks restructured (Quick start →
+> checks → Troubleshooting → Details; every command and live-observed value preserved verbatim,
+> zero factual/behavioral change), a NEW project-root README (EN + RU) linking the runbooks as
+> usage samples, this page reoriented ("Start here") and swept with the rest of the scope to the
+> owner terms (use case = role + mode; connect for wire interactions; coupling for app/memory);
+> RU twins conformed.
 > Русский перевод: [`README.ru.md`](README.ru.md).
+
+## Start here — which page do I need?
+
+This sandbox wraps the proxy in a **real, unmodified third-party SMPP stack** — Kannel 1.5.0 on
+both sides plus a Keycloak that adjudicates every bind — so you can debug and prove the proxy
+against a stack you didn't write. It complements the automated suites; it replaces nothing.
+
+| I want to… | Go to |
+|------------|-------|
+| Run a deployment the easy way (docker) | The three use-case runbooks — one per use case (role + mode), quick-start style: [`reverse.mode-b`](runbooks/reverse-mode-b.md) · [`forward.mode-a` + `reverse.mode-a`](runbooks/forward-reverse-mode-a.md) · [`forward.mode-c` + `reverse.mode-c`](runbooks/forward-reverse-mode-c.md) |
+| Debug the proxy (IDE debugger, `jcmd`, JFR) | §5 — the host-run `java -jar` recipe (the debugger posture) |
+| Understand the rig (layout, ports, bring-up) | §2–§4 |
+| Prove correctness end to end | §6 — the journeys, with the expected observation at every hop |
+| Find where things are logged | §7 — the debugging entry points |
 
 ## 1. What this rig is
 
@@ -28,7 +49,7 @@ stack (COMP-1 context). It **complements, never replaces**, the automated oracle
 suites stay the machine-checked conformance surface; Kannel is the real-stack, human-driven
 debugging and correctness tier.
 
-The chain, with the proxy wedged in the middle (the front bearerbox's SMPP client dials the proxy's
+The chain, with the proxy wedged in the middle (the front bearerbox's SMPP client connects to the proxy's
 host ingress instead of straight at opensmppbox — the ONE wiring re-point from the ported source;
 the one further conf delta, the MO `smsbox-route` group the §6.2 journey required, is §10's honesty
 list) and the compose Keycloak adjudicating every bind over ROPC:
@@ -88,29 +109,29 @@ a one-command, all-compose run (owner decision ratified 2026-09-17: host stays t
 |------|------------|
 | `compose.yml` | The 8-service chain: the ported 7 — `pg`, front side (`front-bearer-box`, `front-sql-box`, `front-sms-box`), SMSC side (`smsc-bearer-box`, `smsc-opensmpp-box`, `smsc-fake-smsc`) — plus `keycloak` (T2); healthchecks on `pg` + both bearerboxes + `keycloak`'s TCP probe, `smsc-fake-smsc` tty-attached for `deliver_sm` injection. |
 | `kannel/Dockerfile` | The Kannel 1.5.0 pinned-source build, ported byte-for-byte from the playground (gateway-1.5.0.tar.gz, `--with-pgsql`, `test/fakesmsc`, addons opensmppbox + sqlbox; UBI10 builder / UBI10-minimal runtime, including the automake-1.11 symlink bootstrap quirk). No version drift, no distro swap. |
-| `conf/front-kannel.conf` | Front bearerbox + smsbox: the SMPP-**transceiver** `group = smsc` (`usr1`/`pwd1`, `interface-version = 34`) that dials the proxy at `host.docker.internal:2775`, and the `sendsms` HTTP user (`user`/`password`). |
+| `conf/front-kannel.conf` | Front bearerbox + smsbox: the SMPP-**transceiver** `group = smsc` (`usr1`/`pwd1`, `interface-version = 34`) that connects to the proxy at `host.docker.internal:2775`, and the `sendsms` HTTP user (`user`/`password`). |
 | `conf/front-sqlbox.conf` | Front sqlbox (smsbox → sqlbox → bearerbox routing leg). |
 | `conf/smsc-kannel.conf` | SMSC-side bearerbox: admin 14000, fake SMSC `FAKE1` on 10004, pgsql DLR (`smsc_bearer_dlr`), and the `smsbox-route` group (T3's MO-routing delta, §10 — routes FAKE1's MOs to the opensmppbox connection so §6.2's injection journey works). |
-| `conf/smsc-opensmppbox.conf` | opensmppbox on 14567: `smpp-logins` from `smsc-users.txt`, `route-to-smsc = FAKE1`, pgsql DLR (`smsc_smpp_dlr`). This box is the real SMSC the proxy's egress dials. |
+| `conf/smsc-opensmppbox.conf` | opensmppbox on 14567: `smpp-logins` from `smsc-users.txt`, `route-to-smsc = FAKE1`, pgsql DLR (`smsc_smpp_dlr`). This box is the real SMSC the proxy's egress connects to. |
 | `conf/smsc-users.txt` | opensmppbox's SMPP credential list (`usr1 pwd1 smsc1 *.*.*.*`) — the SMSC-side authority the deny journeys exercise (AD-32 case 4). |
 | `conf/db.conf` | Shared pgsql connection (via `host.docker.internal`). |
 | `init.sql` | The pgsql DLR tables (`front_bearer_dlr`, `smsc_bearer_dlr`, `smsc_smpp_dlr`), applied by the postgres entrypoint at every fresh container boot (the anonymous-volume lifetime — §9). |
 | `keycloak/realm-smpp-companions.json` | The realm export the `keycloak` service imports at boot (T2): mirrors the test-tier `KeycloakFixture` realm shape — realm `smpp-companions`, the confidential client `smpp-client-confidential` with Direct Access Grants ON (per-client, off by default since KC 26.2), ROPC users (§5.1). Deliberately carries NO client secret: Keycloak generates one at import — the ONE AD-18 secret in the rig, fetched into `secrets/` (§5.1). |
-| `keycloak/certs/` | The Keycloak TLS material, copied byte-identical from the committed test fixtures (`proxy/src/test/resources/keycloak/certs/`): `server.pem`/`server-key.pem` (SANs `localhost`, `keycloak`, `127.0.0.1` — the host-run proxy dials `localhost:8443`, the optional docker variant dials `keycloak:8443`), `truststore.p12` (pw `smpp-test` — the proxy's IdP trust anchor), `ca.pem` (for host-side `curl --cacert` verification). Fixture-tier test PKI, NOT production secrets — the same class of material the test tier commits; the rig's one real secret-by-path is the client secret. |
-| `certs/` | The SMPP-leg TLS material for the T5 docker combo runbooks (§5.6), copied byte-identical from the same committed test fixtures: `smpp-reverse-server.pem`/`-key.pem` (SANs `localhost`/`127.0.0.1` — the composed reverse's listener cert; the forward dials `localhost` with hostname verification ON, AD-20), `smpp-forward-client.pem`/`-key.pem` (the forward's per-instance mTLS client cert), `smpp-truststore.p12` (pw `smpp-test`, anchoring `CN=smpp-test-ca` — both dial-side and REQUIRE-side). Same fixture-tier class as `keycloak/certs/`; keep the files world-readable (`0644`) so the image's UID 65532 reads the mounts. |
-| `runbooks/` | The three T5 docker-packaged combo runbooks (§5.6), EN normative + RU twins: [`reverse-mode-b.md`](runbooks/reverse-mode-b.md), [`forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md), [`forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) — one per deployment cell, every proxy instance the Epic-5 distroless image on `network_mode: host` with the host-built jar bind-mounted over the image's copy. |
+| `keycloak/certs/` | The Keycloak TLS material, copied byte-identical from the committed test fixtures (`proxy/src/test/resources/keycloak/certs/`): `server.pem`/`server-key.pem` (SANs `localhost`, `keycloak`, `127.0.0.1` — the host-run proxy connects to `localhost:8443`, the optional docker variant connects to `keycloak:8443`), `truststore.p12` (pw `smpp-test` — the proxy's IdP trust anchor), `ca.pem` (for host-side `curl --cacert` verification). Fixture-tier test PKI, NOT production secrets — the same class of material the test tier commits; the rig's one real secret-by-path is the client secret. |
+| `certs/` | The SMPP-leg TLS material for the T5 use-case runbooks (§5.6), copied byte-identical from the same committed test fixtures: `smpp-reverse-server.pem`/`-key.pem` (SANs `localhost`/`127.0.0.1` — the composed reverse's listener cert; the forward connects to `localhost` with hostname verification ON, AD-20), `smpp-forward-client.pem`/`-key.pem` (the forward's per-instance mTLS client cert), `smpp-truststore.p12` (pw `smpp-test`, anchoring `CN=smpp-test-ca` — both connect-side and REQUIRE-side). Same fixture-tier class as `keycloak/certs/`; keep the files world-readable (`0644`) so the image's UID 65532 reads the mounts. |
+| `runbooks/` | The three T5 docker-packaged use-case runbooks (§5.6), EN normative + RU twins: [`reverse-mode-b.md`](runbooks/reverse-mode-b.md), [`forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md), [`forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) — one per use case (role + mode), every proxy instance the Epic-5 distroless image on `network_mode: host` with the host-built jar bind-mounted over the image's copy. |
 | `secrets/` | Operator-created (gitignored, AD-18): `oidc-client-secret` — the Keycloak client's generated secret, written by the §5.1 bootstrap. Nothing here is ever committed. |
 
 ### 2.1 Why opensmppbox is required — fakesmsc is not an SMPP endpoint
 
-The proxy's egress speaks SMPP 3.4 and must dial an SMPP **server**. fakesmsc cannot be that server
+The proxy's egress speaks SMPP 3.4 and must connect to an SMPP **server**. fakesmsc cannot be that server
 at any port: it is a *client* that connects INTO a bearerbox's `smsc = fake` port and speaks
 Kannel's internal box protocol — it never listens for SMPP and never parses a PDU. Pointing the
 proxy's egress at anything fakesmsc-side is a category error, not a configuration option.
 
 opensmppbox is the only SMPP 3.4 listener in the rig, and it carries three jobs nothing else can:
 
-1. **Terminate the proxy's egress dial** — the real-SMPP-server face: it answers
+1. **Terminate the proxy's egress connection** — the real-SMPP-server face: it answers
    `bind_transceiver`, authenticates against `smpp-logins` (`conf/smsc-users.txt`), and is the
    SMSC-side credential authority the wrong-credential deny journey exercises (AD-32 case 4: its
    non-ROK `bind_resp` must forward verbatim through the proxy).
@@ -136,17 +157,17 @@ unprovable, and fakesmsc cannot serve any of them alone.
 | 5432 | `pg` | DLR store (also reachable from the host for the DLR journey observations) |
 | 8080 | `front-sms-box` | `sendsms` HTTP ingress — the journey entry point |
 | 13000 | `front-bearer-box` | Front admin status page |
-| 13001 | `front-bearer-box` | Front box port (sqlbox dials it via the host) |
-| 13002 | `front-sql-box` | sqlbox port (smsbox dials it via the host) |
+| 13001 | `front-bearer-box` | Front box port (sqlbox connects to it via the host) |
+| 13002 | `front-sql-box` | sqlbox port (smsbox connects to it via the host) |
 | 10004 | `smsc-bearer-box` | The fake SMSC port `fakesmsc` connects to |
 | 14000 | `smsc-bearer-box` | SMSC-side admin status page |
-| 14001 | `smsc-bearer-box` | SMSC-side box port (opensmppbox dials it via the host) |
+| 14001 | `smsc-bearer-box` | SMSC-side box port (opensmppbox connects to it via the host) |
 | 14567 | `smsc-opensmpp-box` | The REAL SMSC listener — the proxy's egress target |
-| 8443 | `keycloak` | The ROPC adjudicator's HTTPS realm port (the host-run proxy dials it as `localhost:8443`; the fixed bind keeps the issuer deterministic, mirroring the test fixture's coordinates) |
-| 2775 | — | Must stay free: the proxy's SMPP ingress (the SMPP-standard port) — the host-run §5.2 proxy, or the §5.6 docker combo's listener (the lone reverse, or the FORWARD of the composed pairs — the front conf is the same `host.docker.internal:2775` either way) |
-| 2776 | — (docker combos, composed cells) | Must stay free for the §5.6 mode A/C runbooks: the composed cells' reverse listener (the reverse moves off 2775 so the forward can take it — each runbook's port plan) |
-| 9090 | — (a proxy) | A proxy's read-only `/metrics`, bound to the `127.0.0.1` literal inside the proxy's own process — occupied only while a proxy runs (§5.3's observation point; compose publishes nothing here). Host-run §5.2 and every §5.6 combo's FIRST instance use it |
-| 9091 | — (docker combos, the composed reverse) | The §5.6 composed cells' reverse `/metrics` — the second host-network proxy process cannot share 9090's loopback bind, so its runbook moves it (the port plan, documented not discovered) |
+| 8443 | `keycloak` | The ROPC adjudicator's HTTPS realm port (the host-run proxy connects to it as `localhost:8443`; the fixed bind keeps the issuer deterministic, mirroring the test fixture's coordinates) |
+| 2775 | — | Must stay free: the proxy's SMPP ingress (the SMPP-standard port) — the host-run §5.2 proxy, or the §5.6 docker use case's listener (the lone reverse, or the FORWARD of the composed pairs — the front conf is the same `host.docker.internal:2775` either way) |
+| 2776 | — (docker use cases, two-instance) | Must stay free for the §5.6 mode A/C runbooks: the two-instance use cases' reverse listener (the reverse moves off 2775 so the forward can take it — each runbook's port plan) |
+| 9090 | — (a proxy) | A proxy's read-only `/metrics`, bound to the `127.0.0.1` literal inside the proxy's own process — occupied only while a proxy runs (§5.3's observation point; compose publishes nothing here). Host-run §5.2 and every §5.6 use case's FIRST instance use it |
+| 9091 | — (docker use cases, the second instance) | The §5.6 second instance's `/metrics` — the second host-network proxy process cannot share 9090's loopback bind, so its runbook moves it (the port plan, documented not discovered) |
 
 The 8443 row has one collision to know about: the test tier's `KeycloakContainer` binds the SAME
 fixed `localhost:8443` — so the sandbox's Keycloak and a concurrently running `:proxy:test` live
@@ -172,7 +193,7 @@ Readiness per service:
 | `smsc-bearer-box` | compose healthcheck green — `curl "http://127.0.0.1:14000/status.txt?password=test"` answers, and its `SMSC connections:` list shows `FAKE1 ... (online ...)`. |
 | `front-sql-box` | No admin page exists (sqlbox has none); gated on `front-bearer-box: healthy`. Connected once the front status page lists `smsbox:sqlbox1`; its tables (`front_sms_log`, `front_sms_insert`) exist in `pg`. |
 | `front-sms-box` | No healthcheck (gated on `front-sql-box`); answers HTTP on 8080 — a `sendsms` curl gets an smsbox answer (202 Accepted/queued while the SMSC leg is down — Kannel queues; connection-refused would mean it is not up). |
-| `smsc-opensmpp-box` | No admin page; listening on 14567 (the port the proxy's egress will dial); `docker compose logs smsc-opensmpp-box` shows `Connected to bearerbox at host.docker.internal port 14001`. |
+| `smsc-opensmpp-box` | No admin page; listening on 14567 (the port the proxy's egress will connect to); `docker compose logs smsc-opensmpp-box` shows `Connected to bearerbox at host.docker.internal port 14001`. |
 | `smsc-fake-smsc` | Stays attached (tty) once connected to 10004; `docker compose logs smsc-fake-smsc` shows `Entering interactive mode`, and `FAKE1` appears online in the SMSC status page. |
 | `keycloak` | Compose healthcheck green — a TCP connect to the HTTPS listener (the rig's Keycloak is HTTPS-only and the image ships no TLS-capable client, so the healthcheck asserts the listener; see the service comment in `compose.yml`). REALM readiness is proven by the §5.1 discovery curl, which the secret bootstrap runs anyway. |
 
@@ -192,7 +213,7 @@ curl --cacert keycloak/certs/ca.pem https://localhost:8443/realms/smpp-companion
 ```
 
 **Expected state after §4 — the front SMSC is DOWN until the proxy launches.** The front bearerbox
-dials `host.docker.internal:2775`, and the proxy is not part of the compose file (it runs on the
+connects to `host.docker.internal:2775`, and the proxy is not part of the compose file (it runs on the
 host; the launch recipe is §5). Until then the bearerbox retries every 10 s — the log names it
 exactly:
 
@@ -300,13 +321,13 @@ Docker ENTRYPOINT — and by review duty, this recipe). The Gradle `bootJar` tas
 so the normal path never serves a stale jar (the `PackagedBootSmokeTest` wiring — §5.4's other arm
 is therefore only reachable by pointing the `-jar` path somewhere stale on purpose).
 
-Why these cell args (each maps to a wiring fact of the rig):
+Why these use-case args (each maps to a wiring fact of the rig):
 
 | Arg | Why |
 |-----|-----|
 | `bind.host=0.0.0.0` | The front bearerbox reaches the proxy through `host.docker.internal` → the host's gateway address — the listener must not be loopback-scoped. This is the Mode B plaintext leg binding all interfaces: the sandbox posture (the deployment guide's scoping advice applies to real deployments). |
-| `bind.port=2775` | The rig's wiring contract (`conf/front-kannel.conf` dials `host.docker.internal:2775`). Also the shipped yml default — stated for self-documentation. |
-| `smsc.host=127.0.0.1`, `smsc.port=14567` | The proxy dials the compose-published opensmppbox on the host loopback — the real SMSC-side SMPP 3.4 server (§2.1). |
+| `bind.port=2775` | The rig's wiring contract (`conf/front-kannel.conf` connects to `host.docker.internal:2775`). Also the shipped yml default — stated for self-documentation. |
+| `smsc.host=127.0.0.1`, `smsc.port=14567` | The proxy connects to the compose-published opensmppbox on the host loopback — the real SMSC-side SMPP 3.4 server (§2.1). |
 | `acknowledged=true` | The Mode B opt-in (SEC-052) — without it the boot refuses; with it, the WARN banner below. |
 | `provider-url=https://localhost:8443/realms/smpp-companions` | The compose Keycloak's realm base (the REALM base, not the host root — the token endpoint is derived as `<provider-url>/protocol/openid-connect/token`). The server cert's SAN `localhost` satisfies the JDK HttpClient's hostname verification against the dedicated trust store. |
 | `client-secret-path` | The §5.1 file — the deploy contract's AD-18 channel, unchanged in the sandbox. |
@@ -331,17 +352,17 @@ On the proxy's stdout (a pure JSON-lines stream):
    against the contract flag — the boot reaching ready at all IS the `budget-check: fail` pass).
 3. **The couple, within ~10 s** (the front bearerbox's retry interval): `"event":"bind_accept"`,
    `"system_id":"usr1"`, `"outcome":"coupled"` — the front's bind crossed the proxy, ROPC-succeeded
-   against the compose Keycloak (the §5.1 secret doing real work), dialed opensmppbox, and coupled
+   against the compose Keycloak (the §5.1 secret doing real work), connected to opensmppbox, and coupled
    on its ROK.
 
 Then the same fact from the other two vantage points:
 
 4. **`/metrics`** (loopback, read-only): `relay_binds_unknown_total 1.0`. Honesty note: the spec's
-   I/O matrix phrases this as "`relay_binds_accepted_total` in `/metrics`" — on a REVERSE cell the
-   accepted counter has no pre-registered series, because reverse cells carry no routing table and
+   I/O matrix phrases this as "`relay_binds_accepted_total` in `/metrics`" — on a REVERSE use case the
+   accepted counter has no pre-registered series, because reverse use cases carry no routing table and
    AD-19 forbids free-form `system_id` labels; the couple therefore lands on the unlabeled
    off-table counter (`relay.binds.unknown` → `relay_binds_unknown_total`). The labeled
-   `relay_binds_accepted_total{system_id=…}` series exists only on forward cells with routing
+   `relay_binds_accepted_total{system_id=…}` series exists only on forward use cases with routing
    tables. After the first keepalive interval, `relay_pdus_total{direction="INGRESS"}` and
    `{direction="EGRESS"}` tick up — Kannel's `enquire_link` crossing the coupled pair both ways
    (T3's keepalive journey, already visible here).
@@ -370,7 +391,7 @@ refusal texts):
 
 | Broken input | What you observe (all three vantage points) |
 |--------------|---------------------------------------------|
-| **Wrong egress port** (live run: `smsc.port=14568` — nothing listening) | Proxy stdout: `startup_summary` appears, then SILENCE — no `bind_accept`, ever (and no `bind_reject`: the verdict was Allow, the failure is the post-verdict dial — AD-27's pinned triggers log verifier verdicts only). Front log, every 10 s: `ERROR: SMPP[smsc1]: SMSC rejected login to transmit, code 0x0000000d (Bind Failed).` — the AD-33 collapsed generic code on the wire. `/metrics`: `relay_connections_closed_total{direction="INGRESS",reason="EGRESS_CONNECT_FAILED"}` climbing by 1 per retry; `relay_binds_*` stay 0. |
+| **Wrong egress port** (live run: `smsc.port=14568` — nothing listening) | Proxy stdout: `startup_summary` appears, then SILENCE — no `bind_accept`, ever (and no `bind_reject`: the verdict was Allow, the failure is the post-verdict connection — AD-27's pinned triggers log verifier verdicts only). Front log, every 10 s: `ERROR: SMPP[smsc1]: SMSC rejected login to transmit, code 0x0000000d (Bind Failed).` — the AD-33 collapsed generic code on the wire. `/metrics`: `relay_connections_closed_total{direction="INGRESS",reason="EGRESS_CONNECT_FAILED"}` climbing by 1 per retry; `relay_binds_*` stay 0. |
 | **Stale jar** (a `-jar` path pointed at an old build) | Structurally prevented on the normal path — `./gradlew :proxy:bootJar` tracks its inputs and rebuilds on any source change (the `PackagedBootSmokeTest` no-stale-jar wiring). If you point the path somewhere stale on purpose, the couple still fails exactly like the wrong-port arm above (the jar's wiring facts no longer match the rig's). |
 | **Secret mismatch** (live run: the launch pointed at a file with a wrong value — the stale-after-re-create case of §5.1) | ROPC 401 `invalid_client` → `bind_reject` JSON lines per front retry: `verdict":"DenyInvalid"` + `bind_resp_command_status":"0x0000000D"`; `relay_binds_rejected_total` climbing. The front's wire line is the SAME `code 0x0000000d (Bind Failed)` as the wrong-port arm — the deny is rich only in the proxy's logs. |
 | **Keycloak down / unreachable** (live run: `docker compose stop keycloak`, correct secret) | ROPC network error → `bind_reject` (`verdict":"DenyIndeterminate"`) per retry, `0x0000000D` on the wire — indistinguishable ON THE WIRE from the 401 arm (AD-33; no IdP-availability enumeration); the two arms are distinguished ONLY by the verdict field in the proxy's log lines. |
@@ -407,7 +428,7 @@ docker run -d --name smpp-proxy \
 The deltas from the host recipe, each load-bearing: the container joins the sandbox's compose
 network (explicit project name → `smpp-bmad-sandbox_default`) so it resolves `keycloak` and
 `smsc-opensmpp-box` BY SERVICE NAME — the server cert's `keycloak` SAN exists for exactly this, and
-the SMSC dial skips the host hairpin; `-p 2775:2775` re-publishes the ingress for the front
+the SMSC connection skips the host hairpin; `-p 2775:2775` re-publishes the ingress for the front
 bearerbox's `host.docker.internal:2775` (unchanged conf); the two secret files mount read-only at
 the conventional `/run/secrets` paths (mode `0444` on the host files so UID 65532 can read them —
 see the deployment guide's mount rules, which also forbid env-var JVM-flag forks and memory caps
@@ -416,41 +437,41 @@ and `docker stop --timeout 30 smpp-proxy` (exit 143) as the teardown. What you L
 §1: no debugger, no JDK toolbox, no flag edits — which is why the host launch stays the default.
 
 **T5 graduated the docker-packaged proxy into first-class runbooks (owner, 2026-09-17):** the
-three per-combo guides under `runbooks/` (§5.6 below) are now the canonical docker
-documentation — one per deployment cell, every proxy container `network_mode: host` with the
+three per-use-case guides under `runbooks/` (§5.6 below) are now the canonical docker
+documentation — one per use case (role + mode), every proxy container `network_mode: host` with the
 host-built jar bind-mounted over the image's copy. This §5.5 remains what it documents: the
-BRIDGE-NETWORK variant (compose network, service-name dials, `-p 2775:2775`), kept as the
+BRIDGE-NETWORK variant (compose network, service-name connects, `-p 2775:2775`), kept as the
 one-command all-compose snapshot; the runbooks' host-network shape is the one to reach for.
 
-## 5.6 The docker-packaged combo runbooks (T5)
+## 5.6 The docker-packaged use-case runbooks (T5)
 
-One runbook per deployment cell, all three sharing ONE docker shape: the Epic-5 distroless image
+One runbook per use case (role + mode), all three sharing ONE docker shape: the Epic-5 distroless image
 (`./gradlew :proxy:dockerImage` → `smpp-proxy:local`), the container on **`network_mode: host`**
-(the proxy joins the host's network namespace — its `127.0.0.1` dials reach the compose-published
+(the proxy joins the host's network namespace — its `127.0.0.1` connections reach the compose-published
 14567/8443, its 2775 listener is the host's own, and `/metrics` is scrapeable from the host
 loopback), and the **host-built jar bind-mounted over the image's `/opt/proxy.jar`** — the debug
 story the docker posture keeps: rebuild `./gradlew :proxy:bootJar` + `docker restart` swaps the
 jar in (a RUNNING container keeps the old inode; the restart re-resolves the path — mechanics
 verified live, 2026-09-18), no image rebuild in the loop.
 
-| Runbook | The combo | The couple observable |
+| Runbook | The use case | The couple observable |
 |---------|-----------|----------------------|
-| [`runbooks/reverse-mode-b.md`](runbooks/reverse-mode-b.md) (+ [RU](runbooks/reverse-mode-b.ru.md)) | The lone reverse, legacy clients direct — §5's cell dockerized; no certs, the Mode B banner as contract | `bind_accept … coupled` on the one instance; `relay_binds_unknown_total` |
-| [`runbooks/forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md) (+ [RU](runbooks/forward-reverse-mode-a.ru.md)) | Two instances: plaintext trusted-leg forward + one-way-TLS dial; the Mode A banner, its ACL-isolate mitigation live (the reverse loopback-scoped) | `bind_accept` on BOTH instances; the forward's labeled `relay_binds_accepted_total{system_id="usr1"}` |
-| [`runbooks/forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) (+ [RU](runbooks/forward-reverse-mode-c.ru.md)) | Two instances, the mTLS dial (`DockerRig.launchComposedModeCChain`'s topology against the real Kannel chain); no banner — the REQUIRE handshake is the gate | `bind_accept` on BOTH; the mTLS gate probe (a no-cert dial never reaches SMPP) |
+| [`runbooks/reverse-mode-b.md`](runbooks/reverse-mode-b.md) (+ [RU](runbooks/reverse-mode-b.ru.md)) | The lone reverse, legacy clients direct — §5's use case, dockerized; no certs, the Mode B banner as contract | `bind_accept … coupled` on the one instance; `relay_binds_unknown_total` |
+| [`runbooks/forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md) (+ [RU](runbooks/forward-reverse-mode-a.ru.md)) | Two instances: plaintext trusted-leg forward + one-way-TLS connection; the Mode A banner, its ACL-isolate mitigation live (the reverse loopback-scoped) | `bind_accept` on BOTH instances; the forward's labeled `relay_binds_accepted_total{system_id="usr1"}` |
+| [`runbooks/forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) (+ [RU](runbooks/forward-reverse-mode-c.ru.md)) | Two instances, the mTLS connection (`DockerRig.launchComposedModeCChain`'s topology against the real Kannel chain); no banner — the REQUIRE handshake is the gate | `bind_accept` on BOTH; the mTLS gate probe (a no-cert connect never reaches SMPP) |
 
 The shared port plan across the three (each runbook carries its own table): the lone reverse and
 the composed FORWARD both hold **2775** — so the front conf (`host.docker.internal:2775`) never
-changes between combos — the composed cells' **reverse moves to 2776**, and the second proxy
+changes between use cases — the two-instance use cases' **reverse moves to 2776**, and the second proxy
 process's `/metrics` moves to **9091** (two host-network processes cannot share the 9090 loopback
 bind). All three runbooks were followed verbatim to `bind_accept coupled` on the live rig
 (2026-09-18), sends included; their failure tables carry the live-observed arms (reverse-down in
 the composed chain; the UID-65532 mount refusals; the metrics-port collision). What held live on
-the composed combos is the §6.1 send journey (byte-intact at fakesmsc through both hops) and
+the composed use cases is the §6.1 send journey (byte-intact at fakesmsc through both hops) and
 §6.3's keepalives — the sends above were run through each. The §6.4 **D1** deny journey does NOT
-cross a composed combo unchanged: `usr2` is off the forward's routing table (`usr1` is its one
+cross a composed use case unchanged: `usr2` is off the forward's routing table (`usr1` is its one
 entry), so the FORWARD itself denies the bind — the AD-33 generic 0x0d on the wire, a log-only
-`routing miss: system_id not in the routing table — AD-33 deny (AD-29/AD-11)` WARN, NO dial
+`routing miss: system_id not in the routing table — AD-33 deny (AD-29/AD-11)` WARN, NO connection out
 (opensmppbox never sees the bind, so the AD-32 case-4 verbatim non-ROK forward is unreachable in
 this shape — D1 belongs to the single-proxy postures: §5's host launch, the mode B runbook).
 **D2** (a wrong password for the routed `usr1`) does reach the reverse and denies there — §6.4's
@@ -588,7 +609,7 @@ Restore either by reverting the conf and restarting the same way — the couple 
 |---------|-----------------------|-----------------------|
 | The wire (front log, every 10 s) | `ERROR: SMPP[smsc1]: SMSC rejected login to transmit, code 0x0000000d (Bind Failed).` | the IDENTICAL line |
 | Proxy stdout | SILENT — no `bind_accept`, no `bind_reject`, no WARN: no verdict was returned and the SMSC's own answer IS the answer (AD-27's pinned triggers) | one `bind_reject` line per retry: `"verdict":"DenyInvalid"`, `"bind_resp_command_status":"0x0000000D"` — the rich reason lives ONLY here |
-| `/metrics` | `relay_connections_closed_total{direction="INGRESS",reason="BIND_FAILED_NON_ROK"}` AND `{direction="EGRESS",…}` +1 per retry on BOTH legs; `relay_binds_rejected_total` flat; `relay_binds_unknown_total` flat | `relay_binds_rejected_total` +1 per retry AND `relay_binds_unknown_total` +1 (a reverse cell counts every reject on both); `relay_connections_closed_total{direction="INGRESS",reason="BIND_REJECTED"}` +1; NO egress-leg activity |
+| `/metrics` | `relay_connections_closed_total{direction="INGRESS",reason="BIND_FAILED_NON_ROK"}` AND `{direction="EGRESS",…}` +1 per retry on BOTH legs; `relay_binds_rejected_total` flat; `relay_binds_unknown_total` flat | `relay_binds_rejected_total` +1 per retry AND `relay_binds_unknown_total` +1 (a reverse use case counts every reject on both); `relay_connections_closed_total{direction="INGRESS",reason="BIND_REJECTED"}` +1; NO egress-leg activity |
 | The SMSC's view | opensmppbox log: `Got PDU:` `type_name: bind_transceiver` with `system_id: "usr2"`, answered by ITS OWN `bind_transceiver_resp` — `command_status: 13 = 0x0000000d`, `system_id: NULL` — and THOSE bytes reach the front unchanged (the verbatim forward, AD-32 case 4) | opensmppbox sees NOTHING (zero `bind_transceiver` dumps) — the deny fired before the forward |
 
 The D1 note worth internalizing: opensmppbox happens to answer `0x0000000d` itself, so in THIS rig
@@ -624,7 +645,7 @@ Debugging heuristics — the §6.4 skill generalized:
 - **A bind that never couples** → proxy stdout first. `bind_reject` lines: the OIDC arm (read the
   `verdict`; §5.4 names the sub-arms). Silence + `BIND_FAILED_NON_ROK` closes: the SMSC refused —
   diff `conf/smsc-users.txt` against the front's `smsc-username/-password`. Silence +
-  `EGRESS_CONNECT_FAILED` closes: the egress dial — is opensmppbox up, is the §5.2 port right?
+  `EGRESS_CONNECT_FAILED` closes: the egress connection — is opensmppbox up, is the §5.2 port right?
 - **A message that vanishes** → walk §6.1's hop table top-down; the first hop without its expected
   observation is where it stopped. The proxy's counters tell you whether it crossed
   (`relay_pdus_total`); the TRACE arm shows the bytes; the Kannel dumps show what each end saw.
@@ -633,7 +654,7 @@ Debugging heuristics — the §6.4 skill generalized:
 
 | Symptom | What broke | Where to look / what to do |
 |---------|-----------|----------------------------|
-| `docker compose up` fails with `bind: address already in use` for a port in §3 | A host process (most often a local postgres on 5432) owns the port | Free the port or remap the publish — do NOT delete the publish: the hairpin pattern means a unpublished port silently breaks the box that dials it through the host (next row) |
+| `docker compose up` fails with `bind: address already in use` for a port in §3 | A host process (most often a local postgres on 5432) owns the port | Free the port or remap the publish — do NOT delete the publish: the hairpin pattern means a unpublished port silently breaks the box that connects to it through the host (next row) |
 | A box's log shows it failing to connect to `host.docker.internal:<port>` | The matching publish was removed/changed, or the target service is down | Each conf names its targets (§2); restore the publish or the target service — the conf files are the port map's source of truth |
 | `pg` never turns healthy | Postgres not accepting connections (failed volume init, low disk) | `docker compose logs pg` — note `init.sql` runs on every FRESH container boot (anonymous volume, §7): a `down`/`up` cycle re-creates the tables empty; only `stop`/`start` preserves rows |
 | `front-bearer-box` / `smsc-bearer-box` stuck `starting`, then `unhealthy`, or `exited` | Bearerbox refused its conf (syntax, unreadable mount) or crashed after start — the healthcheck curls the admin page, so no admin page = no health | `docker compose logs <service>` — Kannel names the offending group, file, and line before exiting (`Group '...' is no valid group identifier. Error found on line N of file '/etc/kannel/front-kannel.conf'`, exit 1; verified by the T1 mutation run). With no restart policy the container stays exited until you fix the conf and run `docker compose up -d` |
@@ -650,11 +671,11 @@ Debugging heuristics — the §6.4 skill generalized:
 | The §5.1 discovery curl fails (404 / TLS error / connection refused) | 404: the realm did not import (bad JSON — the log says `Realm 'smpp-companions' imported` when it did); TLS error: hostname/cert mismatch (use `--cacert keycloak/certs/ca.pem` against `localhost`, not an IP or other name); refused: container down | `docker compose logs keycloak`; the curl is the authoritative realm-ready probe (the compose healthcheck asserts the listener only — see `compose.yml`'s service comment) |
 | The proxy refuses at boot: `…client-secret-path=… does not exist (OIDC client secret file missing) — refusing to start (SEC-060/AD-18)` | The §5.1 bootstrap was skipped (or the file moved) — AD-18 makes the path non-optional | Run the §5.1 steps; the refusal fires BEFORE any listener binds (exit 1, no `startup_summary` — no partial start) |
 | Proxy up, but every bind denies: `bind_reject` lines, verdict `DenyInvalid`, wire code 0x0d | The Keycloak client secret in `sandbox/secrets/oidc-client-secret` is stale — a container re-create regenerated it (§5.1's regeneration semantics) | Re-run the §5.1 fetch and overwrite the file; the next front retry couples |
-| A §5.6 combo container refuses at boot, exit 1, naming a `cert-path`/`key-path`/secret path (SEC-060), no `startup_summary` | The mounted file is unreadable by the image's UID 65532 — a `0600` copy (the test-resource KEY files land `0600` when copied naively; `cp` preserves it), or the §5.1 secret still at `0600` | `chmod 0644 sandbox/certs/*` (key files included — fixture-tier PKI) and `chmod 0444 sandbox/secrets/oidc-client-secret`; restart the container |
+| A §5.6 use-case container refuses at boot, exit 1, naming a `cert-path`/`key-path`/secret path (SEC-060), no `startup_summary` | The mounted file is unreadable by the image's UID 65532 — a `0600` copy (the test-resource KEY files land `0600` when copied naively; `cp` preserves it), or the §5.1 secret still at `0600` | `chmod 0644 sandbox/certs/*` (key files included — fixture-tier PKI) and `chmod 0444 sandbox/secrets/oidc-client-secret`; restart the container |
 | A `docker run` from a runbook reports `is a directory, not a file (OIDC client secret)` (or cert) at boot | The `-v` SOURCE path had a typo — Docker silently creates a DIRECTORY at a nonexistent source path, and the proxy names it (SEC-060) instead of a mount error appearing | Fix the `-v` path (runbooks are root-relative — run them from the repository root); remove the accidentally created directory |
-| A §5.6 composed combo's SECOND container refuses at boot with a bind-in-use refusal naming `metrics.port` | Both proxy containers were left on the yml-default 9090 — the port-plan miss | Move the reverse's metrics to `--companion.metrics.port=9091` (the runbook's launch already does) |
-| A §5.6 composed chain never couples: the forward's stdout silent, its `relay_connections_closed_total{INGRESS,EGRESS_CONNECT_FAILED}` climbing, the front wire the usual 0x0d | The REVERSE container is down (or its port/cert is wrong) — the forward's egress dial is the TLS leg | `docker ps` for the reverse container; `docker start` it (re-couples within one retry — observed), or re-check the runbook's port plan and cert SAN vs `routing[0].host` |
-| A §5.6 combo's container refuses at boot with a bind-in-use error on 2775 (or the `/metrics` loopback 9090/9091) | A leftover proxy still holds the port — the §5.2 host-run proxy still running, or a prior combo's container not stopped (one front conf means ONE 2775 listener; the loopback metrics ports are single-occupancy too) | One proxy posture at a time: `kill -TERM <pid>` the host proxy (`pgrep -f proxy/build/libs/proxy.jar`), or `docker stop --timeout 30 <name>` the prior combo's containers (exit 143 each), then launch — the refusal names the port and fires before any listener serves |
+| A §5.6 composed use case's SECOND container refuses at boot with a bind-in-use refusal naming `metrics.port` | Both proxy containers were left on the yml-default 9090 — the port-plan miss | Move the reverse's metrics to `--companion.metrics.port=9091` (the runbook's launch already does) |
+| A §5.6 composed chain never couples: the forward's stdout silent, its `relay_connections_closed_total{INGRESS,EGRESS_CONNECT_FAILED}` climbing, the front wire the usual 0x0d | The REVERSE container is down (or its port/cert is wrong) — the forward's egress connection is the TLS leg | `docker ps` for the reverse container; `docker start` it (re-couples within one retry — observed), or re-check the runbook's port plan and cert SAN vs `routing[0].host` |
+| A §5.6 use case's container refuses at boot with a bind-in-use error on 2775 (or the `/metrics` loopback 9090/9091) | A leftover proxy still holds the port — the §5.2 host-run proxy still running, or a prior use case's containers not stopped (one front conf means ONE 2775 listener; the loopback metrics ports are single-occupancy too) | One proxy posture at a time: `kill -TERM <pid>` the host proxy (`pgrep -f proxy/build/libs/proxy.jar`), or `docker stop --timeout 30 <name>` the prior use case's containers (exit 143 each), then launch — the refusal names the port and fires before any listener serves |
 
 ## 9. Teardown
 
@@ -683,9 +704,9 @@ graceful drain, proven in Story 5.1 and re-observed as part of §5.3's recipe pr
 force-closing the live pair at the PT10S deadline (Kannel never half-closes — expected), then exit
 143.
 
-The §5.6 docker-combo containers tear down with `docker stop --timeout 30 <name>` (exit 143
+The §5.6 docker use-case containers tear down with `docker stop --timeout 30 <name>` (exit 143
 each — java is PID 1 via the exec-form ENTRYPOINT; the 30 s wait covers the 10 s drain deadline,
-per the deployment guide's stop rule) and `docker rm <name>`. In the composed combos stop the
+per the deployment guide's stop rule) and `docker rm <name>`. In the composed use cases stop the
 FORWARD first (it holds the live pair — its stdout carries the ordered summary → couple → drain
 WARN stream); the reverse's own WARN then depends on whether its pair was still draining at its
 deadline — observed both ways, both correct walks (the runbooks state this).
@@ -720,10 +741,10 @@ drifts silently:
 5. **The journeys + the debugging guide (T3, as landed):** §6's four journeys and §7's entry-point
    table, all observations executed live on the rig the same day; their one conf requirement is
    delta 4 above.
-6. **The docker combo runbooks + `certs/` (T5, as landed 2026-09-18):** the three per-cell
+6. **The docker use-case runbooks + `certs/` (T5, as landed 2026-09-18):** the three per-use-case
    runbooks under `runbooks/` (§5.6, EN + RU) — docker-only additions; the compose file, the
-   Kannel conf, and everything ported gain nothing (the front conf's `2775` dial serves every
-   combo unchanged). The ONE new material is `sandbox/certs/` — the SMPP-leg fixture PKI,
+   Kannel conf, and everything ported gain nothing (the front conf's `2775` connect serves every
+   use case unchanged). The ONE new material is `sandbox/certs/` — the SMPP-leg fixture PKI,
    byte-identical copies (`cmp`-verified) of the committed test resources — the T2
    `keycloak/certs/` precedent applied to the mTLS/one-way-TLS legs. No Gradle file, no build
    file, no main-source line anywhere in T5.
