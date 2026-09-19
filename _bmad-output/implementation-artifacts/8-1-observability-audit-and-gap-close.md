@@ -2,8 +2,9 @@
 title: 'Story 8.1 — Observability/measurability audit + gap close'
 type: 'feature'
 created: '2026-09-19'
-status: 'ready-for-dev'
+status: 'in-progress'
 route: 'dispatch'
+baseline_commit: '86f02cf5a79d7b833dc104b1e3f2ee3ef02ac701'
 review_loop_iteration: 0
 context:
   - {project-root}/_bmad-output/implementation-artifacts/epic-8-context.md
@@ -59,7 +60,7 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `_bmad-output/implementation-artifacts/observability-audit-2026-09-19.md` -- dated audit report with cited evidence: (a) metrics vs addendum A2 + FR-OBS-2, (b) log events vs FR-OBS-1/A2, (c) handler exacts vs AD-19, (d) gap table — closed-here | ledgered, every row cited. -- The audit gates the close list.
+- [x] `_bmad-output/implementation-artifacts/observability-audit-2026-09-19.md` -- dated audit report with cited evidence: (a) metrics vs addendum A2 + FR-OBS-2, (b) log events vs FR-OBS-1/A2, (c) handler exacts vs AD-19, (d) gap table — closed-here | ledgered, every row cited. -- The audit gates the close list.
 - [ ] `proxy/.../observability/` + the timing hook points (`BindInterceptor`/verifier settle for bind; the relay ingress/egress seam for PDU transit) -- implement BOTH ratified histograms: bind adjudication latency (unlabeled, PERF-3-anchored buckets) + per-PDU relay transit (`{direction}`, sub-ms→s buckets); pre-registered at construction, throw-isolated recording; the `RelayObserver` seam change lands with its shape-test update in-step. -- Closes the spine-Deferred measurable gap.
 - [ ] `proxy/src/test/.../observability/` -- update the meter-count pin + shape-test pin; new tests: bind records once per completed adjudication (Allow AND each reachable Deny class), PDU records once per relayed PDU per direction, buckets bounded, cardinality attack still zero-series, recorder throw-isolation; cover the I/O matrix rows. -- Mutation-resistant pinning per house rules.
 - [ ] `docs/runbooks.md` -- `/metrics` reference rows for the new histogram series (name, type, labels, bucket anchors, recording semantics). -- Operator docs must match the exposition.
