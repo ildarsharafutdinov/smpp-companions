@@ -1,5 +1,6 @@
 package smpp.companion.proxy.observability;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -13,7 +14,9 @@ import smpp.companion.proxy.security.Verdict;
  * structures so a test can AssertJ-assert the AC5 pinned contracts: {@link #bindAccepts()} fires at the
  * AD-25 ROK couple, {@link #connectionCloses()} fires exactly-once per channel, {@link #framedPdus()} is the
  * PDU count (one fire per framed PDU), and the A-1 affinity smoke asserts zero DLR cross-bleed against
- * per-channel captures.
+ * per-channel captures. The Story 8.1 T2 timing carries ({@code onFramedPdu}'s transit,
+ * {@code onBindAdjudication}'s latency) are captured beside their events ({@link #framedPduEvents()},
+ * {@link #bindAdjudications()}).
  *
  * <p><b>Not for production:</b> lives in {@code proxy/src/test}; the production default bean is
  * {@link NoopRelayObserver}. Concurrency-safe because the relay's teardown / couple paths race (AD-25): the
@@ -29,14 +32,23 @@ public final class CapturingRelayObserver implements RelayObserver {
     /** A captured {@link RelayObserver#onConnectionClosed(Direction, CloseReason)} event. */
     public record ConnectionClose(Direction direction, CloseReason reason) { }
 
-    private final ConcurrentLinkedQueue<Direction> framedPdus = new ConcurrentLinkedQueue<>();
+    /** A captured {@link RelayObserver#onFramedPdu(Direction, Duration)} event (Story 8.1 T2). */
+    public record FramedPdu(Direction direction, Duration transit) { }
+
+    private final ConcurrentLinkedQueue<FramedPdu> framedPdus = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<SystemId> bindAccepts = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<BindReject> bindRejects = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<ConnectionClose> connectionCloses = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<Duration> bindAdjudications = new ConcurrentLinkedQueue<>();
 
     @Override
-    public void onFramedPdu(Direction direction) {
-        framedPdus.add(direction);
+    public void onFramedPdu(Direction direction, Duration transit) {
+        framedPdus.add(new FramedPdu(direction, transit));
+    }
+
+    @Override
+    public void onBindAdjudication(Duration latency) {
+        bindAdjudications.add(latency);
     }
 
     @Override
@@ -54,8 +66,13 @@ public final class CapturingRelayObserver implements RelayObserver {
         connectionCloses.add(new ConnectionClose(direction, reason));
     }
 
-    /** Legs that fired {@link RelayObserver#onFramedPdu(Direction)}, in arrival order (PDU count = size). */
+    /** Legs that fired {@link RelayObserver#onFramedPdu(Direction, Duration)}, in arrival order (PDU count = size). */
     public List<Direction> framedPdus() {
+        return framedPdus.stream().map(FramedPdu::direction).toList();
+    }
+
+    /** Fired PDU events with their transit durations, in arrival order (Story 8.1 T2's seam carry). */
+    public List<FramedPdu> framedPduEvents() {
         return List.copyOf(framedPdus);
     }
 
@@ -69,6 +86,11 @@ public final class CapturingRelayObserver implements RelayObserver {
         return List.copyOf(bindRejects);
     }
 
+    /** Completed-adjudication latencies, in settle order (one per settled verifier future, Story 8.1 T2). */
+    public List<Duration> bindAdjudications() {
+        return List.copyOf(bindAdjudications);
+    }
+
     /** Close events &mdash; leg + {@link CloseReason}; assert exactly-once per channel (AC5). */
     public List<ConnectionClose> connectionCloses() {
         return List.copyOf(connectionCloses);
@@ -80,5 +102,6 @@ public final class CapturingRelayObserver implements RelayObserver {
         bindAccepts.clear();
         bindRejects.clear();
         connectionCloses.clear();
+        bindAdjudications.clear();
     }
 }

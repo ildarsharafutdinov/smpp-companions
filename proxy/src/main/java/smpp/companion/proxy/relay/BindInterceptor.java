@@ -232,6 +232,17 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      */
     private @Nullable ScheduledFuture<?> pendingDeadlineTimer;
     /**
+     * The in-flight adjudication's latency ARM (Story 8.1 T2, audit gap G1) — the monotonic stamp
+     * taken where {@link #pendingDeadlineTimer} is armed ({@code adjudicate}'s verify hand-off; the
+     * Design Note's "{@code ChannelTimer} arm" hook point), consumed exactly once at the SETTLE
+     * ({@code onVerdict} — the "cancel" half of the same pair) by {@link #recordAdjudicationLatency}.
+     * Same channel-scoped confinement doctrine as the deadline handle above: interceptor state, not
+     * entry state — only this interceptor arms and settles it, always on the ingress event loop. Null
+     * when no adjudication is pending (the synchronous-blow-up and null-return arms denied before a
+     * future existed — nothing was ever armed, so nothing ever records).
+     */
+    private @Nullable Long pendingAdjudicationStartNanos;
+    /**
      * The pre-couple idle watchdog's handle (Story 4.4 T4, F13 residue) — same channel-scoped
      * confinement rationale as {@link #pendingDeadlineTimer} above. Unlike the deadline handle it
      * spans the WHOLE connect→couple window (armed at {@code channelActive}, NOT at adjudicate): it
@@ -534,6 +545,11 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         // The in-flight handles are ENTRY state now (T6 absorption (a)): the store goes through the manager,
         // where the teardown hygiene and the settle wipe below find them.
         manager.beginAdjudication(entry, verdictRequest, cred.password());
+        // Story 8.1 T2: the adjudication-latency ARM — taken at the same hook point the F14 deadline
+        // timer arms on (the verify hand-off), consumed once at the settle in onVerdict. Duration =
+        // now − arm (the Design Note's formula); the fire is THROW-ISOLATED there like every observer
+        // trigger, so the timing hook can never throw into the verdict path.
+        pendingAdjudicationStartNanos = System.nanoTime();
         // Story 4.4 T3 (F14): arm the adjudication deadline on the ingress event loop — the SAME budget
         // the RequestContext above carried (one number, {@code companion.bind.adjudication-deadline}). A
         // verifier future that never settles can no longer pin the entry, the original bind frame, and
@@ -554,13 +570,17 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * The verdict continuation (on the ingress event loop). Settles the entry's adjudication first —
      * {@code manager.settleAdjudication} drops the cancellation handle and performs the caller-owned
      * zeroize on EVERY completion path (Allow/Deny/exceptional, and the losing-race no-op alike;
-     * idempotent per RELAY-005) — and cancels the pending deadline timer (both arms below: the verdict
-     * landed inside the budget, the arm is spent); every path releases or transfers the original frame.
+     * idempotent per RELAY-005) — cancels the pending deadline timer (both arms below: the verdict
+     * landed inside the budget, the arm is spent), and records the adjudication latency (Story 8.1
+     * T2: {@link #recordAdjudicationLatency()} — exactly once per completed adjudication, BEFORE the
+     * race-free re-check so a concurrently-torn-down pair's settled future still counts); every path
+     * releases or transfers the original frame.
      */
     private void onVerdict(Channel channel, ConnectionEntry entry, SmppBindRequest req,
                            @Nullable Verdict verdict, @Nullable Throwable error) {
         manager.settleAdjudication(entry);
         cancelPendingDeadlineTimer();
+        recordAdjudicationLatency(); // Story 8.1 T2: the settle — one histogram record per COMPLETED adjudication
         // AD-25 race-free re-check: a concurrent teardown (retry-bind, leg death, AD-32 case 3, the F14
         // deadline arm below) owns the close — this callback must no-op (no egress, no deny, no observer
         // trigger).
@@ -629,6 +649,28 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
         if (pending != null) {
             pending.cancel(false);
         }
+    }
+
+    /**
+     * The adjudication-latency SETTLE (Story 8.1 T2, audit gap G1 — the bind histogram's recording
+     * site): fires {@link RelayObserver#onBindAdjudication(Duration)} with {@code now − arm} for the
+     * arm taken beside the deadline timer in {@code adjudicate}, then clears it — exactly one record
+     * per COMPLETED adjudication, this method being the single settle funnel (every settled verifier
+     * future hops here; deadline/teardown-aborted exchanges included, because their {@code cancelHttp()}
+     * settles the pin per the port's no-op-if-done contract). Never fires for the never-armed arms
+     * (synchronous verifier blow-up, null {@code VerdictRequest} — no future ever existed) or the
+     * non-verdict denials (routing miss, the new-adjudication gate — no adjudication ever started).
+     * THROW-ISOLATED at the site via {@code fireGuarded} and cleared BEFORE the fire, so a throwing
+     * observer can neither eat the verdict path below nor double-record on any re-entry.
+     */
+    private void recordAdjudicationLatency() {
+        Long arm = pendingAdjudicationStartNanos;
+        if (arm == null) {
+            return; // nothing armed — no adjudication was pending (see the field's javadoc)
+        }
+        pendingAdjudicationStartNanos = null; // exactly-once: spent before the fire, throw or not
+        Duration latency = Duration.ofNanos(System.nanoTime() - arm);
+        CoupledRelayHandler.fireGuarded("onBindAdjudication", () -> observer.onBindAdjudication(latency));
     }
 
     // ---------------------------------------------------------------- F13 residue: the pre-couple idle watchdog

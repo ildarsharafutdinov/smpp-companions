@@ -1,6 +1,7 @@
 package smpp.companion.proxy.relay;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import lombok.extern.slf4j.Slf4j;
@@ -40,7 +41,10 @@ import smpp.companion.proxy.observability.RelayObserver;
  * Object)} is the one leg-specific hook (pre-couple is the bind-handshake plane, never the per-PDU
  * hot path — AC8: zero virtual dispatch per relayed PDU).
  * <li><b>The post-couple opaque relay (AD-2/AD-3, REL-1):</b> byte-exact forwarding to the peer leg,
- * one fire of {@link RelayObserver#onFramedPdu(Direction)} per relayed PDU. NO live pipeline surgery:
+ * one fire of {@link RelayObserver#onFramedPdu(Direction, Duration)} per relayed PDU &mdash; since
+ * Story 8.1 T2 (the ratified Q1=B seam change) carrying the PDU's transit duration, stamped at the
+ * framed PDU's arrival in {@link #relayFramedPdu} and computed at the forward (the single fire site),
+ * never double-stamped inside relay internals. NO live pipeline surgery:
  * the coupling is the couple flag's one write, not a {@code pipeline.remove()}. Backpressure is the
  * AD-2 substrate: the write-completion listener re-arms the source leg's read only while the peer
  * stays writable, and {@link #channelWritabilityChanged} performs the explicit low-water re-arm (the
@@ -170,18 +174,29 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
      * Write-completes-gates-read: the listener re-arms THIS leg's read only on success AND while the
      * peer is still writable — the low-water re-arm ({@link #channelWritabilityChanged}) owns the read
      * when the peer's outbound buffer was over the high mark, which is the AD-30 per-channel bound.
+     *
+     * <p><b>Story 8.1 T2 — the transit stamp:</b> entry into this method is the framed PDU's ARRIVAL
+     * at the relay seam and the fire below is its FORWARD; the monotonic delta between the two is the
+     * PDU's relay transit, computed HERE at the seam (one {@code nanoTime} stamp + one read per
+     * relayed PDU) and carried to the observer by the ratified Q1=B seam change — the two clock reads
+     * book-end exactly the pre-forward processing (entry lookup, coupled check, peer-liveness,
+     * observer fire), which is the sub-ms PERF-4 budget the transit histogram's low buckets expose.
      */
     private void relayFramedPdu(ChannelHandlerContext ctx, ConnectionEntry entry, ByteBuf frame) {
+        long arrivalNanos = System.nanoTime(); // Story 8.1 T2: the transit stamp (framed-PDU arrival)
         Channel self = ctx.channel();
         Channel peer = peerOf(entry, self);
         if (peer == null || !peer.isActive()) {
             frame.release(); // never forward to a dead pair (RELAY-009: nothing partial, nothing leaked)
             teardownPair(self, entry, CloseReason.OTHER);
-            return;
+            return; // nothing was relayed — no transit to record (one record per RELAYED PDU)
         }
         // Story 4.1 T4: the PDU-count fire is THROW-ISOLATED at the site — a throwing observer
-        // degrades the count, never the forward below.
-        fireGuarded("onFramedPdu", () -> observer.onFramedPdu(direction)); // one fire per relayed PDU (AD-27)
+        // degrades the count, never the forward below. Story 8.1 T2: the same single fire now also
+        // carries the transit duration (Q1=B) — computed before the fire so a throwing observer
+        // cannot stretch the measurement, recorded at the forward it precedes.
+        Duration transit = Duration.ofNanos(System.nanoTime() - arrivalNanos);
+        fireGuarded("onFramedPdu", () -> observer.onFramedPdu(direction, transit)); // one fire per relayed PDU (AD-27)
         if (PDU_BODIES.isTraceEnabled()) {
             tracePduBody(direction, frame); // FR-OBS-2: bodies TRACE-only; bind-family redacted
         }

@@ -2,6 +2,7 @@ package smpp.companion.proxy.observability;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.util.Arrays;
 
 import org.jspecify.annotations.NullMarked;
@@ -22,10 +23,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code VerdictShapeTest} / {@code SecurityPortShapeTest}:
  *
  * <ul>
- *   <li>exactly 4 methods &mdash; no PDU type, no content (only {@link Direction} / {@link SystemId} /
- *       {@link Verdict} / {@link CloseReason} cross the seam &mdash; AD-19 cardinality bound, AD-27
- *       codec-emits-no-metrics; PDU count is observed by counting {@link RelayObserver#onFramedPdu(Direction)}
- *       fires, so the seam carries no byte-volume signal);</li>
+ *   <li>exactly 5 methods &mdash; no PDU type, no content (only {@link Direction} / {@link Duration} /
+ *       {@link SystemId} / {@link Verdict} / {@link CloseReason} cross the seam &mdash; AD-19
+ *       cardinality bound, AD-27 codec-emits-no-metrics; PDU count is observed by counting
+ *       {@link RelayObserver#onFramedPdu(Direction, Duration)} fires, so the seam carries no
+ *       byte-volume signal);</li>
  *   <li>{@link Direction} = the closed 2-value set {INGRESS, EGRESS};</li>
  *   <li>{@link CloseReason} = the closed 16-value set, exhaustive over the spine's close paths
  *       (AD-27 gate-fix {@code .memlog.md:96});</li>
@@ -34,7 +36,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@link NoopRelayObserver} is the seeded {@link Component @Component} default bean, final.</li>
  * </ul>
  *
- * <p>RED-on-neuter (AC9 / AI-1): add / drop / rename a method (incl. reintroducing a byte/transfer method),
+ * <p><b>Story 8.1 T2 (2026-09-19) &mdash; re-pinned in-step for the ratified Q1=B seam change</b>
+ * (owner decision 2026-09-19; dated Spec Change Log entry in the story): the pin went 4&rarr;5
+ * methods &mdash; {@code onFramedPdu(Direction)} became {@code onFramedPdu(Direction, Duration)}
+ * (the per-PDU relay transit, stamped at framed-PDU arrival / recorded at the egress forward, no
+ * label beyond {@code direction}) and the new {@code onBindAdjudication(Duration)} landed for the
+ * unlabeled bind-adjudication-latency histogram. A {@link Duration} is a timing scalar, not PDU
+ * type or content; the cardinality bound is untouched.
+ *
+ * <p>RED-on-neuter (AC9 / AI-1): add / drop / rename a method (incl. reintroducing a byte/transfer method,
  * add a 17th {@link CloseReason} or a 3rd {@link Direction}, un-{@link NullMarked} the package, or strip
  * {@link Component @Component} and this test fails. (The formal consolidated mutation pass is T11; the
  * assertions here bite by construction.)
@@ -42,27 +52,42 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("unit")
 @Tag("relay")
 @Tag("p1")
-@DisplayName("AD-27 RelayObserver — 4-method seam + closed Direction(2)/CloseReason(16) sets + @NullMarked")
+@DisplayName("AD-27 RelayObserver — 5-method seam + closed Direction(2)/CloseReason(16) sets + @NullMarked")
 class RelayObserverShapeTest {
 
     @Test
-    @DisplayName("RelayObserver is an interface with exactly 4 declared methods")
-    void relayObserverIsFourMethodInterface() {
+    @DisplayName("RelayObserver is an interface with exactly 5 declared methods")
+    void relayObserverIsFiveMethodInterface() {
         assertThat(RelayObserver.class.isInterface())
                 .as("RelayObserver must be an interface (Epic 4 swaps the impl behind it)").isTrue();
         assertThat(RelayObserver.class.getDeclaredMethods())
-                .as("RelayObserver carries exactly the 4 pinned triggers — no PDU type, no content, no byte-volume (AD-27)")
-                .hasSize(4);
+                .as("RelayObserver carries exactly the 5 pinned triggers — no PDU type, no content, "
+                        + "no byte-volume (AD-27; the Story 8.1 T2 Q1=B re-pin)")
+                .hasSize(5);
     }
 
     @Test
-    @DisplayName("onFramedPdu(Direction) : void — opaque framing, no type/body (PDU count = fires)")
+    @DisplayName("onFramedPdu(Direction, Duration) : void — opaque framing, no type/body (PDU count = fires)")
     void onFramedPduSignature() throws NoSuchMethodException {
-        Method m = RelayObserver.class.getDeclaredMethod("onFramedPdu", Direction.class);
+        Method m = RelayObserver.class.getDeclaredMethod("onFramedPdu", Direction.class, Duration.class);
         assertThat(m.getReturnType())
                 .as("onFramedPdu returns void").isEqualTo(void.class);
         assertThat(m.getParameterTypes())
-                .as("onFramedPdu takes only Direction (no PDU type, no content)").containsExactly(Direction.class);
+                .as("onFramedPdu takes Direction + the transit Duration only (no PDU type, no content "
+                        + "— the Story 8.1 T2 Q1=B carry)")
+                .containsExactly(Direction.class, Duration.class);
+    }
+
+    @Test
+    @DisplayName("onBindAdjudication(Duration) : void — exactly once per completed adjudication, unlabeled")
+    void onBindAdjudicationSignature() throws NoSuchMethodException {
+        Method m = RelayObserver.class.getDeclaredMethod("onBindAdjudication", Duration.class);
+        assertThat(m.getReturnType())
+                .as("onBindAdjudication returns void").isEqualTo(void.class);
+        assertThat(m.getParameterTypes())
+                .as("onBindAdjudication takes only the latency Duration (no SystemId, no Verdict — "
+                        + "the histogram is unlabeled by design, Story 8.1 T2)")
+                .containsExactly(Duration.class);
     }
 
     @Test

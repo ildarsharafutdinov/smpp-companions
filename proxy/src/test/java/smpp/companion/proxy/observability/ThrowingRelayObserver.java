@@ -1,5 +1,6 @@
 package smpp.companion.proxy.observability;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -16,7 +17,8 @@ import smpp.companion.proxy.security.Verdict;
  * throw produced exactly one bounded WARN. The seeded {@link NoopRelayObserver} can never throw and
  * the production {@code MeteredRelayObserver} self-guards &mdash; this double stands in for ANY future
  * implementation that does neither, which is exactly what fire-site (not impl-site) isolation
- * protects.
+ * protects. The Story 8.1 T2 timing triggers ({@code BIND_ADJUDICATION}; the transit carry on
+ * {@code onFramedPdu}) follow the same record-then-throw shape.
  *
  * <p><b>Not for production:</b> lives in {@code proxy/src/test}. Thread-safe the same way its
  * capturing twin is (lock-free queues &mdash; the relay's teardown/couple paths race, AD-25); the
@@ -24,9 +26,9 @@ import smpp.companion.proxy.security.Verdict;
  */
 public final class ThrowingRelayObserver implements RelayObserver {
 
-    /** The four seam methods &mdash; arming constants, one per fire site under test. */
+    /** The five seam methods &mdash; arming constants, one per fire site under test. */
     public enum Trigger {
-        FRAMED_PDU, BIND_ACCEPT, BIND_REJECT, CONNECTION_CLOSED
+        FRAMED_PDU, BIND_ADJUDICATION, BIND_ACCEPT, BIND_REJECT, CONNECTION_CLOSED
     }
 
     /** A captured {@link RelayObserver#onBindReject(SystemId, Verdict)} event. */
@@ -35,11 +37,15 @@ public final class ThrowingRelayObserver implements RelayObserver {
     /** A captured {@link RelayObserver#onConnectionClosed(Direction, CloseReason)} event. */
     public record ConnectionClose(Direction direction, CloseReason reason) { }
 
+    /** A captured {@link RelayObserver#onFramedPdu(Direction, Duration)} event (Story 8.1 T2). */
+    public record FramedPdu(Direction direction, Duration transit) { }
+
     private final Set<Trigger> armed;
-    private final ConcurrentLinkedQueue<Direction> framedPdus = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<FramedPdu> framedPdus = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<SystemId> bindAccepts = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<BindReject> bindRejects = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<ConnectionClose> connectionCloses = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<Duration> bindAdjudications = new ConcurrentLinkedQueue<>();
 
     /**
      * @param armed the methods that throw AFTER recording their trigger; every other method records
@@ -50,9 +56,15 @@ public final class ThrowingRelayObserver implements RelayObserver {
     }
 
     @Override
-    public void onFramedPdu(Direction direction) {
-        framedPdus.add(direction);
+    public void onFramedPdu(Direction direction, Duration transit) {
+        framedPdus.add(new FramedPdu(direction, transit));
         throwIfArmed(Trigger.FRAMED_PDU);
+    }
+
+    @Override
+    public void onBindAdjudication(Duration latency) {
+        bindAdjudications.add(latency);
+        throwIfArmed(Trigger.BIND_ADJUDICATION);
     }
 
     @Override
@@ -73,9 +85,19 @@ public final class ThrowingRelayObserver implements RelayObserver {
         throwIfArmed(Trigger.CONNECTION_CLOSED);
     }
 
-    /** Legs that fired {@link RelayObserver#onFramedPdu(Direction)}, in arrival order. */
+    /** Legs that fired {@link RelayObserver#onFramedPdu(Direction, Duration)}, in arrival order. */
     public List<Direction> framedPdus() {
+        return framedPdus.stream().map(FramedPdu::direction).toList();
+    }
+
+    /** Fired PDU events with their transit durations, in arrival order (Story 8.1 T2's seam carry). */
+    public List<FramedPdu> framedPduEvents() {
         return List.copyOf(framedPdus);
+    }
+
+    /** Completed-adjudication latencies, in settle order (one per settled verifier future, Story 8.1 T2). */
+    public List<Duration> bindAdjudications() {
+        return List.copyOf(bindAdjudications);
     }
 
     /** Identities that fired {@link RelayObserver#onBindAccept(SystemId)} (at the AD-25 ROK couple). */

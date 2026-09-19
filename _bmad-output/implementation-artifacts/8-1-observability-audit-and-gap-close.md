@@ -61,7 +61,7 @@ context:
 
 **Execution:**
 - [x] `_bmad-output/implementation-artifacts/observability-audit-2026-09-19.md` -- dated audit report with cited evidence: (a) metrics vs addendum A2 + FR-OBS-2, (b) log events vs FR-OBS-1/A2, (c) handler exacts vs AD-19, (d) gap table — closed-here | ledgered, every row cited. -- The audit gates the close list.
-- [ ] `proxy/.../observability/` + the timing hook points (`BindInterceptor`/verifier settle for bind; the relay ingress/egress seam for PDU transit) -- implement BOTH ratified histograms: bind adjudication latency (unlabeled, PERF-3-anchored buckets) + per-PDU relay transit (`{direction}`, sub-ms→s buckets); pre-registered at construction, throw-isolated recording; the `RelayObserver` seam change lands with its shape-test update in-step. -- Closes the spine-Deferred measurable gap.
+- [x] `proxy/.../observability/` + the timing hook points (`BindInterceptor`/verifier settle for bind; the relay ingress/egress seam for PDU transit) -- implement BOTH ratified histograms: bind adjudication latency (unlabeled, PERF-3-anchored buckets) + per-PDU relay transit (`{direction}`, sub-ms→s buckets); pre-registered at construction, throw-isolated recording; the `RelayObserver` seam change lands with its shape-test update in-step. -- Closes the spine-Deferred measurable gap.
 - [ ] `proxy/src/test/.../observability/` -- update the meter-count pin + shape-test pin; new tests: bind records once per completed adjudication (Allow AND each reachable Deny class), PDU records once per relayed PDU per direction, buckets bounded, cardinality attack still zero-series, recorder throw-isolation; cover the I/O matrix rows. -- Mutation-resistant pinning per house rules.
 - [ ] `docs/runbooks.md` -- `/metrics` reference rows for the new histogram series (name, type, labels, bucket anchors, recording semantics). -- Operator docs must match the exposition.
 - [ ] `.../prds/prd-smpp-companions-2026-07-18/addendum.md` -- A2: dated note recording the landed bucket choices. -- A2's own pointer requires it.
@@ -78,6 +78,11 @@ context:
 ## Implementation Notes
 
 ## Spec Change Log
+
+- **2026-09-19, Task 2 — `RelayObserver` seam extended for the ratified Q1=B histograms (explicit, dated; no silent bypass).** Owner decision 2026-09-19 (Open Question 1 = B) required carrying durations to the observer; landed as TWO visible contract edits, pinned in-step in `RelayObserverShapeTest` (4-method pin → 5, every method re-pinned):
+  1. `onFramedPdu(Direction)` → **`onFramedPdu(Direction, Duration transit)`** — the per-PDU relay transit (framed-PDU arrival at the relay seam → forward onto the peer leg), stamped/computed at the single fire site in `CoupledRelayHandler.relayFramedPdu`, one call per relayed PDU, adds no label beyond `direction`.
+  2. New fifth trigger **`onBindAdjudication(Duration latency)`** — fires exactly once per completed adjudication at the settle funnel (`BindInterceptor.onVerdict`), for every settled verifier future alike (Allow, `Deny*`, exceptional, cancel-aborted); never for never-armed arms (synchronous blow-up / null return) or non-verdict denials (routing miss, gate). Unlabeled. This method is the bind-histogram's recording route chosen over the Design Note's "inside the verifier's settle" alternative so `security/` stays meter-free and `MeteredRelayObserver` stays the single meter source (AD-27).
+  A `Duration` is a timing scalar — no PDU type, no content, no new label dimension (AD-19/AD-27 hold). Fixture doubles (`CapturingRelayObserver`, `ThrowingRelayObserver` + its `Trigger` set) and their self-smoke followed mechanically; `MeteredRelayObserverTest`'s 38-meter pin is left red for Task 3 per the T2/T3 split (noted in that file).
 
 ## Review Triage Log
 

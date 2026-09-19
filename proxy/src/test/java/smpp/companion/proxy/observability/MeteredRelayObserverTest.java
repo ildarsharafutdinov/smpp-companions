@@ -35,6 +35,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>RED-on-neuter: replace any unlabeled fallback with a labeled increment (or drop the
  * pre-registration), and the series-count / label-domain assertions below fail.
+ *
+ * <p><b>Story 8.1 T2 (2026-09-19), known-red pin:</b> the meter-count assertion below
+ * ({@code hasSize(38)}) is now 41 &mdash; the three T2 timers (the unlabeled adjudication-latency
+ * histogram + both transit directions) pre-register at construction like every other series. The
+ * pin update is Task 3's own checkbox ("update the meter-count pin"); T2 deliberately leaves it red
+ * rather than starting T3's test round here. Everything else in this suite (the relative
+ * cardinality attack included) stays green.
  */
 @Tag("unit")
 @Tag("observability")
@@ -110,9 +117,9 @@ class MeteredRelayObserverTest {
         assertThat(registry.get(MeteredRelayObserver.PDU_COUNTER).tag("direction", "EGRESS")
                 .counter().count()).isZero();
 
-        observer.onFramedPdu(Direction.INGRESS);
-        observer.onFramedPdu(Direction.INGRESS);
-        observer.onFramedPdu(Direction.EGRESS);
+        observer.onFramedPdu(Direction.INGRESS, Duration.ofNanos(150_000));
+        observer.onFramedPdu(Direction.INGRESS, Duration.ofNanos(150_000));
+        observer.onFramedPdu(Direction.EGRESS, Duration.ofMillis(2));
         observer.onConnectionClosed(Direction.EGRESS, CloseReason.PEER_RST);
 
         assertThat(registry.get(MeteredRelayObserver.PDU_COUNTER).tag("direction", "INGRESS")
