@@ -72,6 +72,7 @@ flowchart TD
 
     keycloak["Keycloak :8443<br/>realm smpp-companions<br/>ROPC adjudication"]
     pg[("pg :5432<br/>DLR store")]
+    prom["PROMETHEUS — compose service<br/>host namespace · UI 127.0.0.1:9095"]
 
     smsbox <--> sqlbox
     sqlbox <--> fbearer
@@ -83,6 +84,7 @@ flowchart TD
     fbearer -.-> pg
     osmpp -.-> pg
     sbearer -.-> pg
+    prom -.->|"scrape /metrics — 127.0.0.1:9090 (loopback, shared namespace)"| proxy
 ```
 
 Everything compose-side speaks `host.docker.internal` and every inter-service hop hairpins through
@@ -103,11 +105,20 @@ compose is for. The docker-packaged proxy is not rejected — Story 6.2's E2E al
 two-container shape end-to-end (allow + auth-DENY) — and §5.5 documents it as an optional variant for
 a one-command, all-compose run (owner decision ratified 2026-09-17: host stays the default).
 
+The one compose-side exception to the `host.docker.internal` pattern is the rig's Prometheus
+(Story 8.2): the service runs `network_mode: host` — the same network namespace every supported
+proxy posture listens in (the host-run §5.2 jar and the runbooks' `--network host` containers
+alike) — so it scrapes the AD-19 loopback-only `/metrics` at the literal `127.0.0.1:9090` (plus
+the always-configured second-instance `127.0.0.1:9091`, §5.6) with no bind widening and no port
+publishing, and serves its own web UI loopback-only on `127.0.0.1:9095`. It is rig fixture, not
+product — the "no metrics dashboard / telemetry backend" non-goal stands (addendum A7); §4 brings
+it up with everything else and §5.3 reads it.
+
 ## 2. Layout
 
 | File | What it is |
 |------|------------|
-| `compose.yml` | The 8-service chain: the ported 7 — `pg`, front side (`front-bearer-box`, `front-sql-box`, `front-sms-box`), SMSC side (`smsc-bearer-box`, `smsc-opensmpp-box`, `smsc-fake-smsc`) — plus `keycloak` (T2); healthchecks on `pg` + both bearerboxes + `keycloak`'s TCP probe, `smsc-fake-smsc` tty-attached for `deliver_sm` injection. |
+| `compose.yml` | The 9-service chain: the ported 7 — `pg`, front side (`front-bearer-box`, `front-sql-box`, `front-sms-box`), SMSC side (`smsc-bearer-box`, `smsc-opensmpp-box`, `smsc-fake-smsc`) — plus `keycloak` (T2) and `prometheus` (8.2: always-on, `network_mode: host`, web UI loopback-only on `127.0.0.1:9095`, TSDB on the named `prometheus-tsdb` volume); healthchecks on `pg` + both bearerboxes + `keycloak`'s TCP probe (prometheus carries none — fixture, §4), `smsc-fake-smsc` tty-attached for `deliver_sm` injection. |
 | `kannel/Dockerfile` | The Kannel 1.5.0 pinned-source build, ported byte-for-byte from the playground (gateway-1.5.0.tar.gz, `--with-pgsql`, `test/fakesmsc`, addons opensmppbox + sqlbox; UBI10 builder / UBI10-minimal runtime, including the automake-1.11 symlink bootstrap quirk). No version drift, no distro swap. |
 | `conf/front-kannel.conf` | Front bearerbox + smsbox: the SMPP-**transceiver** `group = smsc` (`usr1`/`pwd1`, `interface-version = 34`) that connects to the proxy at `host.docker.internal:2775`, and the `sendsms` HTTP user (`user`/`password`). |
 | `conf/front-sqlbox.conf` | Front sqlbox (smsbox → sqlbox → bearerbox routing leg). |
@@ -120,6 +131,7 @@ a one-command, all-compose run (owner decision ratified 2026-09-17: host stays t
 | `keycloak/certs/` | The Keycloak TLS material, copied byte-identical from the committed test fixtures (`proxy/src/test/resources/keycloak/certs/`): `server.pem`/`server-key.pem` (SANs `localhost`, `keycloak`, `127.0.0.1` — the host-run proxy connects to `localhost:8443`, the optional docker variant connects to `keycloak:8443`), `truststore.p12` (pw `smpp-test` — the proxy's IdP trust anchor), `ca.pem` (for host-side `curl --cacert` verification). Fixture-tier test PKI, NOT production secrets — the same class of material the test tier commits; the rig's one real secret-by-path is the client secret. |
 | `certs/` | The SMPP-leg TLS material for the T5 use-case runbooks (§5.6), copied byte-identical from the same committed test fixtures: `smpp-reverse-server.pem`/`-key.pem` (SANs `localhost`/`127.0.0.1` — the composed reverse's listener cert; the forward connects to `localhost` with hostname verification ON, AD-20), `smpp-forward-client.pem`/`-key.pem` (the forward's per-instance mTLS client cert), `smpp-truststore.p12` (pw `smpp-test`, anchoring `CN=smpp-test-ca` — both connect-side and REQUIRE-side). Same fixture-tier class as `keycloak/certs/`; keep the files world-readable (`0644`) so the image's UID 65532 reads the mounts. |
 | `runbooks/` | The three T5 docker-packaged use-case runbooks (§5.6), EN normative + RU twins: [`reverse-mode-b.md`](runbooks/reverse-mode-b.md), [`forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md), [`forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) — one per use case (role + mode), every proxy instance the Epic-5 distroless image on `network_mode: host` with the host-built jar bind-mounted over the image's copy. |
+| `prometheus/prometheus.yml` | The rig's scrape config (8.2), mounted read-only by the `prometheus` service: job `smpp-proxy`, `metrics_path: /metrics`, and the two always-configured loopback targets `127.0.0.1:9090` (every FIRST proxy instance — §5.2's host-run jar, the lone reverse, or the composed forward) and `127.0.0.1:9091` (the two-instance runbooks' second instance — DOWN until it runs), 5 s scrape interval / 3 s timeout. The loopback literals work because the service shares the host namespace with the proxies; on a single-instance rig the 9091 target simply shows DOWN (accepted, §5.3). |
 | `secrets/` | Operator-created (gitignored, AD-18): `oidc-client-secret` — the Keycloak client's generated secret, written by the §5.1 bootstrap. Nothing here is ever committed. |
 
 ### 2.1 Why opensmppbox is required — fakesmsc is not an SMPP endpoint
@@ -166,8 +178,9 @@ unprovable, and fakesmsc cannot serve any of them alone.
 | 8443 | `keycloak` | The ROPC adjudicator's HTTPS realm port (the host-run proxy connects to it as `localhost:8443`; the fixed bind keeps the issuer deterministic, mirroring the test fixture's coordinates) |
 | 2775 | — | Must stay free: the proxy's SMPP ingress (the SMPP-standard port) — the host-run §5.2 proxy, or the §5.6 docker use case's listener (the lone reverse, or the FORWARD of the composed pairs — the front conf is the same `host.docker.internal:2775` either way) |
 | 2776 | — (docker use cases, two-instance) | Must stay free for the §5.6 mode A/C runbooks: the two-instance use cases' reverse listener (the reverse moves off 2775 so the forward can take it — each runbook's port plan) |
-| 9090 | — (a proxy) | A proxy's read-only `/metrics`, bound to the `127.0.0.1` literal inside the proxy's own process — occupied only while a proxy runs (§5.3's observation point; compose publishes nothing here). Host-run §5.2 and every §5.6 use case's FIRST instance use it |
-| 9091 | — (docker use cases, the second instance) | The §5.6 second instance's `/metrics` — the second host-network proxy process cannot share 9090's loopback bind, so its runbook moves it (the port plan, documented not discovered) |
+| 9090 | — (a proxy) | A proxy's read-only `/metrics`, bound to the `127.0.0.1` literal inside the proxy's own process — occupied only while a proxy runs (§5.3's observation point; compose publishes nothing here — the rig's Prometheus reaches it by sharing the namespace, never a publish). Host-run §5.2 and every §5.6 use case's FIRST instance use it |
+| 9091 | — (docker use cases, the second instance) | The §5.6 second instance's `/metrics` — the second host-network proxy process cannot share 9090's loopback bind, so its runbook moves it (the port plan, documented not discovered); always configured as the rig Prometheus's second target, DOWN until that instance runs (§5.3) |
+| 9095 | `prometheus` | The rig's Prometheus web UI (8.2), bound loopback-only `127.0.0.1:9095` by the service itself — `network_mode: host` makes this a direct bind in the host namespace, not a compose publish (9090/9091 belong to the proxies; 9093 is the Alertmanager convention) |
 
 The 8443 row has one collision to know about: the test tier's `KeycloakContainer` binds the SAME
 fixed `localhost:8443` — so the sandbox's Keycloak and a concurrently running `:proxy:test` live
@@ -196,11 +209,15 @@ Readiness per service:
 | `smsc-opensmpp-box` | No admin page; listening on 14567 (the port the proxy's egress will connect to); `docker compose logs smsc-opensmpp-box` shows `Connected to bearerbox at host.docker.internal port 14001`. |
 | `smsc-fake-smsc` | Stays attached (tty) once connected to 10004; `docker compose logs smsc-fake-smsc` shows `Entering interactive mode`, and `FAKE1` appears online in the SMSC status page. |
 | `keycloak` | Compose healthcheck green — a TCP connect to the HTTPS listener (the rig's Keycloak is HTTPS-only and the image ships no TLS-capable client, so the healthcheck asserts the listener; see the service comment in `compose.yml`). REALM readiness is proven by the §5.1 discovery curl, which the secret bootstrap runs anyway. |
+| `prometheus` | Always-on with the plain `docker compose up` — no compose profile, no extra command (8.2). Fixture: no healthcheck and no `depends_on` (it depends on nothing; its scrape targets are EXPECTED to be DOWN at idle). Ready when `curl http://127.0.0.1:9095/-/ready` answers `Prometheus Server is Ready.` — and the web UI at `http://127.0.0.1:9095/graph` answers (loopback-only, like everything on that port). |
 
 Only the services with admin status pages carry compose healthchecks (that is the ported pattern:
 `pg` + the two bearerboxes; `keycloak` joins them with its TCP-connect check — the strongest probe
 its HTTPS-only, client-less image admits); the rest are ordered by `depends_on` and verified by
-their function, per the table above.
+their function, per the table above. The `prometheus` fixture (8.2) carries neither a healthcheck
+nor a `depends_on`: it starts unconditionally and its targets being DOWN until a proxy launches is
+the honest idle state, not a failure — its own readiness is the `/-/ready` curl in the smoke block
+below.
 
 At-a-glance smoke (all observed on the verified bring-up):
 
@@ -210,6 +227,7 @@ curl "http://127.0.0.1:14000/status.txt?password=test"   # SMSC: FAKE1 online
 curl "http://127.0.0.1:8080/cgi-bin/sendsms?user=user&pass=password&from=79876543210&coding=0&to=79033374423&text=hello"   # -> 202
 docker compose exec pg psql -U postgres -d postgres -c '\dt'   # the DLR + sqlbox tables
 curl --cacert keycloak/certs/ca.pem https://localhost:8443/realms/smpp-companions/.well-known/openid-configuration   # -> JSON, "password" in grant_types_supported
+curl http://127.0.0.1:9095/-/ready   # -> Prometheus Server is Ready.
 ```
 
 **Expected state after §4 — the front SMSC is DOWN until the proxy launches.** The front bearerbox
@@ -225,6 +243,12 @@ ERROR: SMPP[smsc1]: Couldn't connect to SMS center (retrying in 10 seconds).
 That is the rig being honest, not a fault, and `front-bearer-box` still reports healthy (its
 healthcheck is the admin page, not the SMSC link). The couple happens when the proxy is launched
 per §5; the front bearerbox rebinds on its own retry schedule above.
+
+The rig's Prometheus shows the same honest idle from its side: both of its always-configured
+`smpp-proxy` targets (`127.0.0.1:9090` and `127.0.0.1:9091`) read DOWN — connection refused —
+while no proxy runs, and every other service is unaffected (§5.3's item 7). The 9090 target flips
+UP at the first §5.2 launch; the 9091 target stays DOWN for good on any single-instance rig
+(accepted — it exists for §5.6's two-instance use cases).
 
 ## 5. The proxy launch recipe (Keycloak + the packaged jar)
 
@@ -373,6 +397,21 @@ Then the same fact from the other two vantage points:
    `docker compose logs smsc-opensmpp-box` shows the `bind_transceiver_resp` PDU dump with
    `command_id: 2147483657 = 0x80000009`, `command_status: 0 = 0x00000000` — the ROK that crossed
    the proxy back to the front.
+7. **The rig's Prometheus** (the always-on 8.2 service; UI at `http://127.0.0.1:9095`): Status →
+   Targets shows the `smpp-proxy` job with its two always-configured targets —
+   `http://127.0.0.1:9090/metrics` **UP** (item 4's endpoint, now scraped every 5 s instead of by
+   hand) and `http://127.0.0.1:9091/metrics` **DOWN** with
+   `dial tcp 127.0.0.1:9091: connect: connection refused` — the second-instance target of §5.6's
+   two-instance runbooks, which this single-proxy posture never runs; both stay configured by
+   design so the two-instance shape needs no config edit (the accepted trade-off, owner decision
+   2026-09-20). In the Graph view the couple is already in the TSDB:
+   `relay_binds_adjudication_seconds_count` = 1 (the bind's own adjudication) and
+   `relay_pdus_transit_seconds_count{direction="INGRESS"|"EGRESS"}` starts ticking with the first
+   keepalives (§6.3) and accumulates through the §6 journeys — every relayed PDU lands in the
+   transit histogram, each direction's count equal to its `relay_pdus_total`. Scrape failures
+   surface as `up == 0` and nothing else: with NO proxy launched the 9090 target reads the same
+   DOWN while every other service stays unaffected — §4's honest idle state seen from here, not a
+   fault.
 
 Teardown (the AD-22 walk, re-observed here as part of the recipe): `kill -TERM <pid>` → the drain
 WARN — `shutdown drain deadline (PT10S) expired — force-closed 1 live pair(s) as SHUTDOWN_DRAIN
@@ -435,6 +474,10 @@ see the deployment guide's mount rules, which also forbid env-var JVM-flag forks
 below the AD-30 budget). Observations are §5.3's list with `docker logs smpp-proxy` as the stdout
 and `docker stop --timeout 30 smpp-proxy` (exit 143) as the teardown. What you LOSE is the point of
 §1: no debugger, no JDK toolbox, no flag edits — which is why the host launch stays the default.
+The rig's Prometheus cannot see this variant either: the bridge-network proxy's `/metrics` stays
+bound to that container's own loopback, unreachable from the host namespace the `prometheus`
+service runs in — a documented variant limitation (not shared by §5.6's host-network runbooks,
+whose `/metrics` is scrapeable by design), fixed by nothing here.
 
 **T5 graduated the docker-packaged proxy into first-class runbooks (owner, 2026-09-17):** the
 three per-use-case guides under `runbooks/` (§5.6 below) are now the canonical docker
@@ -748,6 +791,17 @@ drifts silently:
    byte-identical copies (`cmp`-verified) of the committed test resources — the T2
    `keycloak/certs/` precedent applied to the mTLS/one-way-TLS legs. No Gradle file, no build
    file, no main-source line anywhere in T5.
+7. **The Prometheus service + scrape config (Story 8.2, as landed 2026-09-20):** the ninth compose
+   service — `prom/prometheus:v3.14.0` (pinned exactly, the Keycloak 26.7.0 precedent),
+   `network_mode: host`, always-on (no compose profile; it starts with the plain
+   `docker compose up`) — plus `prometheus/prometheus.yml` (job `smpp-proxy`, the two
+   always-configured loopback targets `127.0.0.1:9090`/`127.0.0.1:9091`, 5 s scrape interval) and
+   the named `prometheus-tsdb` volume with a 24 h retention (dev rig, no durability promise — it
+   SURVIVES `docker compose down`; only `down -v` removes it). Access to the AD-19 loopback-only
+   `/metrics` comes from namespace sharing alone: no `ports:` publish, no bind widening, nothing
+   under `proxy/` changed. Fixture scope per addendum A7 — the product's "no metrics dashboard /
+   telemetry backend" non-goal stands; the access pattern was proven live before the service
+   landed (the story's Implementation Notes).
 
 ## 11. Findings discipline
 
