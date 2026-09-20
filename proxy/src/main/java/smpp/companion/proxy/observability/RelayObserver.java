@@ -32,12 +32,12 @@ import smpp.companion.proxy.security.Verdict;
  * <p><b>Story 8.1 T2 (2026-09-19) &mdash; the ratified Q1=B seam change, landed as an explicit dated
  * contract change</b> (owner decision 2026-09-19; the story's Spec Change Log carries the entry, and
  * {@code RelayObserverShapeTest} was re-pinned in-step): {@code onFramedPdu(Direction)} became
- * {@link #onFramedPdu(Direction, Duration)} (the per-PDU relay transit duration, stamped at framed-PDU
- * arrival and recorded at the egress forward &mdash; one call per relayed PDU, no label beyond
- * {@code direction}), and the fifth trigger {@link #onBindAdjudication(Duration)} landed for the bind
- * adjudication latency histogram (unlabeled). Neither duration is content, neither adds a label
- * dimension, and both fire sites stay throw-isolated; the four pre-existing trigger contracts are
- * otherwise unchanged.
+ * {@link #onFramedPdu(Direction, Duration)} (the per-PDU relay transit duration, stamped at the
+ * framed PDU's arrival at the relay seam ({@code relayFramedPdu} entry) and recorded at its forward
+ * onto the peer leg &mdash; one call per relayed PDU, no label beyond {@code direction}), and the
+ * fifth trigger {@link #onBindAdjudication(Duration)} landed for the bind adjudication latency
+ * histogram (unlabeled). Neither duration is content, neither adds a label dimension, and both
+ * fire sites stay throw-isolated; the four pre-existing trigger contracts are otherwise unchanged.
  */
 public interface RelayObserver {
 
@@ -66,7 +66,9 @@ public interface RelayObserver {
      * latency histogram's trigger). Fires exactly once per completed adjudication, at the settle point
      * ({@code BindInterceptor.onVerdict}'s first acts), for EVERY completion alike: {@code Allow},
      * either {@code Deny*}, an exceptional future, and a teardown/cancel-aborted exchange whose pin
-     * settles per the port's no-op-if-done contract. Never fires for adjudications that never
+     * settles per the ROPC adapter's own guarantee (the {@code VerdictRequest} port is
+     * settlement-silent &mdash; a future adapter must keep the settle promise for these exchanges
+     * to record). Never fires for adjudications that never
      * settled (the synchronous verifier blow-up and null-return arms denied before a future existed),
      * and never for non-verdict denials (routing miss, the new-adjudication gate &mdash; no adjudication
      * started). Unlabeled by contract: the latency depends on neither the identity nor the outcome,

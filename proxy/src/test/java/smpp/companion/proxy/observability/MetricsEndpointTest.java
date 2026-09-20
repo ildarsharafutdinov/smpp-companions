@@ -211,14 +211,14 @@ class MetricsEndpointTest {
                             + "le (a verdict/system_id dimension would betray itself in the braces)")
                     .contains("relay_binds_adjudication_seconds_bucket{le=\"0.05\"}")
                     .contains("relay_binds_adjudication_seconds_bucket{le=\"+Inf\"}")
-                    .contains("relay_binds_adjudication_seconds_count 0")
+                    .contains("relay_binds_adjudication_seconds_count 0\n")
                     .contains("relay_binds_adjudication_seconds_sum 0")
                     .as("the transit histogram rides the closed direction dimension — both series, "
                             + "direction FIRST in the braces, the +Inf overflow present")
                     .contains("relay_pdus_transit_seconds_bucket{direction=\"INGRESS\",le=\"1.0E-4\"}")
                     .contains("relay_pdus_transit_seconds_bucket{direction=\"EGRESS\",le=\"+Inf\"}")
-                    .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 0")
-                    .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 0")
+                    .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 0\n")
+                    .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 0\n")
                     .contains("relay_pdus_transit_seconds_sum{direction=\"INGRESS\"} 0")
                     .contains("relay_pdus_transit_seconds_sum{direction=\"EGRESS\"} 0");
             // An idle forward boot adjudicates and relays nothing — every histogram value is the

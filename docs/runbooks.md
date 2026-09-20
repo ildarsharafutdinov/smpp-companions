@@ -235,8 +235,9 @@ classify as `PEER_RST`/`DECODE_ERROR`.
 
 **The latency histograms** (landed with Story 8.1 T2, 2026-09-19 — the two addendum-A2 histograms;
 each fans out on the scrape as `_bucket{le=…}` rows plus `_sum`/`_count`, base unit seconds —
-adjudication 10 rows = 8 buckets + `_sum` + `_count`, transit 24 rows = 2 × (10 buckets + `_sum` +
-`_count`)).
+adjudication 10 rows = 8 buckets (7 finite edges + `+Inf`) + `_sum` + `_count`, transit 24 rows =
+2 × (10 buckets (9 finite edges + `+Inf`) + `_sum` + `_count`); timer `_count` rows render INTEGER
+(`… 1`) while the counters above render `1.0` — a rendering difference, not a malfunction).
 Pre-registered at startup like every relay series above, so an idle-boot scrape already shows them
 at zero — unlike the lazily-created GC timer families below. Recording is throw-isolated (a
 recorder failure degrades the histogram, never the verdict/relay path) and metrics-only — no log

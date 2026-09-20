@@ -304,7 +304,7 @@ This document provides the complete epic and story breakdown for SMPP 3.4 Securi
 - Rate-limit values, ROPC timeouts (tune to PERF-3). *(Amended 2026-08-27, Story 3.4 T2: the JWKS TTL / refresh-ahead / kid-miss clauses died with local JWT verification and the cache.)*
 - `bind_resp` status-code → OIDC-outcome mapping (single story; wire-visible only).
 - Routing-table YAML shape + multi-carrier routing (v1 = 1:1, AD-29).
-- Prometheus histogram buckets / scrape-handler exacts (AD-19 fixes posture + cardinality).
+- Prometheus histogram buckets / scrape-handler exacts — RESOLVED (Story 8.1: both A2 latency histograms landed; buckets + scrape arithmetic → addendum A8 + the runbooks). *(retired, Story 8.1 T6, 2026-09-20 — swept in step with the spine Deferred item)*
 - `application.yml` exact keys (AD-17 fixes the matrix).
 - DLR relay mechanics (determined by AD-2/AD-9/AD-25). *(re-termed "DLR-splice byte mechanics", Story 3.4 T4, 2026-08-28)*
 - A-1 real-carrier operational test plan (non-CI ops step, AD-24; docks under docs, AD-31).

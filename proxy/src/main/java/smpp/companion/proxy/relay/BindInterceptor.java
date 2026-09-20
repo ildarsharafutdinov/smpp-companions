@@ -113,8 +113,9 @@ import smpp.companion.proxy.tls.SmppLegTlsFactory;
  * (absent / tearing-down / coupled &rarr; no-op — the AD-25 re-check idiom) and otherwise routes
  * {@link CloseReason#BIND_REJECTED} through the ONE teardown path ({@code denyAndTeardown} &rarr;
  * {@code manager.beginTeardown}: the {@code cancelHttp()} + zeroize hygiene rides inside, and the
- * aborted exchange's pin settles {@code DenyIndeterminate} per the port's no-op-if-done contract —
- * the relay never authors a second completion). The timer fabricates NO {@link Verdict}, so
+ * aborted exchange's pin settles {@code DenyIndeterminate} per the ROPC adapter's own guarantee
+ * (the {@code VerdictRequest} port is settlement-silent) — the relay never authors a second
+ * completion). The timer fabricates NO {@link Verdict}, so
  * {@code onBindReject} NEVER fires for a deadline deny (AD-27: verifier-returned Verdicts only; the
  * deadline deny is log-distinguishable, enum-identical {@code BIND_REJECTED}). Cancelled at settle
  * ({@code onVerdict}, both arms) and at every interceptor teardown arm — but convergence, not
@@ -621,7 +622,8 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * {@code Won/Lost} race picks exactly one teardown winner). Otherwise the fail-closed deny:
      * {@link CloseReason#BIND_REJECTED} through the one shared path, whose {@code manager.beginTeardown}
      * hygiene cancels the still-pending verdict ({@code cancelHttp()} settles the pin
-     * {@code DenyIndeterminate} per the port's no-op-if-done contract — the relay never authors a second
+     * {@code DenyIndeterminate} per the ROPC adapter's own guarantee (the {@code VerdictRequest}
+     * port is settlement-silent) — the relay never authors a second
      * completion of the verifier's future) and zeroizes the password. NO {@link Verdict} is fabricated:
      * {@code onBindReject} NEVER fires for a timer deny (AD-27 — observer contract; the deadline deny is
      * log-distinguishable, enum-identical).

@@ -12,8 +12,20 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.distribution.DistributionStatisticConfig;
+import io.micrometer.core.instrument.distribution.pause.PauseDetector;
+import io.micrometer.core.instrument.noop.NoopCounter;
+import io.micrometer.core.instrument.noop.NoopTimer;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import io.netty.util.AsciiString;
@@ -25,6 +37,7 @@ import smpp.companion.proxy.security.Verdict;
 import smpp.companion.proxy.testsupport.RelayTestFixtures;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Story 4.1 T3 (checkpoint 19): PRIV-1 proof for the production observer — the cardinality-attack
@@ -306,6 +319,58 @@ class MeteredRelayObserverTest {
                 .isEqualTo(scrapeSeriesShape(before));
     }
 
+    @Test
+    @DisplayName("Story 8.1 T6 review: the production observer's OWN catch-guards swallow a failing "
+            + "meter tier — exactly one bounded WARN per trigger, nothing propagates")
+    void productionObserverSwallowsItsOwnMeterFailures() {
+        Logger logger = (Logger) LoggerFactory.getLogger(MeteredRelayObserver.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            // The registry serves a meter tier whose EVERY recording op throws: construction only
+            // CREATES meters (the noop doubles register fine), while every fire path below hits a
+            // throwing op through the production body's own catch-guard. The throw-isolation rows
+            // elsewhere use a throwing double AT THE FIRE SITES; this row is the other half — the
+            // production impl's own guards, driven from inside.
+            MeteredRelayObserver observer = new MeteredRelayObserver(
+                    new ThrowingMeterRegistry(), new RoutingTable(alphaBetaTable()));
+
+            assertThatCode(() -> observer.onFramedPdu(Direction.INGRESS, Duration.ofNanos(150_000)))
+                    .doesNotThrowAnyException();
+            assertThatCode(() -> observer.onBindAdjudication(Duration.ofMillis(120)))
+                    .doesNotThrowAnyException();
+            // The same throwing-counter fixture naturally covers the three older triggers too.
+            assertThatCode(() -> observer.onBindAccept(systemId("alpha"))).doesNotThrowAnyException();
+            assertThatCode(() -> observer.onBindReject(systemId("beta"), new Verdict.DenyInvalid()))
+                    .doesNotThrowAnyException();
+            assertThatCode(() -> observer.onConnectionClosed(Direction.EGRESS, CloseReason.PEER_RST))
+                    .doesNotThrowAnyException();
+
+            List<String> warns = appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("swallowed its own failure"))
+                    .toList();
+            assertThat(warns)
+                    .as("five fires over a fully-throwing meter tier — exactly ONE bounded WARN each")
+                    .hasSize(5);
+            for (String trigger : new String[] {"onFramedPdu", "onBindAdjudication", "onBindAccept",
+                    "onBindReject", "onConnectionClosed"}) {
+                assertThat(warns.stream()
+                        .filter(message -> message.contains("(" + trigger + ")"))
+                        .count())
+                        .as("exactly one WARN names (%s)", trigger)
+                        .isEqualTo(1L);
+            }
+        } finally {
+            // Exception-safe: detach BEFORE anything else — a failed assertion must not leak the
+            // appender into another row's capture.
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
     // --- scrape-parsing helpers (the operator's view: what /metrics actually renders) -------
 
     private static final Pattern LE_LABEL = Pattern.compile("le=\"([^\"]+)\"");
@@ -410,5 +475,38 @@ class MeteredRelayObserverTest {
                         null, null),
                 null, null,
                 new ProxyCompanionProperties.Shutdown(RelayTestFixtures.DEFAULT_DRAIN_TIMEOUT));
+    }
+
+    /**
+     * The throwing meter tier: every {@code Counter} and {@code Timer} the observer pre-registers is
+     * a no-op double whose recording op throws, served by a registry subclass overriding the two
+     * meter-creation hooks ({@code newCounter}/{@code newTimer} — the seam every builder
+     * {@code register(...)} call funnels through). Hand-rolled, no Mockito (house style).
+     */
+    private static final class ThrowingMeterRegistry extends PrometheusMeterRegistry {
+
+        ThrowingMeterRegistry() {
+            super(PrometheusConfig.DEFAULT);
+        }
+
+        @Override
+        public Counter newCounter(Meter.Id id) {
+            return new NoopCounter(id) {
+                @Override
+                public void increment(double amount) {
+                    throw new IllegalStateException("meter tier down (counter)");
+                }
+            };
+        }
+
+        @Override
+        protected Timer newTimer(Meter.Id id, DistributionStatisticConfig config, PauseDetector detector) {
+            return new NoopTimer(id) {
+                @Override
+                public void record(Duration duration) {
+                    throw new IllegalStateException("meter tier down (timer)");
+                }
+            };
+        }
     }
 }
