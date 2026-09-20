@@ -1,0 +1,22 @@
+# Story 8.2 — the rig's Prometheus scrape config (the compose `prometheus` service mounts
+# this read-only). The service runs network_mode: host, so these loopback literals are the
+# host namespace the proxy processes expose /metrics on (AD-19 loopback-only binding,
+# reached by namespace sharing — never by widening the product bind):
+#   9090 — every FIRST proxy instance (the yml default companion.metrics.port): the
+#          host-run §5.2 jar, the lone reverse, or the FORWARD of the composed pairs;
+#   9091 — the SECOND instance of the two-instance runbooks (their port plan moves the
+#          second /metrics off 9090 — two host-network processes cannot share the bind).
+# On a single-instance rig the 9091 target sits DOWN (connection refused) until a second
+# instance launches — accepted (owner decision Q3, 2026-09-20): both targets stay always
+# configured so the two-instance shape needs no config edit.
+global:
+  scrape_interval: 5s     # dev rig: see journeys within seconds, not minutes
+  scrape_timeout: 3s
+
+scrape_configs:
+  - job_name: smpp-proxy
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9090
+          - 127.0.0.1:9091

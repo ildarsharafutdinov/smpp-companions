@@ -2,8 +2,9 @@
 title: 'Story 8.2 — Sandbox Prometheus'
 type: 'feature'
 created: '2026-09-20'
-status: 'ready-for-dev'
+status: 'in-progress'
 route: 'dispatch'
+baseline_commit: '597702dc0d6ba0802a39b20946652f7a2b9b9384'
 review_loop_iteration: 0
 context:
   - {project-root}/_bmad-output/implementation-artifacts/epic-8-context.md
@@ -62,7 +63,7 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `sandbox/compose.yml` + `sandbox/prometheus/prometheus.yml` -- add the pinned Prometheus service (`network_mode: host`; UI loopback-only on `127.0.0.1:9095` — 9090/9091 taken, 9093 is the Alertmanager convention; named TSDB volume + short retention; short scrape interval), always-on (no compose profile), with TWO static targets under the `smpp-proxy` job — `http://127.0.0.1:9090/metrics` and `http://127.0.0.1:9091/metrics`; prove the pattern live FIRST and record the evidence in Implementation Notes. -- The fixture lands only after its access pattern is proven (the proposal's named risk).
+- [x] `sandbox/compose.yml` + `sandbox/prometheus/prometheus.yml` -- add the pinned Prometheus service (`network_mode: host`; UI loopback-only on `127.0.0.1:9095` — 9090/9091 taken, 9093 is the Alertmanager convention; named TSDB volume + short retention; short scrape interval), always-on (no compose profile), with TWO static targets under the `smpp-proxy` job — `http://127.0.0.1:9090/metrics` and `http://127.0.0.1:9091/metrics`; prove the pattern live FIRST and record the evidence in Implementation Notes. -- The fixture lands only after its access pattern is proven (the proposal's named risk).
 - [ ] Live conformance check vs A8 -- run the rig's journeys with real traffic, reconcile the live scrape rows against A8's baseline, append the dated first-live-check note to addendum A8. -- A8 declares itself the baseline for the next live conformance check; 8.2 is its first consumer.
 - [ ] `sandbox/README.md` -- §1 topology (mermaid + prose), §2 layout table, §3 port table row, §4 bring-up (always-on — no extra command), §5.3 expected observations (UI + target states incl. DOWN-when-no-proxy and the DOWN 9091 in single-instance rigs), §10 deltas honesty list. -- The rig doc must match the rig.
 - [ ] `sandbox/README.ru.md` -- mirror the T3 sections; run the terminology-glossary conformance sweep over the new text. -- RU twins stay structurally identical.
@@ -76,6 +77,22 @@ context:
 - Given the RU mirror, the glossary conformance sweep passes (owner terminology; TLS/mTLS untranslated).
 
 ## Implementation Notes
+
+**T1 live proof (2026-09-20, executed BEFORE the compose service landed).** Environment: Docker 29.6.1, rig found fully down, ports 9090/9091/9095/2775 free. Sequence and observations:
+
+- Rig up: `cd sandbox && docker compose up -d --build` (cached Kannel images) → all 8 services up; `keycloak` healthy at ~25 s. §5.1 bootstrap re-run (fresh container → regenerated client secret fetched via `kcadm` into `sandbox/secrets/oidc-client-secret`, mode 0444 — the found file's 0444 mode had to be made writable first to overwrite).
+- Proxy: `./gradlew :proxy:bootJar` (up-to-date), then launched verbatim per README §5.2 (host-run `java -jar`, reverse.mode-b, everything else yml-default → `companion.metrics.port=9090`). §5.3 held: Mode B WARN banner → `startup_summary` (`"metrics_port":9090`, AD-30 interlock `memory_budget_bytes` == `direct_memory_ceiling_bytes` == 6442450944) → `bind_accept usr1 coupled` at launch + 9 s; front status page `smsc1 … (online`; `curl 127.0.0.1:9090/metrics` → 200.
+- Journey (§6.1, real traffic): `curl "http://127.0.0.1:8080/cgi-bin/sendsms?…&text=hello+8-2+proof"` → `202`/`0: Accepted for delivery`; fakesmsc printed `Got message 1: <79876543210 79033374423 text hello 8-2 proof>` (byte-intact). Raw `/metrics` post-journey: `relay_pdus_total{direction="INGRESS"|"EGRESS"}` 3/3 (submit+resp, DLR deliver_sm+resp), growing to 9/9 with §6.3 keepalives during the scrape window; pre-registered histogram grids already all-zero rows at idle (37 rows across both families).
+- Proof Prometheus — the EXACT landing config (`sandbox/prometheus/prometheus.yml` staged at its final path, mounted `:ro`; pin `prom/prometheus:v3.14.0`, the newest stable on 2026-09-20 — v3.15 is rc-only, v3.13.3 an older-line patch; Docker Hub tags API):
+  `docker run -d --name prometheus-82-proof --network host -v …/sandbox/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro prom/prometheus:v3.14.0 --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=24h --web.listen-address=127.0.0.1:9095`
+  - `curl 127.0.0.1:9095/-/ready` → `Prometheus Server is Ready.`; `ss -tln` → `LISTEN 127.0.0.1:9095` and nothing else on 9095 (UI loopback-only; `/graph` answers 302 → the UI).
+  - `GET /api/v1/targets` (job `smpp-proxy`): `http://127.0.0.1:9090/metrics health=up lastError=""` and `http://127.0.0.1:9091/metrics health=down — dial tcp 127.0.0.1:9091: connect: connection refused` — the Q3 single-instance state, observed live.
+  - `GET /api/v1/query`: `relay_binds_adjudication_seconds_count{instance="127.0.0.1:9090",job="smpp-proxy"} = 1`; `relay_pdus_transit_seconds_count` = 9 (`EGRESS`) / 9 (`INGRESS`); buckets populated — `relay_binds_adjudication_seconds_bucket{le="0.5"} = 1`, `count(relay_pdus_transit_seconds_bucket) = 20`.
+- Teardown: proof container `docker rm -f`; proxy `kill -TERM` → the §5.3 drain WARN (`shutdown drain deadline (PT10S) expired — force-closed 1 live pair(s) as SHUTDOWN_DRAIN`) → process exited; `docker compose down` → rig back to its found state, 0 containers, ports free again.
+
+Ops notes (environmental, not spec deviations): (1) staging the proof config under the shell's `/tmp` failed — the daemon cannot see the sandboxed shell's private `/tmp`, so it silently created a DIRECTORY at the mount source (README §8's documented `-v` failure class); staging at the final repo path fixed it, and the stray daemon-side `/tmp/8-2-prometheus-proof/` was removed via a root throwaway container. (2) `docker compose down` at the end regenerated the Keycloak realm → `sandbox/secrets/oidc-client-secret` is stale again for the NEXT `up` (§5.1 regeneration semantics — documented rig behavior, re-fetch on next bring-up).
+
+**Landed artifact:** the `prometheus` service (9th) in `sandbox/compose.yml` — `network_mode: host`, no `ports:` entry (Design Notes: silently ignored under host mode), named volume `prometheus-tsdb` + 24 h retention, UI `127.0.0.1:9095`, always-on, image `prom/prometheus:v3.14.0` — plus `sandbox/prometheus/prometheus.yml` (job `smpp-proxy`, `metrics_path: /metrics`, targets `127.0.0.1:9090` + `127.0.0.1:9091`, `scrape_interval: 5s` / `scrape_timeout: 3s`). Verification per spec §Verification: `docker compose config` parses (prometheus shows `network_mode: host`, zero published ports); `grep -nE '909[01]' sandbox/compose.yml` hits comment lines only (the service comment block), never a `ports:` publish.
 
 ## Spec Change Log
 

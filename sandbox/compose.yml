@@ -9,6 +9,9 @@
 # Added by T2 on top of the ported 7: the keycloak service (the ROPC adjudication the
 # reverse cell requires, AD-17 fail-closed — no auth-bypass exists) + its committed material
 # under keycloak/ (realm export + fixture-tier PKI); the proxy launch recipe is README §5.
+# Story 8.2 (2026-09-20) adds the ninth service: prometheus, the rig's metrics consumer —
+# it scrapes the proxy's loopback-only /metrics from the host namespace (the pattern was
+# proven live BEFORE the service landed; the service comment below is the story).
 name: smpp-bmad-sandbox
 
 services:
@@ -158,3 +161,37 @@ services:
       - ./keycloak/certs/server-key.pem:/opt/keycloak/conf/server-key.pem:ro
       - ./keycloak/certs/truststore.p12:/opt/keycloak/conf/truststore.p12:ro
       - ./keycloak/realm-smpp-companions.json:/opt/keycloak/data/import/realm-smpp-companions.json:ro
+
+  # Story 8.2 — the rig's Prometheus (fixture scope, addendum A7): the always-on consumer
+  # of the proxy's /metrics. It reaches the AD-19 loopback-only endpoint by JOINING the
+  # host network namespace — network_mode: host — the namespace BOTH supported proxy
+  # postures run in (the host-run README §5.2 jar and the runbooks' --network host
+  # containers), so the scrape targets in prometheus/prometheus.yml are the literals
+  # 127.0.0.1:9090 and 127.0.0.1:9091 (9090 = every first instance's yml-default metrics
+  # port; 9091 = the two-instance runbooks' second instance — ALWAYS configured per the
+  # owner Q3 decision, so a single-instance rig simply shows that target DOWN until a
+  # second instance launches). Access comes from namespace sharing only — never from bind
+  # widening or port publishing — and the product §13 "no metrics dashboard / telemetry
+  # backend" non-goal stands: this is rig fixture, not product.
+  # Deliberately NO ports: entry — the service is already in the host namespace, so the
+  # web UI binds 127.0.0.1:9095 directly (9090/9091 are the proxies'; 9093 is the
+  # Alertmanager convention), and compose silently IGNORES ports under network_mode: host
+  # anyway (a ports block would only mislead readers). Image pinned exactly — the Keycloak
+  # 26.7.0 precedent. TSDB lives on the named volume below with a 24h retention: dev rig,
+  # no durability promise. The README §5.5 bridge-variant proxy is NOT reachable this way
+  # (its /metrics stays inside the container's own loopback — DEPLOY-011 posture; a
+  # documented variant limitation, not fixed here).
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    network_mode: host
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+      - --web.listen-address=127.0.0.1:9095
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-tsdb:/prometheus
+
+volumes:
+  prometheus-tsdb:
