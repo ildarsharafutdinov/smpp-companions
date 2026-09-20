@@ -242,12 +242,28 @@ class ComposedPackagedE2eTest {
                         OBSERVATION_DEADLINE_MILLIS))
                         .contains("relay_pdus_total{direction=\"INGRESS\"} 2.0")
                         .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0")
-                        .contains("relay_binds_rejected_total 0.0");
+                        .contains("relay_binds_rejected_total 0.0")
+                        .as("Story 8.1 T2: each relayed PDU also recorded its transit (mirrors the "
+                                + "PDU counters — the same single fire; timer _count rows render "
+                                + "integer, unlike the 1.0 counters)")
+                        .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 2")
+                        .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 1")
+                        .as("the forward's AlwaysAllow settle recorded exactly one adjudication "
+                                + "(VerifierWiringConfig: forward cells wire the stand-in verifier)")
+                        .contains("relay_binds_adjudication_seconds_count 1");
                 assertThat(awaitScrape(rig.reverseMetricsPort, "relay_binds_unknown_total 1.0",
                         OBSERVATION_DEADLINE_MILLIS))
                         .contains("relay_pdus_total{direction=\"INGRESS\"} 2.0")
                         .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0")
-                        .contains("relay_binds_rejected_total 0.0");
+                        .contains("relay_binds_rejected_total 0.0")
+                        .as("Story 8.1 T2: each relayed PDU also recorded its transit (mirrors the "
+                                + "PDU counters — the same single fire)")
+                        .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 2")
+                        .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 1")
+                        .as("the reverse's ROPC adjudication against the stand-in IdP settled Allow — "
+                                + "the couple requires that settle, and the settle funnel records "
+                                + "before the egress dial")
+                        .contains("relay_binds_adjudication_seconds_count 1");
 
                 // (6) The LOG surface: bind_accept on BOTH subprocess streams, no reject anywhere.
                 assertThat(firstLineContaining(output(rig.forwardStdout), BIND_ACCEPT))

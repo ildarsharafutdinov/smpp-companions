@@ -656,8 +656,10 @@ public final class BindInterceptor extends SimpleChannelInboundHandler<SmppBindP
      * site): fires {@link RelayObserver#onBindAdjudication(Duration)} with {@code now − arm} for the
      * arm taken beside the deadline timer in {@code adjudicate}, then clears it — exactly one record
      * per COMPLETED adjudication, this method being the single settle funnel (every settled verifier
-     * future hops here; deadline/teardown-aborted exchanges included, because their {@code cancelHttp()}
-     * settles the pin per the port's no-op-if-done contract). Never fires for the never-armed arms
+     * future hops here; deadline/teardown-aborted exchanges included, because the ROPC adapter
+     * guarantees {@code future()} settles after {@code cancelHttp()} — with {@code DenyIndeterminate}
+     * — while the {@code VerdictRequest} port itself is settlement-silent, so a future adapter must
+     * keep that settle promise for these exchanges to record). Never fires for the never-armed arms
      * (synchronous verifier blow-up, null {@code VerdictRequest} — no future ever existed) or the
      * non-verdict denials (routing miss, the new-adjudication gate — no adjudication ever started).
      * THROW-ISOLATED at the site via {@code fireGuarded} and cleared BEFORE the fire, so a throwing

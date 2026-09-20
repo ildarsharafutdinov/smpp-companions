@@ -64,8 +64,9 @@ import static net.logstash.logback.argument.StructuredArguments.kv;
  * test logback renders the same arguments as {@code key=value} pairs. High-frequency triggers
  * ({@code onFramedPdu}, {@code onConnectionClosed}) log NOTHING (metrics only) &mdash; a per-PDU log
  * line would be exactly the flood the privacy contract keeps out of default-level logs; the two
- * Story 8.1 T2 timing triggers ({@code onBindAdjudication}, carrying the same per-bind cadence as
- * the reject line whose verdict it precedes, and the per-PDU transit) are likewise metrics-only
+ * Story 8.1 T2 timing triggers ({@code onBindAdjudication}, firing once per completed adjudication
+ * at the settle &mdash; on a deny it immediately precedes the reject line &mdash; and the per-PDU
+ * transit) are likewise metrics-only
  * &mdash; the audit found no FR-OBS-1 log-event row for a latency figure.
  *
  * <p><b>Never throws.</b> Every trigger body is catch-guarded ({@code Throwable} &rarr; one bounded

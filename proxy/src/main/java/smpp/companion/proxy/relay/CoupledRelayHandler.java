@@ -179,8 +179,10 @@ public abstract class CoupledRelayHandler extends ChannelInboundHandlerAdapter {
      * at the relay seam and the forward below is its egress point; the monotonic delta between the
      * two clock reads is the PDU's relay transit, computed HERE at the seam (one {@code nanoTime}
      * stamp + one read per relayed PDU) and carried to the observer by the ratified Q1=B seam
-     * change — the two reads book-end exactly the pre-forward processing (entry lookup, coupled
-     * check, peer-liveness), while the observer fire itself runs only AFTER the second read,
+     * change — the two reads book-end exactly the pre-forward processing that runs inside this
+     * method (the peer fetch and its liveness check; the entry lookup and coupled check already ran
+     * in the {@code channelRead} prelude, before the stamp), while the observer fire itself runs
+     * only AFTER the second read,
      * deliberately, so a throwing observer cannot stretch the measurement (which is the sub-ms
      * PERF-4 budget the transit histogram's low buckets expose).
      */

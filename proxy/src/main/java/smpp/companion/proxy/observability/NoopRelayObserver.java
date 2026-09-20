@@ -11,8 +11,9 @@ import smpp.companion.proxy.security.Verdict;
  * The seeded default {@link RelayObserver} (AD-27): every trigger is a no-op. A Spring
  * {@link Component @Component} so it is the injectable default bean the relay wires against; Epic 4
  * swapped in the production Micrometer {@code /metrics} impl behind the interface (the Story 8.1 T2
- * timing triggers ride the same swap). Carries no state and starts no work &mdash; it exists so
- * {@code relay/} has a zero-overhead observer to call before the real observability body lands.
+ * timing triggers ride the same swap). Carries no state and starts no work &mdash; it exists as
+ * the zero-overhead seeded default behind the seam (the fallback in minimal test contexts that
+ * never component-scan this package).
  * Mirrors the {@code AlwaysAllowBindCredentialVerifier} stand-in pattern.
  */
 @Component

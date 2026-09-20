@@ -93,6 +93,15 @@ class MeteredRelayObserverTest {
         assertThat(registry.get(MeteredRelayObserver.BIND_REJECT_COUNTER).counter().count())
                 .as("every verifier deny hits the unlabeled reject counter")
                 .isEqualTo(50.0);
+        // Story 8.1 T3 review: the burst's 50 alternating-leg transits must LAND on the two
+        // pre-registered series — exactly 25 per direction (grew by 25: both started at the
+        // construction-time zero), never on a new series.
+        assertThat(labeledSampleValue(registry.scrape(), "relay_pdus_transit_seconds_count", "INGRESS"))
+                .as("the 25 INGRESS transits landed on the pre-registered series")
+                .isEqualTo(25.0);
+        assertThat(labeledSampleValue(registry.scrape(), "relay_pdus_transit_seconds_count", "EGRESS"))
+                .as("the 25 EGRESS transits landed on the pre-registered series")
+                .isEqualTo(25.0);
 
         // A KNOWN id increments its pre-registered series — still no growth.
         observer.onBindAccept(systemId("alpha"));

@@ -124,8 +124,10 @@ class BindAdjudicationRecordingTest extends ObservabilityPairHarness {
                 .hasSize(2);
         assertThat(observer.bindAdjudications())
                 .allSatisfy(latency -> assertThat(latency.toNanos())
-                        .as("each latency is a monotonic delta — never negative")
-                        .isNotNegative());
+                        .as("each latency is a real monotonic delta — the settle provably spans the "
+                                + "arm plus the intervening test work, so strictly positive (a "
+                                + "constant-zero carry at the fire site must fail here)")
+                        .isPositive());
         for (EmbeddedChannel leg : List.of(deniedLate, deniedEager)) {
             ByteBuf deny = leg.readOutbound();
             assertThat(deny).as("the verdict path runs on regardless — the deny is synthesized").isNotNull();

@@ -306,6 +306,11 @@ class ThrowingObserverHardeningTest extends ObservabilityPairHarness {
                 .as("Story 8.1 T2: each fire also carried its transit — a monotonic delta, never "
                         + "negative, on either leg")
                 .allSatisfy(f -> assertThat(f.transit().toNanos()).isNotNegative());
+        assertThat(observer.framedPduEvents())
+                .as("Story 8.1 T2: at least one transit is strictly positive — a constant-zero "
+                        + "carry at the fire site cannot ship green (any-of: robust to clock "
+                        + "granularity)")
+                .anySatisfy(f -> assertThat(f.transit().toNanos()).isPositive());
         assertThat(isolationWarns(out, "onBindAccept")).isEqualTo(1);
         assertThat(isolationWarns(out, "onFramedPdu")).isEqualTo(2);
         assertThat(isolationWarns(out, "onConnectionClosed")).isEqualTo(2);

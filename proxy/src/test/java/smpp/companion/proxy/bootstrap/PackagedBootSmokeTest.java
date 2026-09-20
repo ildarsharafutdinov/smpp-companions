@@ -237,7 +237,12 @@ class PackagedBootSmokeTest {
                     .as("the relay round is visible in the packaged scrape (one PDU per leg; the "
                             + "label is the Direction enum name — the closed 2-value set, AD-19)")
                     .contains("relay_pdus_total{direction=\"INGRESS\"} 1.0")
-                    .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0");
+                    .contains("relay_pdus_total{direction=\"EGRESS\"} 1.0")
+                    .as("Story 8.1 T2: each relayed PDU also recorded its transit — one record per "
+                            + "leg, the same single fire as the counter (timer _count rows render "
+                            + "integer, unlike the 1.0 counters)")
+                    .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 1")
+                    .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 1");
 
             // (6) SIGTERM → the AD-22 walk: acceptor stop → deny (no-op) → the drain body polls the
             // live pair to the 2s deadline and force-closes it (the OBS-020 WARN) → release →

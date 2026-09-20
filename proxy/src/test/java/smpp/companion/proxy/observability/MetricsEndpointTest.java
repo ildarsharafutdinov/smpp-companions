@@ -219,7 +219,8 @@ class MetricsEndpointTest {
                     .contains("relay_pdus_transit_seconds_bucket{direction=\"EGRESS\",le=\"+Inf\"}")
                     .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 0")
                     .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 0")
-                    .contains("relay_pdus_transit_seconds_sum{direction=\"INGRESS\"} 0");
+                    .contains("relay_pdus_transit_seconds_sum{direction=\"INGRESS\"} 0")
+                    .contains("relay_pdus_transit_seconds_sum{direction=\"EGRESS\"} 0");
             // An idle forward boot adjudicates and relays nothing — every histogram value is the
             // PRE-REGISTERED zero (construction-time cardinality, AD-19; nothing runtime-created).
             // Shape-idempotence across scrapes stays row 1's contract — the histograms are inside
