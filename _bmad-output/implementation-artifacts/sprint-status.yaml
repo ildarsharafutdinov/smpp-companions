@@ -131,6 +131,7 @@ development_status:
   # Story keys appended here as story files are created, per the project note above.)
   epic-8: in-progress
   8-1-observability-audit-and-gap-close: done
+  8-2-sandbox-prometheus: ready-for-dev
   epic-8-retrospective: optional
 
   # --- Epic 9: The whole-codebase meaty review — review prep and the human read ---

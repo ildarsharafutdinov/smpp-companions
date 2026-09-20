@@ -2,7 +2,8 @@
 
 <!-- Compiled from planning artifacts. Edit freely. Regenerate with compile-epic-context if planning docs change. -->
 <!-- Compiled 2026-09-20, post-Story-8.1: the observability audit + gap close is DONE (both latency histograms landed,
-     spine-Deferred histogram item retired); Stories 8.2/8.3 not yet sliced into story files. -->
+     spine-Deferred histogram item retired); Story 8.2 sliced 2026-09-20 (8-2-sandbox-prometheus.md, ready-for-dev —
+     owner decisions folded: always-on, loopback-only UI 127.0.0.1:9095, both 9090+9091 targets); 8.3 not yet sliced. -->
 
 ## Goal
 
