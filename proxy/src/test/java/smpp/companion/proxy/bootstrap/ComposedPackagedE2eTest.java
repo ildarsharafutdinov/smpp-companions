@@ -363,7 +363,10 @@ class ComposedPackagedE2eTest {
             assertThat(awaitScrape(rig.reverseMetricsPort, "relay_binds_rejected_total 1.0",
                     OBSERVATION_DEADLINE_MILLIS))
                     .contains("relay_binds_unknown_total 1.0")
-                    .contains("relay_pdus_total{direction=\"INGRESS\"} 0.0");
+                    .contains("relay_pdus_total{direction=\"INGRESS\"} 0.0")
+                    // Story 8.1 AC1's "≥1 Deny" clause at live-scrape level: the round's one adjudication
+                    // (401 → DenyInvalid settle) recorded — rejected_total 1.0 above proves the deny-ness.
+                    .contains("relay_binds_adjudication_seconds_count 1\n");
             assertThat(ComposedJourney.scrape(rig.forwardMetricsPort))
                     .contains("relay_binds_rejected_total 0.0")
                     .contains("relay_binds_accepted_total{system_id=\"carrierOne\"} 0.0")

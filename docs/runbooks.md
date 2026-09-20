@@ -48,12 +48,12 @@ Two wire contracts govern everything below, and they are deliberately different:
 
 | Outcome | Origin | Wire (what the client sees) | Log | Metric |
 |---|---|---|---|---|
-| Verifier returned `DenyInvalid` or `DenyIndeterminate` (bad credentials, provider 401/400 `invalid_grant`/`invalid_client`, 3xx/403/404/429/5xx, timeout, network error, opaque token, admission saturation) | proxy | header-only `bind_*_resp` `0x0000000D`, then close | INFO `bind_reject` line: `system_id`, `verdict` (`DenyInvalid` \| `DenyIndeterminate`), `bind_resp_command_status="0x0000000D"`; the non-credential provider arms additionally fire their WARN banners (below) — the positive-invalid signals (401, `invalid_grant`/`invalid_client`) log nothing beyond the `bind_reject` line, by design | `relay_binds_rejected_total` + (reverse cells) `relay_binds_unknown_total`; close `relay_connections_closed_total{direction="INGRESS",reason="BIND_REJECTED"}` |
+| Verifier returned `DenyInvalid` or `DenyIndeterminate` (bad credentials, provider 401/400 `invalid_grant`/`invalid_client`, 3xx/403/404/429/5xx, timeout, network error, opaque token, admission saturation) | proxy | header-only `bind_*_resp` `0x0000000D`, then close | INFO `bind_reject` line: `system_id`, `verdict` (`DenyInvalid` \| `DenyIndeterminate`), `bind_resp_command_status="0x0000000D"`; the non-credential provider arms additionally fire their WARN banners (below) — the positive-invalid signals (401, `invalid_grant`/`invalid_client`) log nothing beyond the `bind_reject` line, by design | `relay_binds_rejected_total` + (reverse cells) `relay_binds_unknown_total`; close `relay_connections_closed_total{direction="INGRESS",reason="BIND_REJECTED"}`; `relay_binds_adjudication_seconds` records once at the settle |
 | SMSC non-ROK `bind_*_resp` | SMSC | the SMSC's actual response bytes, verbatim, then close | nothing at default level (the close is observed, not logged) | close `{reason="BIND_FAILED_NON_ROK"}` on both legs |
 | SMSC `generic_nack` pre-`bind_resp` | SMSC | the nack bytes, verbatim, then close | nothing at default level | close `{reason="GENERIC_NACK_PRE_BIND"}` on both legs |
 | Egress-establishment failure (SMSC connect refused/blackholed/failed, SMSC death or violation before `bind_resp`) | proxy | the generic `0x0000000D` deny, then close | nothing at default level — this arm is deliberately silent (indistinguishable from a verifier deny, by design) | close `{direction="INGRESS",reason="EGRESS_CONNECT_FAILED"}` (stashed on the client leg only; where an egress leg existed and died pre-answer, that leg's own close counts under the unstashed default `{direction="EGRESS",reason="OTHER"}` — a failed connect never opened one at all) |
 | Routing miss (forward cells: `system_id` not in the table) | proxy | the generic deny, then close | WARN `routing miss: system_id not in the routing table — AD-33 deny (AD-29/AD-11): <id>` | close `{direction="INGRESS",reason="OTHER"}` (no reject counter — no Verdict was returned) |
-| Adjudication deadline elapsed, verifier never settled (dead/silent provider) | proxy | the generic deny, then close | WARN `adjudication deadline elapsed without a verdict — fail-closed deny (F14): <id>` | close `{direction="INGRESS",reason="BIND_REJECTED"}` (no reject counter — the timer fabricates no Verdict) |
+| Adjudication deadline elapsed, verifier never settled (dead/silent provider) | proxy | the generic deny, then close | WARN `adjudication deadline elapsed without a verdict — fail-closed deny (F14): <id>` | close `{direction="INGRESS",reason="BIND_REJECTED"}` (no reject counter — the timer fabricates no Verdict; `relay_binds_adjudication_seconds` still records once, at ~the deadline — the armed exchange settles) |
 | Bind after the acceptor stopped (shutdown in progress) | proxy | the generic deny, then close | WARN `bind after acceptor stop — fail-closed deny, no adjudication started (OBS-017): <id>` | close `{direction="INGRESS",reason="OTHER"}` |
 | Retry-bind while a handshake is in flight | proxy | the generic deny answering the RETRY's sequence, then close | nothing at default level | close `{direction="INGRESS",reason="BIND_REJECTED"}` |
 | Pre-couple non-bind PDU on the client leg (pipelined `submit_sm`, `enquire_link`, …) | proxy | **no PDU** — bare close | nothing at default level | close `{direction="INGRESS",reason="PRE_COUPLE_NON_BIND_PDU"}` on the violating leg |
@@ -66,9 +66,12 @@ Two counting rules that surprise people reading the metrics:
 
 - **`relay_binds_rejected_total` counts only RETURNED verdicts.** It increments exclusively inside
   the observer's `onBindReject`, which fires only for an actual `Verdict` the verifier returned
-  (AD-27). The deadline deny, the routing miss, the acceptor-stop deny, retry-binds, and
-  egress-establishment failures do NOT touch it — their only metric footprint is the close
-  counter. A rising `BIND_REJECTED` close count with a flat `relay_binds_rejected_total` means the
+  (AD-27). The routing miss, the acceptor-stop deny, and retry-binds do NOT touch it — no
+  adjudication was armed, so their only metric footprint is the close counter. The deadline deny
+  and egress-establishment failures also leave it flat (no returned `Verdict`), but each still
+  records one `relay_binds_adjudication_seconds` sample — the deadline deny settles its armed
+  exchange at the deadline, and an egress failure's record belongs to the preceding `Allow`
+  settle. A rising `BIND_REJECTED` close count with a flat `relay_binds_rejected_total` means the
   denials are NOT credential verdicts: look for the deadline or retry WARN lines.
 - **`relay_binds_accepted_total{system_id}` has series only on forward cells** — pre-registered
   for exactly the routing table's ids (the bounded label universe). Every reverse cell has an

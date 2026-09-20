@@ -237,6 +237,10 @@ class BindAdjudicationRecordingTest extends ObservabilityPairHarness {
         assertThat(verifier.cancelHttpCalls.get())
                 .as("the teardown really did cancel the in-flight adjudication (the arm under test)")
                 .isEqualTo(1);
+        assertThat(observer.bindRejects())
+                .as("the adapter-authored DenyIndeterminate from cancelHttp is not a returned "
+                        + "Verdict — no onBindReject (AD-27)")
+                .isEmpty();
         assertThat(frame.refCnt()).isZero();
         assertThat(registry.size()).isZero();
     }

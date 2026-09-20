@@ -882,6 +882,18 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   summary: No recurring check that `git check-ignore sandbox/secrets/oidc-client-secret` still returns 0 — the single `.gitignore` line is the sole AD-18 "the live OIDC secret never enters the repo" guard.
   evidence: Verification-gap layer's repo-wide searches (trusted as filed): nothing recurring reads `.gitignore`; the only checks ever run were the one-time live `git check-ignore`/`git status` executions in the T2/T5 debug logs; a future ignore-file narrowing would silently stage the live secret while `./gradlew clean build` stays GREEN, and a Java test asserting ignore state would break the story's Gradle-inertness property and the owner's no-doc-oracle test rule.
 
+## Deferred from: observability audit of 8-1-observability-audit-and-gap-close (Task 1, 2026-09-19)
+
+- source_spec: `_bmad-output/implementation-artifacts/8-1-observability-audit-and-gap-close.md`
+  summary: No active-connections gauge — PRD addendum A2's gauge list names "active connections", but no scrape series reads the live pair count (`ConnectionRegistry` exists, nothing gauges it; `ResourceMetrics` registers exactly two gauges). Outside Story 8.1's ratified close scope (histograms only — a new gauge is new surface), but A2 names it, so it must not vanish; audit gap row G3.
+  evidence: `_bmad-output/implementation-artifacts/observability-audit-2026-09-19.md:133` (gap row G3; citing `_bmad-output/planning-artifacts/prds/prd-smpp-companions-2026-07-18/addendum.md:30` — the A2 gauge list; the audit's live scrapes of both cells — no such series; `proxy/src/main/java/smpp/companion/proxy/observability/ResourceMetrics.java:58-73`). Revisit: no Epic-8 story owns new product meters (8.2 is sandbox-only scrape access, 8.3 is CI/publish) — a future observability story decides the gauge, to be pre-registered under AD-19's unchanged cardinality mechanism.
+- source_spec: `_bmad-output/implementation-artifacts/8-1-observability-audit-and-gap-close.md`
+  summary: No file log destination — FR-OBS-1 names "stdout/file" but the shipped config is stdout-only JSON-lines (a single CONSOLE appender, the container-first deploy contract). A file appender means new config keys and a rotation policy, both outside Story 8.1's Never-list; audit gap row G6, low.
+  evidence: `_bmad-output/implementation-artifacts/observability-audit-2026-09-19.md:136` (gap row G6; citing `_bmad-output/planning-artifacts/prds/prd-smpp-companions-2026-07-18/prd.md:131` — FR-OBS-1; `proxy/src/main/resources/logback-spring.xml:10-19`; the documented stdout contract at `docs/runbooks.md:152-157`).
+- source_spec: `_bmad-output/implementation-artifacts/8-1-observability-audit-and-gap-close.md`
+  summary: Zero ERROR-level emissions from product code — FR-OBS-1's "errors" event class is carried entirely at WARN (throwables under `stack_trace`), so an operator alerting on `level=ERROR` never fires on proxy-originated lines. Introduce ERROR for genuine faults vs keep the WARN register is an owner-owned severity-register decision, not closable as a histogram-gap side effect; audit gap row G7, low.
+  evidence: `_bmad-output/implementation-artifacts/observability-audit-2026-09-19.md:137` (gap row G7; citing the audit's grep over `proxy/src/main` — zero `log.error`/`System.err` hits; the severity note and WARN catalog at `docs/runbooks.md:156-157,164`).
+
 ## Deferred from: code review of 8-1-observability-audit-and-gap-close (2026-09-20)
 
 - source_spec: `_bmad-output/implementation-artifacts/8-1-observability-audit-and-gap-close.md`
