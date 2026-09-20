@@ -241,8 +241,11 @@ class PackagedBootSmokeTest {
                     .as("Story 8.1 T2: each relayed PDU also recorded its transit — one record per "
                             + "leg, the same single fire as the counter (timer _count rows render "
                             + "integer, unlike the 1.0 counters)")
-                    .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 1")
-                    .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 1");
+                    .contains("relay_pdus_transit_seconds_count{direction=\"INGRESS\"} 1\n")
+                    .contains("relay_pdus_transit_seconds_count{direction=\"EGRESS\"} 1\n")
+                    .as("the packaged bind settled a genuine Allow (the stand-in IdP answers a valid "
+                            + "200 + three-segment JWS) — exactly one adjudication record")
+                    .contains("relay_binds_adjudication_seconds_count 1\n");
 
             // (6) SIGTERM → the AD-22 walk: acceptor stop → deny (no-op) → the drain body polls the
             // live pair to the 2s deadline and force-closes it (the OBS-020 WARN) → release →

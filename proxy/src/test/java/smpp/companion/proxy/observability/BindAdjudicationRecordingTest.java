@@ -140,7 +140,7 @@ class BindAdjudicationRecordingTest extends ObservabilityPairHarness {
         assertThat(frameB.refCnt()).isZero();
         assertThat(registry.size()).as("both pairs left the registry").isZero();
         assertThat(observer.bindRejects())
-                .as("both denies also fired the (uninstrumented here) reject trigger — the settle "
+                .as("both denies also fired the captured, meter-free-here reject trigger — the settle "
                         + "recording is additive, never a replacement")
                 .hasSize(2);
     }

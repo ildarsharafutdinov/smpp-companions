@@ -315,6 +315,16 @@ class BindInterceptorTest {
         // frame (runPendingTasks pumps the embedded loop's queued hop).
         verifier.completeAllow();
         ingress.runPendingTasks();
+        // Story 8.1 T5: the deadline exchange IS a completed adjudication once its pin settles (the
+        // production adapter settles inside cancelHttp; the latched stand-in settles at completeAllow) —
+        // the settle funnel records EXACTLY ONE strictly-positive latency even on the torn-down pair
+        // (the runbook's "a deadline deny records" promise, pinned on the deterministic seam).
+        assertThat(observer.bindAdjudications())
+                .as("the deadline exchange recorded EXACTLY ONE adjudication at the settle")
+                .hasSize(1);
+        assertThat(observer.bindAdjudications().get(0).toNanos())
+                .as("the recorded latency spans arm → deadline fire → settle — strictly positive")
+                .isPositive();
         assertThat(connector.targets).as("the late Allow opens NO egress — never a late couple").isEmpty();
         assertThat(observer.bindAccepts()).isEmpty();
         assertThat(ingress.<ByteBuf>readOutbound()).as("nothing follows the deadline deny on the wire").isNull();
