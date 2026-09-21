@@ -3,7 +3,7 @@
 # host namespace the proxy processes expose /metrics on (AD-19 loopback-only binding,
 # reached by namespace sharing — never by widening the product bind):
 #   9090 — every FIRST proxy instance (the yml default companion.metrics.port): the
-#          host-run §5.2 jar, the lone reverse, or the FORWARD of the composed pairs;
+#          host-run §5.2 jar, the single reverse instance, or the FORWARD of the composed pairs;
 #   9091 — the SECOND instance of the two-instance runbooks (their port plan moves the
 #          second /metrics off 9090 — two host-network processes cannot share the bind).
 # On a single-instance rig the 9091 target sits DOWN (connection refused) until a second
