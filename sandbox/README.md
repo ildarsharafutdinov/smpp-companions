@@ -411,10 +411,10 @@ Then the same fact from the other two vantage points:
    `relay_pdus_transit_seconds_count{direction="INGRESS"|"EGRESS"}` starts ticking with the first
    keepalives (§6.3) and accumulates through the §6 journeys — every relayed PDU lands in the
    transit histogram, each direction's count equal to its `relay_pdus_total`. Scrape failures
-   surface as the target reading DOWN (`up == 0`) with the connection-refused error on the
-   Targets page: with NO proxy launched the 9090 target reads the same
-   DOWN while every other service stays unaffected — §4's honest idle state seen from here, not a
-   fault.
+   surface as the target reading DOWN (`up == 0`) with the error on the Targets page naming the
+   class — `connection refused` when nothing listens, `context deadline exceeded` when the
+   scrape times out. With NO proxy launched the 9090 target reads the same DOWN while every
+   other service stays unaffected — §4's honest idle state seen from here, not a fault.
 
 Teardown (the AD-22 walk, re-observed here as part of the recipe): `kill -TERM <pid>` → the drain
 WARN — `shutdown drain deadline (PT10S) expired — force-closed 1 live pair(s) as SHUTDOWN_DRAIN
@@ -510,8 +510,11 @@ The shared port plan across the three (each runbook carries its own table): the 
 the composed FORWARD both hold **2775** — so the front conf (`host.docker.internal:2775`) never
 changes between use cases — the two-instance use cases' **reverse moves to 2776**, and the second proxy
 process's `/metrics` moves to **9091** (two host-network processes cannot share the 9090 loopback
-bind). All three runbooks were followed verbatim to `bind_accept coupled` on the live rig
-(2026-09-18), sends included; their failure tables carry the live-observed arms (reverse-down in
+bind). While a two-instance runbook pair runs, the rig Prometheus's always-configured 9091 target
+is UP and both instances' metrics land in the TSDB (§5.3's item 7; config semantics, first live
+confirmation pending). All three runbooks were followed verbatim to `bind_accept coupled` on the
+live rig (2026-09-18), sends included; their failure tables carry the live-observed arms
+(reverse-down in
 the composed chain; the UID-65532 mount refusals; the metrics-port collision). What held live on
 the composed use cases is the §6.1 send journey (byte-intact at fakesmsc through both hops) and
 §6.3's keepalives — the sends above were run through each. The §6.4 **D1** deny journey does NOT
@@ -804,9 +807,9 @@ drifts silently:
    the named `prometheus-tsdb` volume with a 24 h retention (dev rig, no durability promise — it
    SURVIVES `docker compose down`; only `down -v` removes it). Access to the AD-19 loopback-only
    `/metrics` comes from namespace sharing alone: no `ports:` publish, no bind widening, nothing
-   under `proxy/` changed. Fixture scope per addendum A7 — the product's "no metrics dashboard /
-   telemetry backend" non-goal stands; the access pattern was proven live before the service
-   landed (the story's Implementation Notes).
+   under `proxy/` changed — and the scrape pattern assumes a Linux host (§1). Fixture scope per
+   addendum A7 — the product's "no metrics dashboard / telemetry backend" non-goal stands; the
+   access pattern was proven live before the service landed (the story's Implementation Notes).
 
 ## 11. Findings discipline
 

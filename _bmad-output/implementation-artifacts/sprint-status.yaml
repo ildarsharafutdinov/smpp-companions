@@ -1,5 +1,5 @@
 # generated: 2026-07-24
-# last_updated: 2026-09-20
+# last_updated: 2026-09-21
 # project: smpp-companions
 # project_key: NOKEY
 # tracking_system: file-system
@@ -64,7 +64,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-09-20
+last_updated: 2026-09-21
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -131,7 +131,7 @@ development_status:
   # Story keys appended here as story files are created, per the project note above.)
   epic-8: in-progress
   8-1-observability-audit-and-gap-close: done
-  8-2-sandbox-prometheus: in-progress
+  8-2-sandbox-prometheus: review
   epic-8-retrospective: optional
 
   # --- Epic 9: The whole-codebase meaty review — review prep and the human read ---

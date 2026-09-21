@@ -119,7 +119,7 @@ observed 3 ms apart).
 | `docker logs sandbox-reverse-c` (boot) | No banner; `startup_summary` with `"role":"reverse"`, `"mode":"c"`, `"smpp_bind_host":"0.0.0.0"`, `"smpp_bind_port":2776`, `"metrics_port":9091`. |
 | `docker logs sandbox-forward-c` (boot) | No banner; `startup_summary` with `"role":"forward"`, `"mode":"c"`, `"smpp_bind_port":2775`, `"metrics_port":9090`, `"routing_system_ids":["usr1"]`. |
 | The couple — within ~10 s of the forward's start | `bind_accept`, `"system_id":"usr1"`, `"outcome":"coupled"` on both stdouts, the reverse's line first (observed 3 ms apart). |
-| Metrics, one port per instance | Forward `curl -s http://127.0.0.1:9090/metrics`: `relay_binds_accepted_total{system_id="usr1"} 1.0`; reverse `curl -s http://127.0.0.1:9091/metrics`: `relay_binds_unknown_total 1.0`. |
+| Metrics, one port per instance | Forward `curl -s http://127.0.0.1:9090/metrics`: `relay_binds_accepted_total{system_id="usr1"} 1.0`; reverse `curl -s http://127.0.0.1:9091/metrics`: `relay_binds_unknown_total 1.0`. The rig's Prometheus (UI `http://127.0.0.1:9095`) always configures both ports as its `smpp-proxy` targets: 9091 is UP only while the reverse runs, DOWN otherwise — for good on single-instance rigs ([README §5.3](../README.md), item 7). |
 | `curl "http://127.0.0.1:13000/status.txt?password=test"` | `smsc1 … (online …)` — through both proxies and the mTLS leg. |
 | A send — optional | HTTP 202; fakesmsc prints the text byte-intact; both instances' counters move 2/2 per leg for the journey (submit + resp, then the DLR pair) — beyond that, keepalive. Full journey: [README §6.1](../README.md). |
 

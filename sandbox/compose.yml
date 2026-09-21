@@ -164,7 +164,7 @@ services:
 
   # Story 8.2 — the rig's Prometheus (fixture scope, addendum A7): the always-on consumer
   # of the proxy's /metrics. It reaches the AD-19 loopback-only endpoint by JOINING the
-  # host network namespace — network_mode: host — the namespace BOTH supported proxy
+  # host network namespace — network_mode: host — the namespace both default proxy
   # postures run in (the host-run README §5.2 jar and the runbooks' --network host
   # containers), so the scrape targets in prometheus/prometheus.yml are the literals
   # 127.0.0.1:9090 and 127.0.0.1:9091 (9090 = every first instance's yml-default metrics

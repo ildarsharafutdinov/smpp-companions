@@ -124,7 +124,7 @@ forward не содержит ни `oidc`, ни `smsc`; у reverse нет `routi
 | `docker logs sandbox-reverse-c` (загрузка) | Без баннера; `startup_summary` с `"role":"reverse"`, `"mode":"c"`, `"smpp_bind_host":"0.0.0.0"`, `"smpp_bind_port":2776`, `"metrics_port":9091`. |
 | `docker logs sandbox-forward-c` (загрузка) | Без баннера; `startup_summary` с `"role":"forward"`, `"mode":"c"`, `"smpp_bind_port":2775`, `"metrics_port":9090`, `"routing_system_ids":["usr1"]`. |
 | Сопряжение — в пределах ~10 с от старта forward | `bind_accept`, `"system_id":"usr1"`, `"outcome":"coupled"` на обоих stdout, строка reverse первой (вживую разрыв 3 мс). |
-| Метрики — по порту на инстанс | Forward `curl -s http://127.0.0.1:9090/metrics`: `relay_binds_accepted_total{system_id="usr1"} 1.0`; reverse `curl -s http://127.0.0.1:9091/metrics`: `relay_binds_unknown_total 1.0`. |
+| Метрики — по порту на инстанс | Forward `curl -s http://127.0.0.1:9090/metrics`: `relay_binds_accepted_total{system_id="usr1"} 1.0`; reverse `curl -s http://127.0.0.1:9091/metrics`: `relay_binds_unknown_total 1.0`. У Prometheus стенда (UI `http://127.0.0.1:9095`) оба порта всегда прописаны как цели job `smpp-proxy`: цель 9091 — UP только пока работает reverse, иначе DOWN (на одноинстансном стенде — навсегда; [README §5.3](../README.ru.md), пункт 7). |
 | `curl "http://127.0.0.1:13000/status.txt?password=test"` | `smsc1 … (online …)` — через обоих прокси и mTLS-плечо. |
 | Отправка — необязательно | HTTP 202; fakesmsc печатает текст байт-в-байт; счётчики обоих инстансов проходят 2/2 на плечо за весь сценарий (submit + resp, затем пара DLR) — сверх этого keepalive. Полный сценарий: [README §6.1](../README.ru.md). |
 
