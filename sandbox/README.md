@@ -85,7 +85,7 @@ flowchart TD
     osmpp -.-> pg
     sbearer -.-> pg
     prom -.->|"scrape /metrics — 127.0.0.1:9090 (loopback, shared namespace)"| proxy
-    prom -.->|"always configured — DOWN until §5.6's second instance"| proxy
+    prom -.->|"always configured — 127.0.0.1:9091, DOWN until §5.6's second instance"| proxy
 ```
 
 Everything compose-side speaks `host.docker.internal` and every inter-service hop hairpins through
@@ -211,7 +211,7 @@ Readiness per service:
 | `smsc-opensmpp-box` | No admin page; listening on 14567 (the port the proxy's egress will connect to); `docker compose logs smsc-opensmpp-box` shows `Connected to bearerbox at host.docker.internal port 14001`. |
 | `smsc-fake-smsc` | Stays attached (tty) once connected to 10004; `docker compose logs smsc-fake-smsc` shows `Entering interactive mode`, and `FAKE1` appears online in the SMSC status page. |
 | `keycloak` | Compose healthcheck green — a TCP connect to the HTTPS listener (the rig's Keycloak is HTTPS-only and the image ships no TLS-capable client, so the healthcheck asserts the listener; see the service comment in `compose.yml`). REALM readiness is proven by the §5.1 discovery curl, which the secret bootstrap runs anyway. |
-| `prometheus` | Always-on with the plain `docker compose up` — no compose profile, no extra command (8.2). Fixture: no healthcheck and no `depends_on` (it depends on nothing; its scrape targets are EXPECTED to be DOWN at idle). Ready when `curl http://127.0.0.1:9095/-/ready` answers `Prometheus Server is Ready.` — and the web UI at `http://127.0.0.1:9095/graph` answers (loopback-only, like everything on that port). |
+| `prometheus` | Always-on with the plain `docker compose up` — no compose profile, no extra command (8.2). Fixture: no healthcheck and no `depends_on` (it depends on nothing; its scrape targets are EXPECTED to be DOWN at idle). Ready when `curl --retry 30 --retry-connrefused http://127.0.0.1:9095/-/ready` answers `Prometheus Server is Ready.` — and the web UI at `http://127.0.0.1:9095/graph` answers (loopback-only, like everything on that port). |
 
 Only the services with admin status pages carry compose healthchecks (that is the ported pattern:
 `pg` + the two bearerboxes; `keycloak` joins them with its TCP-connect check — the strongest probe
@@ -249,7 +249,8 @@ per §5; the front bearerbox rebinds on its own retry schedule above.
 The rig's Prometheus shows the same honest idle from its side: both of its always-configured
 `smpp-proxy` targets (`127.0.0.1:9090` and `127.0.0.1:9091`) read DOWN — connection refused —
 while no proxy runs, and every other service is unaffected (§5.3's item 7). The 9090 target flips
-UP at the first §5.2 launch; the 9091 target stays DOWN for good on any single-instance rig
+UP at the first proxy launch — §5.2's host-run jar or a §5.6 use case's first instance (§3's row);
+the 9091 target stays DOWN for good on any single-instance rig
 (accepted — it exists for §5.6's two-instance use cases).
 
 ## 5. The proxy launch recipe (Keycloak + the packaged jar)
@@ -688,6 +689,7 @@ surface being proven); their full reference is
 | pg — the DLR stores | `docker compose exec pg psql -U postgres -d postgres -c 'SELECT * FROM front_bearer_dlr;'` (likewise `smsc_bearer_dlr`, `smsc_smpp_dlr`) | the DLR reservations and their `status`/`mask` columns — §6.1's hop rows. |
 | pg — sqlbox's log | `… -c 'SELECT sql_id,momt,sender,receiver,msgdata,dlr_mask,boxc_id FROM front_sms_log;'` | every MT and every DLR text that completed (`momt` = `MT` / `DLR`) — the durable transcript of the sends. |
 | fakesmsc's tty | `docker compose attach smsc-fake-smsc` (a terminal is required — §6.2) | inject MOs (§6.2's line syntax) and watch MT receipts print (`Got message N: <…>`). |
+| The rig's Prometheus UI | `http://127.0.0.1:9095` (§4's readiness row; loopback-only) | the rig-side vantage: the `smpp-proxy` job's target health (9090/9091 UP/DOWN) and the counter + histogram history in the TSDB — §5.3 item 7's observation point without hand-curling `/metrics`. |
 
 Debugging heuristics — the §6.4 skill generalized:
 
@@ -725,6 +727,7 @@ Debugging heuristics — the §6.4 skill generalized:
 | A §5.6 composed use case's SECOND container refuses at boot with a bind-in-use refusal naming `metrics.port` | Both proxy containers were left on the yml-default 9090 — the port-plan miss | Move the reverse's metrics to `--companion.metrics.port=9091` (the runbook's launch already does) |
 | A §5.6 composed chain never couples: the forward's stdout silent, its `relay_connections_closed_total{INGRESS,EGRESS_CONNECT_FAILED}` climbing, the front wire the usual 0x0d | The REVERSE container is down (or its port/cert is wrong) — the forward's egress connection is the TLS leg | `docker ps` for the reverse container; `docker start` it (re-couples within one retry — observed), or re-check the runbook's port plan and cert SAN vs `routing[0].host` |
 | A §5.6 use case's container refuses at boot with a bind-in-use error on 2775 (or the `/metrics` loopback 9090/9091) | A leftover proxy still holds the port — the §5.2 host-run proxy still running, or a prior use case's containers not stopped (one front conf means ONE 2775 listener; the loopback metrics ports are single-occupancy too) | One proxy posture at a time: `kill -TERM <pid>` the host proxy (`pgrep -f proxy/build/libs/proxy.jar`), or `docker stop --timeout 30 <name>` the prior use case's containers (exit 143 each), then launch — the refusal names the port and fires before any listener serves |
+| `prometheus` silent in `docker compose ps` and its §4 `/-/ready` curl fails | 9095 was already taken on the host (the service dies at bind — no healthcheck by design, so `ps` stays quiet), or `prometheus/prometheus.yml` moved (the daemon creates a DIRECTORY at a missing bind-mount source — the `-v` failure class of the row above, which bit the T1 proof itself) | `docker compose logs prometheus` names the bind error; free 9095 (§3's row) or restore the config path, then `docker compose up -d prometheus` |
 
 ## 9. Teardown
 
