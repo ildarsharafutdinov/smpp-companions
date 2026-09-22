@@ -1,5 +1,5 @@
 # generated: 2026-07-24
-# last_updated: 2026-09-21
+# last_updated: 2026-09-22
 # project: smpp-companions
 # project_key: NOKEY
 # tracking_system: file-system
@@ -64,7 +64,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-09-21
+last_updated: 2026-09-22
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -129,7 +129,7 @@ development_status:
   #     Prometheus, Docker Hub publishing via CI ---
   # (Added 2026-09-19 — depends on Epic 5 + Epic 6; execution priority E6 → E8 → E9 → E7.
   # Story keys appended here as story files are created, per the project note above.)
-  epic-8: in-progress
+  epic-8: done
   8-1-observability-audit-and-gap-close: done
   8-2-sandbox-prometheus: done
   epic-8-retrospective: optional
