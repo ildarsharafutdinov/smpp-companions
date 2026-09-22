@@ -128,10 +128,13 @@ development_status:
   # --- Epic 8: Make it observable and installable — measurability close-out, sandbox
   #     Prometheus, Docker Hub publishing via CI ---
   # (Added 2026-09-19 — depends on Epic 5 + Epic 6; execution priority E6 → E8 → E9 → E7.
-  # Story keys appended here as story files are created, per the project note above.)
-  epic-8: done
+  # Story keys appended here as story files are created, per the project note above.
+  # Reopened 2026-09-22: the 8.1/8.2 close had left the goal's CI/Docker Hub third unsliced —
+  # Story 8.3 now carries it.)
+  epic-8: in-progress
   8-1-observability-audit-and-gap-close: done
   8-2-sandbox-prometheus: done
+  8-3-github-ci-and-docker-hub-publish: ready-for-dev
   epic-8-retrospective: optional
 
   # --- Epic 9: The whole-codebase meaty review — review prep and the human read ---

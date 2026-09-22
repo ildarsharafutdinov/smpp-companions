@@ -1,39 +1,40 @@
 # Epic 8 Context: Make it observable and installable — measurability close-out, sandbox Prometheus, Docker Hub publishing via CI
 
 <!-- Compiled from planning artifacts. Edit freely. Regenerate with compile-epic-context if planning docs change. -->
-<!-- Compiled 2026-09-20, post-Story-8.1: the observability audit + gap close is DONE (both latency histograms landed,
-     spine-Deferred histogram item retired); Story 8.2 sliced 2026-09-20 (8-2-sandbox-prometheus.md, ready-for-dev —
-     owner decisions folded: always-on, loopback-only UI 127.0.0.1:9095, both 9090+9091 targets); 8.3 not yet sliced. -->
+<!-- Compiled 2026-09-22, pre-Story-8.3: 8.1 (observability audit + both latency histograms) and 8.2 (sandbox
+     Prometheus — 9-service compose, netns-join scrape, loopback-only UI) are DONE; the epic flag in sprint-status
+     still reads done from the 8.1/8.2 close — the 8.3 slice reopens it. 8.3 is the last story: CI + publish. -->
 
 ## Goal
 
-Close out observability and installability before performance work (execution priority E6 → E8 → E9 → E7). The observability surface has been audited against operator needs and the measurable gaps closed (Story 8.1, done): both latency histograms landed under the unchanged loopback exposition posture. What remains: the docker-compose sandbox gains a Prometheus service that actually scrapes the packaged proxy's loopback-only `/metrics` via a sandbox-only access pattern that leaves the product's binding and fail-closed posture untouched; and the distroless image is published to Docker Hub automatically by a GitHub Actions workflow (build + test gate + push), so `docker compose up` works from a pull instead of a local build — completing the two-first-class-shapes deploy requirement and the shippable-OSS-release success metric. Operator docs follow: deployment-guide publish path, runbook scrape section, sandbox README (+ ru mirror). The epic reverses the 2026-09-11 no-CI stance (owner direction 2026-09-19).
+Close out installability before the review and performance epics (execution priority E6 → E8 → E9 → E7). Observability is done: the surface was audited, both latency histograms landed (8.1), and the sandbox Prometheus scrapes the packaged proxy's loopback-only `/metrics` without touching the product's binding or fail-closed posture (8.2). What remains is the epic's third deliverable: the distroless image is published to Docker Hub automatically by a GitHub Actions workflow (build + test gate + push), so `docker compose up` works from a pull instead of a local build — completing the two-first-class-shapes deploy requirement and the shippable-OSS-release success metric. Operator docs follow: deployment-guide publish path, runbook/compose switch from local-build to pull. The epic reverses the 2026-09-11 no-CI stance (owner direction 2026-09-19).
 
 ## Stories
 
-- Story 8.1: Observability/measurability audit + gap close
-- Story 8.2: Sandbox Prometheus
-- Story 8.3: GitHub CI + Docker Hub publish
+- Story 8.1: Observability/measurability audit + gap close — done
+- Story 8.2: Sandbox Prometheus — done
+- Story 8.3: GitHub CI + Docker Hub publish — the remaining story
 
 ## Requirements & Constraints
 
-- **Audit discipline stands for the remaining work:** findings land with cited evidence; every gap is closed or explicitly ledgered in the deferred-work ledger — nothing silently dropped. The gaps 8.1 chose not to close (active-connections gauge, file log destination, ERROR severity register) are already ledgered there; do not re-audit and do not silently expand scope.
-- **Cardinality rules bind any metrics touch:** no new label dimensions — labels reuse existing dimensions (`direction`, routing-table `system_id`) or stay unlabeled; no `command_id`/`ChannelId`/free-form `system_id` labels; bucket series multiply per label combination, so grids stay bounded. Message content never emitted. The product stays read-only exposition — no dashboard, no telemetry backend, no management API.
-- **Loopback-only `/metrics` is untouchable:** the sandbox Prometheus reaches it via a sandbox-only fixture pattern (recommended: the Prometheus compose service joins the proxy's network namespace — a story-owned detail needing a proof before commit), never by widening the product's bind. The sandbox rig is fixture scope (same category as its bundled Keycloak vs "no bundled authority provider"); the product's "no metrics dashboard / telemetry backend" non-goal stands.
-- **CI hygiene:** build + test gate + push; Docker Hub credentials live only in the GitHub Actions secret store — never in env vars or the repo; CI pins the toolchain (JDK/Netty versions) the CVE/dependency policy points at. The published image honors the Docker-secrets contract unchanged (secrets stay mounted file paths).
-- **Docs ship with the epic:** deployment-guide publish path, runbook scrape section, sandbox README + ru mirror; mirrored RU pages require a conformance sweep under the owner's terminology glossary.
+- **CI hygiene:** build + test gate + push. Docker Hub credentials live only in the GitHub Actions secret store (DOCKERHUB namespace/token is an owner decision at story time), never in env vars or the repo; CI pins the toolchain (JDK/Netty versions) the CVE/dependency policy points at. No product code change.
+- **The image-build Gradle task stays out of `check`** — it is deliberately not cacheable and unwired, because a daemon-less CI would break if `build` depended on it. CI invokes image building explicitly, never via the `check`/`build` path; recorded in the deferred-work ledger so the story does not "fix" that wiring.
+- **Base-image digest pinning is this story's owner decision** (CVE freshness of the distroless base vs reproducible builds), parked since 5.2 for the release/publish tooling that this story now is.
+- **Ledgered work already assigned to this story:** wire `docker compose config` (+ config sanity) into the story's automation (from 8.2's Never clause — nothing recurring currently reads the sandbox compose files); optionally extend the histogram scrape assertions with the zero-valued `_max` rows (a standalone test-only commit also carries it).
+- **The published image honors the deploy contract unchanged:** same distroless + jlink image, same JAR inside; Docker secrets stay mounted file paths; only the published SMPP port is exposed.
+- **Docs follow the publish:** deployment-guide publish path; runbook/compose entries switch from local-build to pull once publishing works. The sandbox README/ru already carry the Prometheus pointers from 8.2 — extend, don't rework; RU mirrors follow the terminology glossary + conformance sweep.
 - **Success bar:** `docker compose up` in the sandbox pulls the published image and Prometheus scrapes `/metrics` with the loopback-only binding intact; CI builds + tests + publishes on the owner's trigger.
 
 ## Technical Decisions
 
-- **What 8.1 landed (standing surface — don't re-plan it):** two latency histograms under the unchanged exposition posture — bind-adjudication latency (`relay_binds_adjudication_seconds`, unlabeled; grid anchored so the warm p99, the cold-path limit, and the adjudication-deadline default each fall strictly between adjacent edges) and per-PDU relay transit (`relay_pdus_transit_seconds{direction}`, sub-ms→s grid keeping the sub-ms per-PDU budget visible below the 1 ms edge). Both are pre-registered at construction from closed sets (an idle-boot scrape already shows every row at zero; no fire path can create a series) with throw-isolated recording. The bucket grids and scrape arithmetic of record live in the PRD addendum (note A8) and the runbook histogram rows — not the architecture spine.
-- **The observer seam is now 5-method** — `onFramedPdu(Direction, Duration)`, `onBindAdjudication(Duration)`, `onBindAccept(SystemId)`, `onBindReject(SystemId, Verdict)`, `onConnectionClosed(Direction, CloseReason)` — pinned by a shape test; the `Duration` carries are timing scalars, never content. The codec stays meter-free; the Micrometer observer impl is the single meter source behind the seam.
-- **Remaining stories own no product metrics code:** 8.2/8.3 touch `sandbox/` (Prometheus service + conf + README/ru), `.github/workflows/`, the Docker Hub publish path, and `docs/` updates. `proxy/observability/` is not expected to change; if a finding forces it, the audit-first closed-or-ledgered bar applies.
-- **Publishing is execution of the existing deploy-shape requirement** — the Epic-5 distroless + jlink image (same JAR inside), not a new requirement or image variant. Repo/tag strategy and the Docker Hub namespace/token decision are owner inputs to the publish story. Compose files and runbooks switch from local-build to pull once publishing works.
-- **The no-CI reversal is already ratified:** the perf-harness story's frozen "No CI scaffolding" Never-item is superseded by a dated amendment — the pipeline is owned by this epic; later stories must not edit it as a side effect, only via visible, task-required edits.
+- **Publishing is execution of the existing deploy-shape requirement** — the Epic-5 distroless image, not a new image variant. Docker Hub repo/tag strategy is an owner input to this story.
+- **The no-CI reversal is already ratified:** Story 7.1's frozen "No CI scaffolding" Never-item is superseded by a dated amendment — the pipeline is owned by this epic; later stories must not edit it as a side effect, only via visible, task-required edits.
+- **What already landed (don't re-plan):** 8.1's two latency histograms under the unchanged loopback exposition (grids and scrape arithmetic of record live in the PRD addendum note A8 and the runbook rows); 8.2's sandbox Prometheus (the compose service joins the proxy's network namespace to scrape loopback — AD-19 untouched; both 9090/9091 targets configured; no healthcheck/`depends_on` by design).
+- **No product metrics code in this story:** it touches `.github/workflows/`, the Docker Hub publish path, `sandbox/` (pull-based switch), and `docs/`. `proxy/observability/` is not expected to change; if a finding forces it, the audit-first closed-or-ledgered bar applies.
+- **Cardinality rules bind any metrics touch:** no new label dimensions; message content never emitted. (Listed for completeness — this story is not expected to touch metrics.)
 
 ## Cross-Story Dependencies
 
-- **Depends on Epic 5** (the distroless image — currently local-build only until publishing lands) **and Epic 6** (the docker-compose sandbox rig and the operator docs surface this epic updates).
-- **Epic 9 depends on this epic:** the whole-codebase human read reviews Epic 8's output. Epic 7 runs after both (priority deferral); its harness story leaves the Epic-8 CI pipeline untouched except via explicit, task-required edits.
-- Within the epic: 8.1 (done) preceded all histogram work by construction; the sandbox Prometheus consumes the histogram-bearing surface 8.1 shipped; the docs updates (publish path, scrape runbook rows, pull-based compose) naturally follow the CI/publish story landing.
+- **Depends on Epic 5** (the distroless image — local-build only until this story lands) **and Epic 6** (the sandbox rig and operator-docs surface the pull-based switch updates).
+- **Epic 9 depends on this epic:** the whole-codebase human read reviews this story's `.github/` output as part of Epic 8's corpus. Epic 7 runs after both and leaves the pipeline untouched except via explicit, task-required edits.
+- **Ledger defers pointing at this story:** the sandbox compose-config CI check and the `_max` fan-out test (both from the 8.2 review round), plus the two parked 5.2 decisions named above (image-task wiring, digest pinning). Other open 8.2 pends (the 0.183 s identity, the forward-cell formula, the two-instance UP check) are rig-run settlements, not this story's work.
