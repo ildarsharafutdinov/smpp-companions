@@ -1,8 +1,9 @@
 # The Kannel sandbox rig (Story 6.3) — ported from the proven pre-project playground
 # (/home/ildar/Documents/smpp-sandbox). Deltas from the source are exactly: the explicit
-# project name below, the build path (self-contained sandbox/ layout), the front SMSC
-# re-point in conf/front-kannel.conf (host.docker.internal:2775 — the host-run proxy), and
-# the MO-routing smsbox-route group in conf/smsc-kannel.conf (T3 — without it the bearerbox
+# project name below, the pulled Kannel image (Story 8.3 T2 — ildarshara/kannel:1.5.0 from
+# Docker Hub; was the self-contained ./kannel local build), the front SMSC re-point in
+# conf/front-kannel.conf (host.docker.internal:2775 — the host-run proxy), and the
+# MO-routing smsbox-route group in conf/smsc-kannel.conf (T3 — without it the bearerbox
 # queues every injected MO with `smsbox_list empty!`; README §6.2/§10).
 # Every inter-service hop hairpins through the host (host.docker.internal + the published
 # ports) — that is the ported pattern that lets the host-run proxy sit in the chain.
@@ -32,7 +33,7 @@ services:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
 
   front-bearer-box:
-    build: ./kannel
+    image: ildarshara/kannel:1.5.0
     depends_on:
       pg:
         condition: service_healthy
@@ -51,7 +52,7 @@ services:
     command: [ /usr/local/kannel/sbin/bearerbox, /etc/kannel/front-kannel.conf ]
 
   front-sql-box:
-    build: ./kannel
+    image: ildarshara/kannel:1.5.0
     depends_on:
       front-bearer-box:
         condition: service_healthy
@@ -64,7 +65,7 @@ services:
     command: [ /usr/local/kannel/sbin/sqlbox, /etc/kannel/front-sqlbox.conf ]
 
   front-sms-box:
-    build: ./kannel
+    image: ildarshara/kannel:1.5.0
     depends_on:
       - front-sql-box
     ports:
@@ -76,7 +77,7 @@ services:
     command: [ /usr/local/kannel/sbin/smsbox, /etc/kannel/front-kannel.conf ]
 
   smsc-bearer-box:
-    build: ./kannel
+    image: ildarshara/kannel:1.5.0
     depends_on:
       pg:
         condition: service_healthy
@@ -96,7 +97,7 @@ services:
     command: [ /usr/local/kannel/sbin/bearerbox, /etc/kannel/smsc-kannel.conf ]
 
   smsc-opensmpp-box:
-    build: ./kannel
+    image: ildarshara/kannel:1.5.0
     depends_on:
       smsc-bearer-box:
         condition: service_healthy
@@ -109,7 +110,7 @@ services:
     command: [ /usr/local/kannel/sbin/opensmppbox, /etc/kannel/smsc-opensmppbox.conf ]
 
   smsc-fake-smsc:
-    build: ./kannel
+    image: ildarshara/kannel:1.5.0
     depends_on:
       smsc-bearer-box:
         condition: service_healthy
