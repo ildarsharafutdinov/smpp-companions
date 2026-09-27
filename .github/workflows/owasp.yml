@@ -1,0 +1,89 @@
+# OWASP dependency-check lane (Story 8.3 T4). Completes Story 1.1's two-lane CVE design: the
+# deterministic SEC-099 floor gate wired into `check` is the load-bearing control on every
+# build/PR; this NVD sweep (SEC-091) was always meant to be the defense-in-depth CI lane and is
+# deliberately NOT wired into build/check — CI invokes :proxy:dependencyCheckAnalyze by name
+# (proxy/build.gradle.kts). Own cadence, deliberately not bolted onto ci.yml (owner decision Q6):
+# scheduled + manual dispatch, never on pushes/PRs.
+name: owasp
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC. The cold NVD sync alone runs 9-20 min (Story 1.1's measurement)
+    # and SEC-099 already gates every build deterministically — a weekly defense-in-depth sweep
+    # is the proportionate cadence; workflow_dispatch covers an on-demand run when a fresh CVE
+    # lands. Scheduled runs execute this file from the default branch only.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owasp:
+    runs-on: ubuntu-latest
+    # Cold NVD sync (9-20 min even with a key) + dependency analysis; the ceiling only guards
+    # against a wedged runner or a stuck NVD conversation.
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+
+      # DEPLOY-014 (same as ci.yml): JDK 25 is a PRECONDITION supplied by the environment, never
+      # auto-provisioned by the build — setup-java puts Temurin 25 on the runner and the
+      # major-25 toolchain pin resolves to it via JAVA_HOME (no foojay resolver in the build).
+      - name: Set up Temurin JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # Fail closed on the secret BEFORE the sweep (AD-18 spirit — credentials live only in the
+      # GitHub Actions secret store). The build maps an empty NVD_API_KEY to "no key" and would
+      # silently fall back to the throttled unauthenticated NVD API — exactly the quiet
+      # degradation this posture forbids; a red run names the missing prerequisite instead.
+      - name: Fail closed on a missing NVD key
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [[ -z "$NVD_API_KEY" ]]; then
+            echo "::error::NVD_API_KEY secret is not configured — the NVD sweep cannot run (owner prerequisite)."
+            exit 1
+          fi
+
+      # The sweep itself. --no-parallel per the lane's contract (the NVD updater must not race
+      # itself across tasks); the key is read by the build via System.getenv
+      # (dependencyCheck.nvd.apiKey). Goes red on any finding at CVSS >= 5.0 (failBuildOnCVSS —
+      # intended to trip CVE-2025-53864's 5.8 if NVD scores it) or on any analyzer error
+      # (failOnError); there is nothing to publish — the red run IS the signal.
+      - name: Run the dependency-check sweep
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./gradlew :proxy:dependencyCheckAnalyze --no-parallel
+
+      # Post-mortem (the 2026-09-27 ci.yml lesson — the runner is ephemeral, so evidence that
+      # lives only there is evidence lost): a red sweep names the finding only inside the report
+      # files, so print the CVE rows from the JSON report, best-effort.
+      - name: Dump the findings summary
+        if: failure()
+        run: |
+          report=proxy/build/reports/dependency-check-report.json
+          if [[ -f "$report" ]]; then
+            echo '===== findings above the gate (file, CVE, baseScore, severity) ====='
+            jq -r '.dependencies[]
+                    | select(.vulnerabilities != null and (.vulnerabilities | length) > 0)
+                    | . as $d | .vulnerabilities[]
+                    | [$d.fileName, .name, (.cvssv3.baseScore // .cvssv2.baseScore // "unscored"), .severity]
+                    | @tsv' "$report" || true
+          else
+            echo 'no JSON report produced — the sweep failed before analysis (NVD sync or network)'
+          fi
+
+      # Keep the full report set (HTML/JSON/SARIF/JUNIT land in proxy/build/reports/) as a run
+      # artifact: warn, not fail, when nothing was produced (the sweep may have died pre-report).
+      - name: Keep the report artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: proxy/build/reports/
+          if-no-files-found: warn
