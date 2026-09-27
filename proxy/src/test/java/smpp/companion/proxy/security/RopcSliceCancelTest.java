@@ -77,8 +77,16 @@ class RopcSliceCancelTest {
     /** Slow-IdP stall: comfortably longer than a localhost connection teardown, so the call is in-flight at cancel time. */
     private static final Duration SLOW_IDP_DELAY = Duration.ofMillis(300);
 
-    /** IdP response size: exceeds the socket send buffer so the write blocks until the client drains it (or tears down). */
-    private static final int IDP_BODY_SIZE = 1 << 20;   // 1 MiB
+    /**
+     * IdP response size: must BLOCK the write, not merely be large — 16 MiB exceeds any autotuned
+     * TCP send buffer (tcp_wmem caps at 4 MiB) with a non-draining peer, so the single write call
+     * stalls mid-copy and the cancelled client's post-close RST errors it into the corroboration's
+     * IOException. The former 1 MiB fit an autotuned buffer on a GHA runner (2026-09-27, 4th run):
+     * the write completed without ever blocking — no IOException, {@code clientAborted} stayed
+     * false, and the corroboration flaked 1-in-4 while the primary (future-cancellation) assertion
+     * held every time.
+     */
+    private static final int IDP_BODY_SIZE = 1 << 24;   // 16 MiB
 
     private static final ScopedValue<RequestContext> CTX = ScopedValue.newInstance();
 
