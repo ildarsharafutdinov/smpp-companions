@@ -114,7 +114,7 @@ jobs:
               done
           echo '===== docker ps -a ====='
           docker ps -a --format '{{.ID}}  {{.Image}}  {{.Status}}  {{.Ports}}  {{.Names}}' || true
-          for c in $(docker ps -aq --filter ancestor=quay.io/keycloak/keycloak:26.7.0) || true; do
+          for c in $(docker ps -aq --filter ancestor=quay.io/keycloak/keycloak:26.7.0); do
             echo "===== docker logs --tail 300 $c ====="
             docker logs --tail 300 "$c" || true
           done

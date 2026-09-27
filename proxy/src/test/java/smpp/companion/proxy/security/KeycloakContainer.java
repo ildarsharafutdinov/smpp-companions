@@ -55,12 +55,16 @@ final class KeycloakContainer extends GenericContainer<KeycloakContainer> {
 
         // Mounted read-once-at-start files. forClasspathResource takes a LEADING-SLASH-FREE classpath path
         // (unlike KeycloakFixture's getResourceAsStream("/keycloak/…") leading-slash convention). Copy (not
-        // bind) is fine for a throwaway start-time-read container; 0400 on the key mirrors the compose :ro perms.
+        // bind) is fine for a throwaway start-time-read container. The key is 0444, NOT 0400: the tar copy
+        // lands with the EXTRACTING user's uid (host-dependent — 1000 on the dev box, 1001 on GitHub runners)
+        // while Keycloak runs as the image's uid 1000, so owner-only mode denied the runner's read
+        // (AccessDeniedException → exit 1, live CI evidence 2026-09-27). A throwaway fixture key in an
+        // ephemeral container — world-readable is the uid-agnostic shape.
         withCopyFileToContainer(
                 MountableFile.forClasspathResource("keycloak/certs/server.pem"),
                 "/opt/keycloak/conf/server.pem");
         withCopyFileToContainer(
-                MountableFile.forClasspathResource("keycloak/certs/server-key.pem", 0400),
+                MountableFile.forClasspathResource("keycloak/certs/server-key.pem", 0444),
                 "/opt/keycloak/conf/server-key.pem");
         withCopyFileToContainer(
                 MountableFile.forClasspathResource("keycloak/certs/keycloak-truststore.pem"),
@@ -73,7 +77,10 @@ final class KeycloakContainer extends GenericContainer<KeycloakContainer> {
         // Fixed host bind (parity with the original compose "8443:8443") → the slice uses KeycloakFixture's
         // :8443 coordinates directly. setPortBindings takes the docker-compose-style "hostPort:containerPort".
         setPortBindings(List.of(HTTPS_PORT + ":" + HTTPS_PORT));
-        waitingFor(new DiscoveryWaitStrategy().withStartupTimeout(Duration.ofMinutes(4)));
+        // 90s deadline: observed cold boot (pull excluded) is ~30s end-to-end (bootstrap ~11s + realm
+        // import); the former 4min only burned CI time polling an already-crashed container, while the
+        // strategy default 60s historically flaked on cold start — 90s is the 3× headroom between them.
+        waitingFor(new DiscoveryWaitStrategy().withStartupTimeout(Duration.ofSeconds(90)));
     }
 
     /**

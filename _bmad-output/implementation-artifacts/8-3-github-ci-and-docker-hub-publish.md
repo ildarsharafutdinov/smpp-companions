@@ -32,7 +32,7 @@ context:
 - The pull-only bar is verified live during the story: the owner provisions the secrets and triggers one real publish; then the rig and a runbook run pull-only, evidence in Implementation Notes.
 
 **Never:**
-- No product, test, or build code: `proxy/`, `codec/`, `buildSrc/`, `*.gradle.kts` stay byte-untouched (the `_max` fan-out test stays a standalone commit per Q7).
+- No product, test, or build code: `proxy/`, `codec/`, `buildSrc/`, `*.gradle.kts` stay byte-untouched (the `_max` fan-out test stays a standalone commit per Q7). (Exception — owner-sanctioned CI hotfix, 2026-09-27: the two AD-12 Keycloak fixture call sites, key-copy mode 0400→0444 and the 4-minute wait deadline→90s; see Spec Change Log.)
 - No metrics bind/port/posture change (AD-19 byte-intact); no new product meters.
 - No Epic-7 harness work; no JMH in the test gate; no closing of other ledgered items.
 - No auto-reformat of untouched files; no new RU twins for EN-only docs (`deployment-guide.md`, `runbooks.md`).
@@ -85,11 +85,13 @@ context:
 ## Implementation Notes
 
 - **2026-09-27 — first live `ci` run (owner push, untagged main):** `:proxy:test` red — 445/447 green, both AD-12 Keycloak live suites (`RopcBindCredentialVerifierLiveTest`, `RopcSliceLiveTest`) timed out their 4-minute discovery windows back-to-back on the runner. Not reproducible locally (both suites green the same day, ~48 s incl. boots); `proxy/` byte-untouched, and the runner's Docker+Testcontainers machinery demonstrably worked (the distroless `DockerRig` suites were in the green 445). Fail-closed held as designed: the build died at the test gate, publish steps never reached. The naming evidence (the `last status / last error` tail) lives only in the ephemeral runner's XML report — ci.yml now carries an `if: failure()` post-mortem step dumping failing-suite XML + surviving container state; the next red run self-diagnoses. If the cause is Keycloak-boot-slowness on cold runners, the fix (longer fixture startup timeout) is in frozen test code — owner renegotiation required, not a silent edit.
+- **2026-09-27 — verdict + fix (second run's self-diagnosis):** the dump step captured the failed containers' logs inside the XML: KC boots cleanly (pull 5 s, bootstrap 10.8 s, realm imported) then dies — `Failed to load 'https-*' material: AccessDeniedException /opt/keycloak/conf/server-key.pem`. Root cause proven locally with a docker-cp probe: archive copies preserve the EXTRACTING user's uid — the dev box runs tests as uid 1000 == Keycloak's image uid (green by coincidence), GitHub runners run as uid 1001 (the 0400 key lands unreadable → exit 1 → `ConnectException` fills the wait window). Image content ruled out (re-pull digest-identical). Owner-sanctioned fix (renegotiation above): 0444 + 90 s deadline in both fixtures. Also fixed: the dump step's `for … in $(…) || true` bash syntax error (step did its job but exited 2).
 
 ## Spec Change Log
 
 - **2026-09-27 — owner renegotiation, tag semantics (Q2/Q4):** proxy `latest` moves only on `vX.Y.Z` git-tag pushes — untagged main pushes and dispatches publish `sha-<short>` alone. Kannel publishes now carry `1.5.0` + `sha-<short>` + `latest` (was: `1.5.0` alone, mutated in place); compose keeps the exact-version pin. I/O matrix rows split, kannel/ci workflow tasks, an AC, and the design note updated to match.
 - **2026-09-27 — owner decision (docs tag + first release):** the proxy docs surfaces reference the image at `latest`; the live round cuts the first git tag `v0.1.0` to create it (after an untagged first publish proves the sha-only path). The image-references constraint, runbook matrix row, docs/live-round tasks, and the runbook AC updated to match.
+- **2026-09-27 — owner renegotiation, CI hotfix exception to the Never-clause:** first live `ci` run proved the AD-12 Keycloak fixtures' `0400` key-copy mode assumes the extracting uid equals Keycloak's image uid 1000 — true on the dev box (uid 1000) by coincidence, false on GitHub runners (uid 1001): `AccessDeniedException` → container exit 1 → both live suites `initializationError`. Sanctioned minimal edit, test code otherwise untouched: key-copy mode 0400→0444 (uid-agnostic read; throwaway fixture cert in an ephemeral container) and the discovery wait deadline 4 min→90 s (observed cold boot ~30 s end-to-end; the long window only burned CI time polling a crashed container) — both in `KeycloakContainer` and `TrustOnlyKeycloakContainer`. The Never-clause bullet carries the exception parenthetical.
 
 ## Review Triage Log
 

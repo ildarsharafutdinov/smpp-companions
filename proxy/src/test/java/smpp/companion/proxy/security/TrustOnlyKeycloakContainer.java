@@ -89,12 +89,15 @@ final class TrustOnlyKeycloakContainer extends GenericContainer<TrustOnlyKeycloa
         withEnv("KC_TRUSTSTORE_PATHS", "/opt/keycloak/conf/keycloak-truststore.pem");
 
         // Same mounts as the 2.1 fixture: copy (not bind) is fine for a throwaway start-time-read
-        // container; 0400 on the key mirrors the original :ro perms.
+        // container. The key is 0444, NOT 0400: the tar copy lands with the EXTRACTING user's uid
+        // (host-dependent — 1000 on the dev box, 1001 on GitHub runners) while Keycloak runs as the
+        // image's uid 1000, so owner-only mode denied the runner's read (AccessDeniedException →
+        // exit 1, live CI evidence 2026-09-27) — see the 2.1 fixture's note for the full story.
         withCopyFileToContainer(
                 MountableFile.forClasspathResource("keycloak/certs/server.pem"),
                 "/opt/keycloak/conf/server.pem");
         withCopyFileToContainer(
-                MountableFile.forClasspathResource("keycloak/certs/server-key.pem", 0400),
+                MountableFile.forClasspathResource("keycloak/certs/server-key.pem", 0444),
                 "/opt/keycloak/conf/server-key.pem");
         withCopyFileToContainer(
                 MountableFile.forClasspathResource("keycloak/certs/keycloak-truststore.pem"),
@@ -105,7 +108,9 @@ final class TrustOnlyKeycloakContainer extends GenericContainer<TrustOnlyKeycloa
 
         withExposedPorts(CONTAINER_HTTPS_PORT);
         setPortBindings(java.util.List.of(HOST_PORT + ":" + CONTAINER_HTTPS_PORT));
-        waitingFor(new TrustOnlyDiscoveryWaitStrategy().withStartupTimeout(Duration.ofMinutes(4)));
+        // 90s deadline, matching the 2.1 fixture: ~30s observed cold boot, 4min only burned CI time
+        // polling an already-crashed container, 60s (the strategy default) flaked on cold start.
+        waitingFor(new TrustOnlyDiscoveryWaitStrategy().withStartupTimeout(Duration.ofSeconds(90)));
     }
 
     /**
