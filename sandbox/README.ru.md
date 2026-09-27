@@ -21,8 +21,9 @@
 > `_bmad-output/implementation-artifacts/6-3-kannel-sandbox.md`.
 
 Стенд — это инструмент разработчика, а не поставляемый продукт: он не меняет ни одной строки
-main-кода, инертен к Gradle (`./gradlew clean build` не затрагивается), не подключается к CI и не
-публикует показателей производительности (измерения в рамках Epic 7). T6 (2026-09-19, добавлено
+main-кода, инертен к Gradle (`./gradlew clean build` не затрагивается), до лент Story 8.3 не
+подключался к CI (см. ниже) и не публикует показателей производительности (измерения в рамках
+Epic 7). T6 (2026-09-19, добавлено
 владельцем): документация в операторском ключе — три руководства переструктурированы (быстрый
 старт → проверки → устранение проблем → подробности; все команды и живые наблюдения сохранены
 дословно, без фактических/поведенческих изменений), добавлен README проекта в корне (EN + RU) со
@@ -30,6 +31,10 @@ main-кода, инертен к Gradle (`./gradlew clean build` не затра
 начать») и вместе со всей областью прогнана по терминам владельца (вариант использования =
 роль + режим; соединение для проводных взаимодействий; сопряжение для взаимодействий в
 приложении/памяти); RU-переводы согласованы.
+Story 8.3 (2026-09-27): образы стенда переехали на Docker Hub — подъём идёт только через pull
+(§4 тянет `ildarshara/kannel:1.5.0`), docker-поверхности запускают опубликованный образ прокси
+`ildarshara/smpp-companions-proxy:latest` (§5.5/§5.6), а CI собирает и публикует оба образа
+(§10, дельта 9).
 
 ## С чего начать — какая страница мне нужна?
 
@@ -132,8 +137,8 @@ Docker Desktop иная).
 
 | Файл | Что это |
 |------|---------|
-| `compose.yml` | Цепочка из 9 сервисов: портированные 7 — `pg`, фронтовая сторона (`front-bearer-box`, `front-sql-box`, `front-sms-box`), сторона SMSC (`smsc-bearer-box`, `smsc-opensmpp-box`, `smsc-fake-smsc`) — плюс `keycloak` (T2) и `prometheus` (8.2: включён всегда, `network_mode: host`, веб-интерфейс только на loopback `127.0.0.1:9095`, TSDB на именованном томе `prometheus-tsdb`); healthcheck на `pg` + обоих bearerbox + TCP-проба `keycloak` (у prometheus его нет — фикстура, §4), `smsc-fake-smsc` подключён к tty для инъекций `deliver_sm`. |
-| `kannel/Dockerfile` | Сборка Kannel 1.5.0 из зафиксированного исходника, портирована байт-в-байт из предпроектного окружения (gateway-1.5.0.tar.gz, `--with-pgsql`, `test/fakesmsc`, аддоны opensmppbox + sqlbox; UBI10 builder / UBI10-minimal runtime, включая quirk с симлинками automake-1.11). Без дрейфа версий, без смены дистрибутива. |
+| `compose.yml` | Цепочка из 9 сервисов: портированные 7 — `pg`, фронтовая сторона (`front-bearer-box`, `front-sql-box`, `front-sms-box`), сторона SMSC (`smsc-bearer-box`, `smsc-opensmpp-box`, `smsc-fake-smsc`), каждый kannel-бокс на pull-образе `ildarshara/kannel:1.5.0` (8.3 — один pull на шесть боксов) — плюс `keycloak` (T2) и `prometheus` (8.2: включён всегда, `network_mode: host`, веб-интерфейс только на loopback `127.0.0.1:9095`, TSDB на именованном томе `prometheus-tsdb`); healthcheck на `pg` + обоих bearerbox + TCP-проба `keycloak` (у prometheus его нет — фикстура, §4), `smsc-fake-smsc` подключён к tty для инъекций `deliver_sm`. |
+| `kannel/Dockerfile` | Сборка Kannel 1.5.0 из зафиксированного исходника, портирована байт-в-байт из предпроектного окружения (gateway-1.5.0.tar.gz, `--with-pgsql`, `test/fakesmsc`, аддоны opensmppbox + sqlbox; UBI10 builder / UBI10-minimal runtime, включая quirk с симлинками automake-1.11). Без дрейфа версий, без смены дистрибутива. С Story 8.3 именно этот контекст собирает и публикует workflow `kannel-image` в CI как `ildarshara/kannel:1.5.0` — хосты делают pull этого образа; исходник остаётся для происхождения и однострочной пересборки из §4. |
 | `conf/front-kannel.conf` | Фронтовый bearerbox + smsbox: SMPP-**transceiver** `group = smsc` (`usr1`/`pwd1`, `interface-version = 34`), звонящий прокси на `host.docker.internal:2775`, и HTTP-пользователь `sendsms` (`user`/`password`). |
 | `conf/front-sqlbox.conf` | Фронтовый sqlbox (плечо маршрутизации smsbox → sqlbox → bearerbox). |
 | `conf/smsc-kannel.conf` | Bearerbox стороны SMSC: admin 14000, fake-SMSC `FAKE1` на 10004, pgsql-DLR (`smsc_bearer_dlr`) и группа `smsbox-route` (MO-маршрутизационная дельта T3, §10 — маршрутизирует MO от FAKE1 на соединение opensmppbox, без которой сценарий инъекции §6.2 не работает). |
@@ -144,7 +149,7 @@ Docker Desktop иная).
 | `keycloak/realm-smpp-companions.json` | Realm-экспорт, который сервис `keycloak` импортирует при старте (T2): зеркалирует форму realm'а тестового `KeycloakFixture` — realm `smpp-companions`, конфиденциальный клиент `smpp-client-confidential` с ВКЛЮЧЁННЫМ Direct Access Grants (per-client, выключен по умолчанию с KC 26.2), ROPC-пользователи (§5.1). Намеренно НЕ содержит секрета клиента: Keycloak генерирует его при импорте — ЕДИНСТВЕННЫЙ секрет AD-18 в стенде, забираемый в `secrets/` (§5.1). |
 | `keycloak/certs/` | TLS-материал Keycloak, скопированный байт-в-байт из зафиксированных тестовых фикстур (`proxy/src/test/resources/keycloak/certs/`): `server.pem`/`server-key.pem` (SAN `localhost`, `keycloak`, `127.0.0.1` — запущенный на хосте прокси соединяется с `localhost:8443`, опциональный docker-вариант — с `keycloak:8443`), `truststore.p12` (пароль `smpp-test` — trust-якорь прокси для IdP), `ca.pem` (для проверки `curl --cacert` с хоста). Фикстурный тестовый PKI, а НЕ продакшн-секреты — тот же класс материала, который коммитит тестовый уровень; единственный настоящий секрет-по-пути стенда — секрет клиента. |
 | `certs/` | TLS-материал SMPP-плеч для docker-руководств T5 (§5.6), байт-в-байт копии тех же зафиксированных тестовых фикстур: `smpp-reverse-server.pem`/`-key.pem` (SAN `localhost`/`127.0.0.1` — сертификат слушателя составного reverse; forward соединяется к `localhost` с включённой проверкой имени хоста, AD-20), `smpp-forward-client.pem`/`-key.pem` (персональный mTLS-сертификат клиента forward), `smpp-truststore.p12` (пароль `smpp-test`, якорит `CN=smpp-test-ca` — и сторона соединения, и сторона REQUIRE). Тот же фикстурный класс, что `keycloak/certs/`; держите файлы читаемыми всеми (`0644`), чтобы UID 65532 образа читал монтирования. |
-| `runbooks/` | Три руководства T5 по docker-упакованным вариантам (§5.6), EN нормативен + RU-переводы: [`reverse-mode-b.md`](runbooks/reverse-mode-b.md), [`forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md), [`forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) — по одному на вариант развёртывания; каждый инстанс прокси — distroless-образ Epic-5 на `network_mode: host` со собранным на хосте jar'ем, bind-mounted поверх копии образа. |
+| `runbooks/` | Три руководства T5 по docker-упакованным вариантам (§5.6), EN нормативен + RU-переводы: [`reverse-mode-b.md`](runbooks/reverse-mode-b.md), [`forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md), [`forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) — по одному на вариант развёртывания; каждый инстанс прокси — опубликованный образ `ildarshara/smpp-companions-proxy:latest` на `network_mode: host`; bind-mount хостового jar'а — опциональный цикл разработки. |
 | `prometheus/prometheus.yml` | Конфигурация сбора метрик стенда (8.2), монтируется сервисом `prometheus` в режиме read-only: job `smpp-proxy`, `metrics_path: /metrics` и две всегда прописанные цели на loopback — `127.0.0.1:9090` (каждый ПЕРВЫЙ инстанс прокси — jar из §5.2 на хосте, единственный инстанс reverse или составной forward) и `127.0.0.1:9091` (второй инстанс двухинстансных руководств — DOWN, пока он не запущен); интервал сбора 5 с / таймаут 3 с. Литералы loopback работают потому, что сервис разделяет с прокси namespace хоста; на одноинстансном стенде цель 9091 просто показывает DOWN (принято, §5.3). |
 | `secrets/` | Создаётся оператором (gitignored, AD-18): `oidc-client-secret` — сгенерированный секрет клиента Keycloak, записывается бутстрапом §5.1. Сюда не попадает ничего коммитимого. |
 
@@ -192,7 +197,7 @@ opensmppbox — и у прокси не останется SMPP-пира: сце
 | 14001 | `smsc-bearer-box` | Порт бокса стороны SMSC (opensmppbox соединяется с ним через хост) |
 | 14567 | `smsc-opensmpp-box` | РЕАЛЬНЫЙ SMSC-listener — цель egress прокси |
 | 8443 | `keycloak` | HTTPS-порт realm'а ROPC-адъюдикатора (запущенный на хосте прокси соединяется с ним как `localhost:8443`; фиксированный бинд держит issuer детерминированным, зеркалируя координаты тестовой фикстуры) |
-| 2775 | — | Должен оставаться свободным: SMPP-ingress прокси (стандартный порт SMPP) — либо запущенный на хосте прокси из §5.2, либо слушатель docker-варианта использования из §5.6 (одинокий reverse или FORWARD составных пар — фронтовый conf в обоих случаях один и тот же `host.docker.internal:2775`) |
+| 2775 | — | Должен оставаться свободным: SMPP-ingress прокси (стандартный порт SMPP) — либо запущенный на хосте прокси из §5.2, либо слушатель docker-варианта использования из §5.6 (одноинстансный reverse или FORWARD составных пар — фронтовый conf в обоих случаях один и тот же `host.docker.internal:2775`) |
 | 2776 | — (docker-варианты использования, двухинстансные) | Должен оставаться свободным для руководств mode A/C из §5.6: слушатель reverse двухинстансных вариантов использования (reverse уходит с 2775, чтобы его занял forward — план портов в каждом руководстве) |
 | 9090 | — (прокси) | Read-only `/metrics` прокси, биндится на литерал `127.0.0.1` внутри собственного процесса прокси — занят только пока прокси работает (точка наблюдения §5.3; compose ничего здесь не публикует — Prometheus стенда достигает его разделением namespace, никогда публикацией). Прокси из §5.2 на хосте и ПЕРВЫЙ инстанс каждого варианта §5.6 используют его |
 | 9091 | — (docker-варианты использования, второй инстанс) | `/metrics` второго инстанса §5.6 — второй процесс прокси в host network не может делить loopback-bind 9090 с первым, поэтому его руководство сдвигает порт (план портов: задокументировано, а не обнаружено на месте); всегда прописан второй целью Prometheus стенда — DOWN, пока этот инстанс не запущен (§5.3) |
@@ -208,10 +213,17 @@ startup-timeout и затем валит свой тест-кейс — гром
 Из `sandbox/`:
 
 ```bash
-docker compose up -d --build   # первый запуск компилирует Kannel из зафиксированного исходника —
-                               # запаситесь терпением; последующие попадают в кэш сборки и быстры
+docker compose up -d           # каждый сервис делает pull готового образа — ничего не компилируется
 docker compose ps              # дождитесь (healthy) у pg, front-bearer-box, smsc-bearer-box
 ```
+
+Шесть kannel-боксов работают на опубликованном `ildarshara/kannel:1.5.0` — CI собирает его из
+`sandbox/kannel/` (workflow `kannel-image`, по dispatch или при изменениях `sandbox/kannel/**`) и
+публикует на Docker Hub; стенд фиксирует точный тег версии — та же идиома, что закреплённые
+`keycloak:26.7.0` и `prometheus:v3.14.0`. Запасной сборки нет — неудача pull это громкая ошибка
+compose, называющая образ. Единственная строка локальной пересборки — на случай правки исходника
+Kannel: `docker build -t ildarshara/kannel:1.5.0 sandbox/kannel` (локальный тег затем затеняет
+опубликованный на этом хосте).
 
 Готовность по сервисам:
 
@@ -461,18 +473,17 @@ SHUTDOWN_DRAIN (OBS-020: …)` (Kannel никогда не полузакрыв�
 ### 5.5 Опциональный вариант — прокси в compose (docker)
 
 Ратифицированное умолчание — запуск на хосте выше. Для однокомандного all-compose запуска
-distroless-образ Epic-5 может занять место прокси в той же цепочке (форму, которую E2E Story 6.2
-уже доказал end-to-end — allow + auth-DENY + drain; этот вариант документирован, а не
-перепроверен здесь, и отличия проводки — ровно эти):
+опубликованный distroless-образ может занять место прокси в той же цепочке (форму Epic-5, которую
+E2E Story 6.2 уже доказал end-to-end — allow + auth-DENY + drain; этот вариант документирован, а
+не перепроверен здесь, и отличия проводки — ровно эти):
 
 ```bash
-./gradlew :proxy:dockerImage        # собирает и тегирует smpp-proxy:local (те же байты jar'а)
 docker run -d --name smpp-proxy \
       --network smpp-bmad-sandbox_default \
       -p 2775:2775 \
       -v "$(pwd)/sandbox/secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro" \
       -v "$(pwd)/sandbox/keycloak/certs/truststore.p12:/run/secrets/idp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.reverse.mode-b.smsc.host=smsc-opensmpp-box \
       --companion.reverse.mode-b.smsc.port=14567 \
@@ -485,6 +496,13 @@ docker run -d --name smpp-proxy \
       --companion.reverse.mode-b.oidc.timeout=4s \
       --companion.reverse.mode-b.oidc.max-in-flight=64
 ```
+
+Образ — опубликованный: `ildarshara/smpp-companions-proxy:latest`, его собирает и публикует CI;
+`docker run` делает pull, если на хосте его нет (`latest` двигается только при push git-тегов
+`vX.Y.Z`; каждая сборка дополнительно получает неизменяемый тег `sha-<short>`). Редкая локальная
+пересборка образа — одна строка: `./gradlew :proxy:dockerImage`, затем `docker tag` с
+произведённого локального тега на `ildarshara/smpp-companions-proxy:latest` — pull возобновится
+после удаления локального тега.
 
 Отличия от рецепта на хосте, каждое несущее нагрузку: контейнер присоединяется к compose-сети
 стенда (явное имя проекта → `smpp-bmad-sandbox_default`), поэтому резолвит `keycloak` и
@@ -504,36 +522,41 @@ namespace хоста, в котором работает сервис `prometheu
 
 **T5 повысил docker-упакованный прокси до полноценных руководств (владелец, 2026-09-17):** три
 руководства по вариантам в `runbooks/` (§5.6 ниже) — теперь каноническая docker-документация:
-по одному на вариант развёртывания, каждый контейнер прокси — `network_mode: host` со собранным
-на хосте jar'ем, bind-mounted поверх копии образа. Этот §5.5 остаётся тем, чем был: вариантом на
+по одному на вариант развёртывания, каждый контейнер прокси — опубликованный образ на
+`network_mode: host`; bind-mount хостового jar'а — опциональный цикл разработки. Этот §5.5
+остаётся тем, чем был: вариантом на
 BRIDGE-СЕТИ (compose-сеть, соединение по именам сервисов, `-p 2775:2775`) — снимок однокомандного
 all-compose запуска; форма host-network из руководств — та, за которой нужно идти.
 
 ### 5.6 Руководства по docker-упакованным вариантам (T5)
 
-По одному руководству на вариант развёртывания; все три делят ОДНУ docker-форму: distroless-образ
-Epic-5 (`./gradlew :proxy:dockerImage` → `smpp-proxy:local`), контейнер на **`network_mode: host`**
-(прокси встаёт в сетевой namespace хоста — его соединения с `127.0.0.1` достигают compose-опубликованных
-14567/8443, его слушатель 2775 — это 2775 самого хоста, а `/metrics` читается с loopback хоста) и
-**собранный на хосте jar, bind-mounted поверх `/opt/proxy.jar` образа** — история отладки, которую
-docker-форма сохраняет: пересборка `./gradlew :proxy:bootJar` + `docker restart` подменяет jar
-(РАБОТАЮЩИЙ контейнер держит старый inode; перезапуск заново разрешает путь — механика проверена
-вживую, 2026-09-18), пересборка образа в цикле не нужна.
+По одному руководству на вариант развёртывания; все три делят ОДНУ docker-форму: опубликованный
+distroless-образ **`ildarshara/smpp-companions-proxy:latest`** (pull с Docker Hub — его собирает и
+публикует CI) и контейнер на **`network_mode: host`** (прокси встаёт в сетевой namespace хоста —
+его соединения с `127.0.0.1` достигают compose-опубликованных 14567/8443, его слушатель 2775 — это
+2775 самого хоста, а `/metrics` читается с loopback хоста). История отладки сохраняется как
+ОПЦИОНАЛЬНЫЙ цикл разработки: **bind-mount собранного на хосте jar'а поверх `/opt/proxy.jar`
+образа** — каждое руководство помечает это плечо опциональным; с ним пересборка
+`./gradlew :proxy:bootJar` + `docker restart` подменяет jar (РАБОТАЮЩИЙ контейнер держит старый
+inode; перезапуск заново разрешает путь — механика проверена вживую, 2026-09-18), пересборка
+образа в цикле не нужна. Дословное прохождение руководства ничего не собирает: pull
+опубликованного образа и запуск.
 
 | Руководство | Вариант | Наблюдаемое сопряжение |
 |-------------|---------|------------------------|
-| [`runbooks/reverse-mode-b.md`](runbooks/reverse-mode-b.md) (+ [RU](runbooks/reverse-mode-b.ru.md)) | Одиночный reverse, legacy-клиенты напрямую — вариант §5 в docker-форме; без сертификатов, баннер Mode B как контракт | `bind_accept … coupled` на единственном инстансе; `relay_binds_unknown_total` |
+| [`runbooks/reverse-mode-b.md`](runbooks/reverse-mode-b.md) (+ [RU](runbooks/reverse-mode-b.ru.md)) | Одноинстансный reverse, legacy-клиенты напрямую — вариант §5 в docker-форме; без сертификатов, баннер Mode B как контракт | `bind_accept … coupled` на единственном инстансе; `relay_binds_unknown_total` |
 | [`runbooks/forward-reverse-mode-a.md`](runbooks/forward-reverse-mode-a.md) (+ [RU](runbooks/forward-reverse-mode-a.ru.md)) | Два инстанса: forward с plaintext-плечом доверенной сети + соединение one-way TLS; баннер Mode A и его смягчение ACL-isolate вживую (reverse ограничен loopback) | `bind_accept` на ОБОИХ инстансах; маркированный `relay_binds_accepted_total{system_id="usr1"}` у forward |
 | [`runbooks/forward-reverse-mode-c.md`](runbooks/forward-reverse-mode-c.md) (+ [RU](runbooks/forward-reverse-mode-c.ru.md)) | Два инстанса, mTLS-соединение (топология `DockerRig.launchComposedModeCChain` против реальной цепочки Kannel); без баннера — затвор и есть рукопожатие REQUIRE | `bind_accept` на ОБОИХ; проба затвора mTLS (соединение без сертификата никогда не достигает SMPP) |
 
-Общий план портов всех трёх (каждое руководство несёт свою таблицу): одиночный reverse и FORWARD
-составных пар держат **2775** — фронтовый conf (`host.docker.internal:2775`) не меняется между
+Общий план портов всех трёх (каждое руководство несёт свою таблицу): одноинстансный reverse и
+FORWARD составных пар держат **2775** — фронтовый conf (`host.docker.internal:2775`) не меняется между
 вариантами использования, — **reverse составных уходит на 2776**, а `/metrics` второго процесса прокси уходит на
 **9091** (два процесса в host network не делят loopback-bind 9090). Пока работает пара инстансов
 двухинстансного руководства, всегда прописанная цель 9091 Prometheus стенда — UP, и метрики обоих
 инстансов попадают в TSDB (§5.3, пункт 7; семантика конфигурации, первое живое подтверждение
 ожидается). Все три руководства пройдены дословно до `bind_accept coupled` на живом стенде
-(2026-09-18), с отправками; их таблицы отказов
+(2026-09-18, на собранном тогда локальном образе; Story 8.3 переводит их на опубликованный
+`latest`), с отправками; их таблицы отказов
 несут живые плечи (лежачий reverse в составной цепочке; отказы монтирования UID 65532; коллизия
 metrics-порта). На составных вариантах использования вживую прошли сценарий отправки §6.1 (байт-в-байт до
 fakesmsc через оба плеча) и keepalive §6.3 — отправки выше прогнаны через каждый. Сценарий отказа
@@ -796,8 +819,9 @@ summary → couple → WARN дрейна); собственный WARN reverse �
    двумя перепрошитыми портами — другой стенд; перепрошит ровно один.
 2. **Идентичность `compose.yml`:** явное имя проекта `name: smpp-bmad-sandbox` (дефолт compose —
    имя каталога чекаута — пересеклось бы с compose-проектом самого окружения-источника на этой
-   машине) и `build: ./kannel` (самодостаточная раскладка `sandbox/`; сам Dockerfile портирован
-   байт-в-байт).
+   машине). В момент приземления каждая kannel-станца несла свой `build:`-блок над портированным
+   Dockerfile; Story 8.3 (2026-09-27) заменила все шесть на pull `ildarshara/kannel:1.5.0`
+   (дельта 9).
 3. **Сервис Keycloak + рецепт запуска прокси (T2, как записано):** compose-сервис `keycloak`,
    зеркалирующий запуск/realm тестового `KeycloakFixture` (с двумя позами, прокомментированными
    в `compose.yml`), коммитнутый материал `keycloak/` (realm-экспорт + фикстурный PKI,
@@ -836,6 +860,17 @@ summary → couple → WARN дрейна); собственный WARN reverse �
    предполагает Linux-хост (§1). Область фикстуры по аддендуму A7 — не-цель продукта "no metrics
    dashboard / telemetry backend" остаётся в силе; паттерн доступа доказан вживую до приземления
    сервиса (Implementation Notes Story 8.2).
+9. **Опубликованные образы (Story 8.3, как записано 2026-09-27):** шесть kannel-станц тянут с
+   Docker Hub `ildarshara/kannel:1.5.0` — компиляция на каждом хосте ушла в отставку. GitHub
+   Actions (`.github/workflows/` — новое этой истории) собирает и публикует оба образа: образ
+   стенда по dispatch или при изменениях `sandbox/kannel/**` (`1.5.0` + `sha-<short>` +
+   `latest`), образ прокси `ildarshara/smpp-companions-proxy` в темпе кодовых изменений за
+   зелёным полным набором тестов (`latest` — только при push git-тегов `vX.Y.Z`, иначе
+   `sha-<short>`; та же лента прогоняет `docker compose config` как шаг санитарной проверки
+   стенда), плюс запланированный sweep зависимостей `owasp`. Docker-поверхности (§5.5/§5.6,
+   руководства) ссылаются на образ прокси по `latest`. Ни `pull_policy`-фолбэка, ни запасной
+   сборки — локальные пересборки это ровно задокументированные однострочники (§4 для Kannel,
+   §5.5 для образа прокси).
 
 ## 11. Дисциплина находок
 
