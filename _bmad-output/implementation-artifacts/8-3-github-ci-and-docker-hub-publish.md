@@ -17,7 +17,7 @@ context:
 
 **Approach:** GitHub Actions workflows build + test + publish BOTH images to Docker Hub — the proxy's distroless image on the code cadence, the Kannel rig image on owner dispatch — and every consumer surface switches from local build to pull: the six compose stanzas, the README §5.5/§5.6 docker shapes, the three runbook pairs, and the deployment guide. Owner amendment 2026-09-22: the Kannel build is published too; the acceptance bar is runbook-level — any runbook runs green with ready-made, available images, zero local builds.
 
-**Owner decisions (2026-09-22):** Q1 = namespace `ildarshara` — `ildarshara/smpp-companions-proxy` + `ildarshara/kannel` (amended same day from the org-namespace option; no org creation — the two repos under the existing namespace + the secrets are the owner-side prerequisites of the live round). Q2 = proxy tags `latest` + immutable `sha-<short>` + `vX.Y.Z` on git tags. Q3 = push to main publishes, PRs test-only, manual dispatch also publishes. Q4 = Kannel republish by manual dispatch + path-filter on `sandbox/kannel/**`. Q5 = keep the mutable distroless base tag — the parked 5.2 decision closes as resolved-keep-tag, recorded in the deployment guide. Q6 = wire the OWASP lane (scheduled/dispatch, `NVD_API_KEY`). Q7 = the `_max` fan-out test stays a standalone commit — this story touches nothing under `proxy/`.
+**Owner decisions (2026-09-22):** Q1 = namespace `ildarshara` — `ildarshara/smpp-companions-proxy` + `ildarshara/kannel` (amended same day from the org-namespace option; no org creation — the two repos under the existing namespace + the secrets are the owner-side prerequisites of the live round). Q2 = proxy tags `latest` + immutable `sha-<short>` + `vX.Y.Z` on git tags; owner amendment 2026-09-27: `latest` moves ONLY on git-tag (`vX.Y.Z`) pushes — an untagged main push or dispatch publishes `sha-<short>` alone, a tag push publishes `vX.Y.Z` + `latest` + `sha-<short>`; docs surfaces reference `latest`, and the live round cuts the first tag `v0.1.0` to light it up. Q3 = push to main publishes, PRs test-only, manual dispatch also publishes. Q4 = Kannel republish by manual dispatch + path-filter on `sandbox/kannel/**`; owner amendment 2026-09-27: every Kannel publish pushes `1.5.0` + immutable `sha-<short>` + `latest` — `latest` moves on every Kannel publish (its cadence is already owner-gated), compose keeps pinning the exact version tag. Q5 = keep the mutable distroless base tag — the parked 5.2 decision closes as resolved-keep-tag, recorded in the deployment guide. Q6 = wire the OWASP lane (scheduled/dispatch, `NVD_API_KEY`). Q7 = the `_max` fan-out test stays a standalone commit — this story touches nothing under `proxy/`.
 
 ## Boundaries & Constraints
 
@@ -25,7 +25,7 @@ context:
 - Credentials live only in GitHub Actions secrets (`DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` for publishing, `NVD_API_KEY` for the OWASP lane) — never in the repo, env files, or compose (AD-18 spirit).
 - Publish is fail-closed behind the green `./gradlew clean build`: publish steps run only after the full suite passes in the same run; PRs never push.
 - `:proxy:dockerImage` stays unwired from `build`/`check` (the ledgered daemon-less-CI constraint from 5.2): CI invokes it explicitly, then `docker tag`/`docker push` from `smpp-proxy:local` — zero build-file or buildSrc edits.
-- Image references are exact-version tags (the rig's `keycloak:26.7.0` / `prometheus:v3.14.0` idiom); the six Kannel stanzas share ONE image reference.
+- Image references are exact-version tags (the rig's `keycloak:26.7.0` / `prometheus:v3.14.0` idiom); the six Kannel stanzas share ONE image reference. Owner amendment 2026-09-27: the proxy docs surfaces (README §5.5/§5.6, runbooks, deployment guide) reference `latest` — the release-only channel; the live round cuts the first git tag `v0.1.0` to create it.
 - Hard pull switch — no `pull_policy` fallback; the local dev-rebuild path stays documented in one line.
 - Sandbox RU twins mirror the EN changes with the terminology-glossary conformance sweep over the new text; EN normative.
 - The pull-only bar is verified live during the story: the owner provisions the secrets and triggers one real publish; then the rig and a runbook run pull-only, evidence in Implementation Notes.
@@ -41,10 +41,11 @@ context:
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|---------------|----------------------------|----------------|
 | Cold-host rig bring-up | Docker host, zero local images, `docker compose up -d` | All 9 services pull and reach the §4 ready state — no `--build` | Pull failure = loud compose error; no fallback build |
-| Runbook, docker shape | §5.6 runbook verbatim, no gradlew | Proxy runs from the pulled image; journey + Prometheus observations as documented | Missing image → docker names the reference |
+| Runbook, docker shape | §5.6 runbook verbatim, no gradlew | Proxy runs from the pulled `latest` image; journey + Prometheus observations as documented | Missing image → docker names the reference |
 | PR opened | CI on a pull request | build + test + docker-build proof; zero push | Suite failure → red run; publish steps unreachable |
-| Main push / dispatch | CI publish run | Full suite → `dockerImage` → tag (`latest`, `sha-<short>`, `vX.Y.Z` on git tags) → push | Bad/missing secrets → login/push fails red; nothing half-published |
-| Kannel source change | Owner dispatches the kannel workflow (or a main-path change to `sandbox/kannel/**` fires it) | Kannel image rebuilt + pushed | The compose-pinned tag moves only by owner dispatch or edit |
+| Untagged main push / dispatch | CI publish run | Full suite → `dockerImage` → tag + push `sha-<short>` only — `latest` untouched (owner amendment 2026-09-27) | Bad/missing secrets → login/push fails red; nothing half-published |
+| Git-tag push `vX.Y.Z` | CI publish run | Full suite → `dockerImage` → tag + push `vX.Y.Z` + `latest` + `sha-<short>` | Bad/missing secrets → login/push fails red; nothing half-published |
+| Kannel source change | Owner dispatches the kannel workflow (or a main-path change to `sandbox/kannel/**` fires it) | Kannel image rebuilt; `1.5.0` + `sha-<short>` + `latest` pushed — `1.5.0` and `latest` move, `sha-<short>` is the immutable record | The compose-pinned version tag moves only by owner dispatch or edit |
 
 </frozen-after-approval>
 
@@ -64,24 +65,28 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `.github/workflows/kannel-image.yml` -- build + push `sandbox/kannel` to `ildarshara/kannel`, triggered by manual dispatch and by main-path changes to `sandbox/kannel/**`. -- The Kannel lane runs on a different cadence than the proxy's.
+- [ ] `.github/workflows/kannel-image.yml` -- build + push `sandbox/kannel` to `ildarshara/kannel` as `1.5.0` + `sha-<short>` + `latest`, triggered by manual dispatch and by main-path changes to `sandbox/kannel/**`. -- The Kannel lane runs on a different cadence than the proxy's; `latest` moves on every Kannel publish (owner amendment 2026-09-27 — the cadence is owner-gated, no churn to protect against).
 - [ ] `sandbox/compose.yml` -- the six stanzas `build: ./kannel` → `image:` pulling `ildarshara/kannel` at the upstream-version tag. -- One pull for six boxes; retires the six implicit build tags.
-- [ ] `.github/workflows/ci.yml` -- build + test + publish-proxy: setup-java Temurin 25 (no auto-provisioning — the runner's JDK), `./gradlew clean build` (Testcontainers-gated tests run: Docker present), `:proxy:dockerImage` as the docker-build proof, `(cd sandbox && docker compose config)` as the sanity step (the ledgered wiring), then tag (`latest`, `sha-<short>`, `vX.Y.Z` on git tags) and push to `ildarshara/smpp-companions-proxy` behind the secrets login — publishing on main pushes and dispatch, never on PRs. -- The epic's CI deliverable.
+- [ ] `.github/workflows/ci.yml` -- build + test + publish-proxy: setup-java Temurin 25 (no auto-provisioning — the runner's JDK), `./gradlew clean build` (Testcontainers-gated tests run: Docker present), `:proxy:dockerImage` as the docker-build proof, `(cd sandbox && docker compose config)` as the sanity step (the ledgered wiring), then tag and push to `ildarshara/smpp-companions-proxy` behind the secrets login — untagged main pushes and dispatches push `sha-<short>` only, a `vX.Y.Z` git-tag push additionally pushes `vX.Y.Z` + `latest` (owner amendment 2026-09-27); never on PRs. -- The epic's CI deliverable.
 - [ ] `.github/workflows/owasp.yml` -- scheduled + dispatch lane running `:proxy:dependencyCheckAnalyze --no-parallel` behind `NVD_API_KEY`. -- Completes 1.1's two-lane CVE design (SEC-091 was always meant to be a CI lane).
-- [ ] `sandbox/README.md` + `README.ru.md` -- pull-only bring-up (§4), §3 port rows, §5.5/§5.6 published-image runs, the one-line dev rebuild; RU mirror + glossary sweep. -- The rig doc must match the rig.
-- [ ] `sandbox/runbooks/*.md` + `.ru.md` (3 pairs) -- drop the gradlew prerequisites; docker shapes reference the published image; the jar bind-mount marked optional. -- The owner's acceptance bar is runbook-level.
-- [ ] `docs/deployment-guide.md` -- publish-path section; Shape 2 refs; the :429-441 digest-pin home records the resolved keep-mutable-tag decision (the parked 5.2 question closes). -- The publish is an operator surface, not just CI.
-- [ ] Live round -- owner provisions the two Docker Hub repos under `ildarshara`, the `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` + `NVD_API_KEY` secrets, and triggers the first publish; then pull-only rig bring-up + a §5.6 runbook journey; evidence in Implementation Notes. -- The bar is live, not config-derived.
+- [ ] `sandbox/README.md` + `README.ru.md` -- pull-only bring-up (§4), §3 port rows, §5.5/§5.6 published-image runs at `ildarshara/smpp-companions-proxy:latest`, the one-line dev rebuild; RU mirror + glossary sweep. -- The rig doc must match the rig.
+- [ ] `sandbox/runbooks/*.md` + `.ru.md` (3 pairs) -- drop the gradlew prerequisites; docker shapes reference the published image at `latest`; the jar bind-mount marked optional. -- The owner's acceptance bar is runbook-level.
+- [ ] `docs/deployment-guide.md` -- publish-path section; Shape 2 refs at `latest`; the :429-441 digest-pin home records the resolved keep-mutable-tag decision (the parked 5.2 question closes). -- The publish is an operator surface, not just CI.
+- [ ] Live round -- owner provisions the two Docker Hub repos under `ildarshara`, the `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` + `NVD_API_KEY` secrets, triggers the first publish (untagged main push -- proves the `sha-<short>`-only path, `latest` untouched), then pushes the first git tag `v0.1.0` (creating `vX.Y.Z` + `latest` -- the docs channel, owner decision 2026-09-27); then pull-only rig bring-up + a §5.6 runbook journey at `latest`; evidence in Implementation Notes. -- The bar is live, not config-derived.
 
 **Acceptance Criteria:**
 - Given a Docker host with no local images, when `docker compose up -d` in `sandbox/`, then every service pulls and the rig reaches its §4 ready state — no local build anywhere.
-- Given the same host and a §5.6 runbook run verbatim, then the proxy runs from the pulled image (no gradlew step) and the documented journey + Prometheus observations hold.
+- Given the same host and a §5.6 runbook run verbatim, then the proxy runs from the pulled `latest` image (no gradlew step; `latest` exists because the live round cut `v0.1.0`) and the documented journey + Prometheus observations hold.
 - Given a pull request, CI builds and tests but pushes nothing; given a failing suite, the publish steps are unreachable.
+- Given an untagged main push, the publish pushes `sha-<short>` and Docker Hub's `latest` stays untouched; given a `vX.Y.Z` tag push, `latest` and `vX.Y.Z` move to that build; given a Kannel publish, `1.5.0` and `latest` move and a fresh immutable `sha-<short>` appears.
 - Given the three workflow files, the YAML parses and `docker compose config` passes as a CI step.
 
 ## Implementation Notes
 
 ## Spec Change Log
+
+- **2026-09-27 — owner renegotiation, tag semantics (Q2/Q4):** proxy `latest` moves only on `vX.Y.Z` git-tag pushes — untagged main pushes and dispatches publish `sha-<short>` alone. Kannel publishes now carry `1.5.0` + `sha-<short>` + `latest` (was: `1.5.0` alone, mutated in place); compose keeps the exact-version pin. I/O matrix rows split, kannel/ci workflow tasks, an AC, and the design note updated to match.
+- **2026-09-27 — owner decision (docs tag + first release):** the proxy docs surfaces reference the image at `latest`; the live round cuts the first git tag `v0.1.0` to create it (after an untagged first publish proves the sha-only path). The image-references constraint, runbook matrix row, docs/live-round tasks, and the runbook AC updated to match.
 
 ## Review Triage Log
 
@@ -91,7 +96,7 @@ context:
 - Three workflows, three cadences: the proxy publishes on the code cadence; Kannel is a ~10-minute source compile that changes rarely (dispatch + path-filter); the OWASP NVD sweep is a scheduled/dispatch lane — one file would force one cadence on all three.
 - `docker tag` from `smpp-proxy:local` rather than parameterizing `imageTag` — the story stays out of build files entirely; the 5.2 ledger's daemon-less-CI warning is exactly about not re-wiring these tasks.
 - Publish steps live in the same job after the test steps (not a parallel job) — publish literally cannot run unless the suite passed in that runner; simplest fail-closed shape.
-- The Kannel tag rides the upstream version (`1.5.0`), matching the rig's exact-version pin idiom; a dispatch rebuild re-pushes the same tag — owner-controlled mutation, documented as such.
+- Tag semantics after the 2026-09-27 owner amendment: the proxy's `latest` moves only on `vX.Y.Z` git-tag pushes — a release act; untagged main publishes stay addressable via the immutable `sha-<short>`. Kannel publishes `1.5.0` + `sha-<short>` + `latest`: the compose pin rides the upstream version (the rig's exact-version idiom), `sha-<short>` is the immutable record of each build, and `latest` moves on every Kannel publish — its cadence is owner-gated (dispatch or a real `sandbox/kannel/**` edit). A dispatch rebuild re-pushes `1.5.0` — owner-controlled mutation, documented as such. The proxy docs surfaces reference `latest` (owner decision 2026-09-27) — always the last release, stable for readers; the live round's `v0.1.0` tag push creates it.
 - The first publish is owner-gated: secrets and trigger live outside the repo; the live AC follows the first green publish.
 
 ## Verification
