@@ -1,0 +1,98 @@
+# Proxy build + test + publish lane (Story 8.3 T3 — the epic's CI deliverable). One job, the
+# simplest fail-closed shape: the publish steps sit AFTER `./gradlew clean build` in the SAME
+# job, so a red suite makes them unreachable — publish literally cannot run unless the full
+# suite passed in that runner; a failing login/push goes red with nothing half-published.
+#
+# Cadence (owner decision Q3): pushes to main publish, PRs are test-only (zero pushes), manual
+# dispatch also publishes. Tag semantics (owner amendment 2026-09-27): an untagged main push or
+# a dispatch pushes sha-<short> alone — Docker Hub's latest stays untouched; a vX.Y.Z git-tag
+# PUSH (a release act) additionally pushes vX.Y.Z + latest, latest moving last, only after both
+# other tags are up. Dispatching on a tag ref still counts as a dispatch — sha only.
+name: ci
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    # The full suite (Testcontainers included) + jlink + the docker build; the ceiling only
+    # guards against a wedged runner or daemon.
+    timeout-minutes: 60
+    env:
+      IMAGE: ildarshara/smpp-companions-proxy
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+
+      # DEPLOY-014: JDK 25 is a PRECONDITION supplied by the environment, never auto-provisioned
+      # by the build — setup-java puts Temurin 25 on the runner and the major-25 toolchain pin
+      # resolves to it via JAVA_HOME (no foojay resolver anywhere in the build).
+      - name: Set up Temurin JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # The publish gate: the full suite, Testcontainers-gated tests included (Docker is present
+      # on the runner). Everything below this step is reachable only through a green build.
+      - name: Build and test
+        run: ./gradlew clean build
+
+      # The docker-build proof. `dockerImage` is deliberately unwired from build/check (the 5.2
+      # daemon-less-CI ledger): CI invokes it by name — it assembles the closed context (jlink
+      # runtime + bootJar + Dockerfile) and docker-builds the image tagged smpp-proxy:local.
+      - name: Build the proxy image (docker-build proof)
+        run: ./gradlew :proxy:dockerImage
+
+      # The ledgered compose sanity wiring (8.2's Never clause — nothing else reads the sandbox
+      # compose files): fails red on an invalid rig config. No .env or variable interpolation —
+      # a bare runner parses the file as-is.
+      - name: Compose config sanity
+        run: cd sandbox && docker compose config
+
+      - name: Compute the short-sha tag
+        run: echo "short_sha=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      # Everything below is the publish half: main pushes, git-tag pushes, and dispatch — never
+      # PRs (Q3). Login fails closed on bad/missing secrets BEFORE any push.
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" |
+            docker login --username "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      # Tag from smpp-proxy:local rather than parameterizing imageTag — the story stays out of
+      # the build files entirely (design note). sha-<short> always; vX.Y.Z + latest additionally
+      # on a git-tag push.
+      - name: Tag the image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker tag smpp-proxy:local "$IMAGE:$short_sha"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            docker tag smpp-proxy:local "$IMAGE:${GITHUB_REF_NAME}"
+            docker tag smpp-proxy:local "$IMAGE:latest"
+          fi
+
+      - name: Push vX.Y.Z (git-tag builds)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: docker push "$IMAGE:${GITHUB_REF_NAME}"
+
+      - name: Push the immutable sha tag
+        if: github.event_name != 'pull_request'
+        run: docker push "$IMAGE:$short_sha"
+
+      # latest moves ONLY on a vX.Y.Z git-tag push (owner amendment 2026-09-27) — and last, only
+      # after both other tags are up. Untagged main pushes and dispatches leave it untouched.
+      - name: Push latest (git-tag builds)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: docker push "$IMAGE:latest"
