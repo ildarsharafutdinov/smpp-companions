@@ -2,8 +2,9 @@
 title: 'Story 8.3 — GitHub CI and Docker Hub publish'
 type: 'feature'
 created: '2026-09-22'
-status: 'ready-for-dev'
+status: 'in-progress'
 route: 'dispatch'
+baseline_commit: '7c932aee485cd3927fb39a74ffaf78c42936bf70'
 review_loop_iteration: 0
 context:
   - {project-root}/_bmad-output/implementation-artifacts/epic-8-context.md
@@ -65,7 +66,7 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `.github/workflows/kannel-image.yml` -- build + push `sandbox/kannel` to `ildarshara/kannel` as `1.5.0` + `sha-<short>` + `latest`, triggered by manual dispatch and by main-path changes to `sandbox/kannel/**`. -- The Kannel lane runs on a different cadence than the proxy's; `latest` moves on every Kannel publish (owner amendment 2026-09-27 — the cadence is owner-gated, no churn to protect against).
+- [x] `.github/workflows/kannel-image.yml` -- build + push `sandbox/kannel` to `ildarshara/kannel` as `1.5.0` + `sha-<short>` + `latest`, triggered by manual dispatch and by main-path changes to `sandbox/kannel/**`. -- The Kannel lane runs on a different cadence than the proxy's; `latest` moves on every Kannel publish (owner amendment 2026-09-27 — the cadence is owner-gated, no churn to protect against).
 - [ ] `sandbox/compose.yml` -- the six stanzas `build: ./kannel` → `image:` pulling `ildarshara/kannel` at the upstream-version tag. -- One pull for six boxes; retires the six implicit build tags.
 - [ ] `.github/workflows/ci.yml` -- build + test + publish-proxy: setup-java Temurin 25 (no auto-provisioning — the runner's JDK), `./gradlew clean build` (Testcontainers-gated tests run: Docker present), `:proxy:dockerImage` as the docker-build proof, `(cd sandbox && docker compose config)` as the sanity step (the ledgered wiring), then tag and push to `ildarshara/smpp-companions-proxy` behind the secrets login — untagged main pushes and dispatches push `sha-<short>` only, a `vX.Y.Z` git-tag push additionally pushes `vX.Y.Z` + `latest` (owner amendment 2026-09-27); never on PRs. -- The epic's CI deliverable.
 - [ ] `.github/workflows/owasp.yml` -- scheduled + dispatch lane running `:proxy:dependencyCheckAnalyze --no-parallel` behind `NVD_API_KEY`. -- Completes 1.1's two-lane CVE design (SEC-091 was always meant to be a CI lane).

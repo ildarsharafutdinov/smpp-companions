@@ -1,0 +1,64 @@
+# Kannel rig image lane (Story 8.3 T1). Builds the sandbox/kannel context (Kannel
+# gateway 1.5.0 + opensmppbox + sqlbox + fakesmsc, ~10-minute source compile) and
+# publishes it to Docker Hub as ildarshara/kannel. Deliberately its own cadence,
+# decoupled from the proxy's code lane (owner decision Q4): manual dispatch, or a
+# push to main that touches sandbox/kannel/**. Every publish pushes all three tags
+# (owner amendment 2026-09-27): 1.5.0 (the upstream-version tag the compose rig
+# pins — moves by owner dispatch or edit, owner-controlled mutation), sha-<short>
+# (the immutable per-build record), and latest (moves on every publish — the
+# cadence itself is owner-gated, no churn to protect against).
+name: kannel-image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'sandbox/kannel/**'
+
+permissions:
+  contents: read
+
+# Serialize publishes — two runs racing on the same mutable tags (1.5.0, latest)
+# could interleave pushes. Queue, never cancel: killing a run mid-push is exactly
+# the half-published state the fail-closed posture forbids.
+concurrency:
+  group: kannel-image
+  cancel-in-progress: false
+
+jobs:
+  kannel-image:
+    runs-on: ubuntu-latest
+    # The compile is ~10 min; the ceiling only guards against hung upstream mirrors.
+    timeout-minutes: 30
+    env:
+      IMAGE: ildarshara/kannel
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+
+      - name: Compute the short-sha tag
+        run: echo "short_sha=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      # Build BEFORE login: a failed compile (or a dead upstream mirror) goes red
+      # with zero pushes and no secrets touched. One build, three tags on one image.
+      - name: Build the image
+        run: docker build -t "$IMAGE:1.5.0" -t "$IMAGE:$short_sha" -t "$IMAGE:latest" sandbox/kannel
+
+      # Fail-closed on the secrets: a missing/bad username or token exits non-zero
+      # here, before any push — nothing half-published (the I/O matrix row).
+      - name: Login to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" |
+            docker login --username "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Push 1.5.0
+        run: docker push "$IMAGE:1.5.0"
+
+      - name: Push the immutable sha tag
+        run: docker push "$IMAGE:$short_sha"
+
+      # latest moves last — only after both other tags are up.
+      - name: Push latest
+        run: docker push "$IMAGE:latest"
