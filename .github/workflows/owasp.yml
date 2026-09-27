@@ -55,10 +55,16 @@ jobs:
       # (dependencyCheck.nvd.apiKey). Goes red on any finding at CVSS >= 5.0 (failBuildOnCVSS —
       # intended to trip CVE-2025-53864's 5.8 if NVD scores it) or on any analyzer error
       # (failOnError); there is nothing to publish — the red run IS the signal.
+      #
+      # -Dorg.gradle.jvmargs=-Xmx4g: the runner is COLD on every run — full NVD feed download +
+      # database build + analysis in one pass blows the default daemon heap (first live dispatch,
+      # 2026-09-27: "daemon stopped: JVM garbage collector is thrashing", no report). The local box
+      # survives at default heap only because its NVD database is warm (incremental delta). The
+      # flag sizes THIS invocation's daemon alone — no gradle.properties, no build-file change.
       - name: Run the dependency-check sweep
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: ./gradlew :proxy:dependencyCheckAnalyze --no-parallel
+        run: ./gradlew :proxy:dependencyCheckAnalyze --no-parallel -Dorg.gradle.jvmargs=-Xmx4g
 
       # Post-mortem (the 2026-09-27 ci.yml lesson — the runner is ephemeral, so evidence that
       # lives only there is evidence lost): a red sweep names the finding only inside the report
