@@ -310,7 +310,7 @@ class TlsModesLoopbackE2eTest {
 
     @Test
     @DisplayName("F13 cap: at memory.concurrent-pairs the acceptor REFUSES a further connection (close, no response)")
-    void capRefusesConnectionsOverTheLimit() throws IOException {
+    void capRefusesConnectionsOverTheLimit() throws IOException, InterruptedException {
         RelayTestFixtures.SmppTlsLegs legs = RelayTestFixtures.smppTlsLegs(dir);
         int reversePort = startReverse(RelayTestFixtures.reverseAProperties(
                 RelayTestFixtures.freePort(), 64, legs, "127.0.0.1", smsc.port()));
@@ -344,10 +344,28 @@ class TlsModesLoopbackE2eTest {
             // after `first` closes, the exactly-once decrement on the child closeFuture must return
             // capacity. (Neutering that decrement degrades the cap to N-total-per-process-lifetime
             // while every over-cap test above still passes.)
+            // Bounded-poll (2026-09-27, GHA evidence): the decrement rides the child closeFuture —
+            // capacity returns ASYNCHRONOUSLY, and a fresh accept can win the race against the
+            // teardown (runner log: the recovery dial was refused 2ms after the over-cap one,
+            // reset on read). Keep dialing until the bind is SERVED; a refused attempt only means
+            // the decrement has not run yet — the first half of this test already proves that is
+            // the cap doing its job. A neutered decrement never serves the bind, so the loop
+            // exhausts and rethrows — the bite of the original one-shot assertion holds.
             first.close();
-            Socket third = connectLegacyClient(forwardPort);
-            writePdu(third, bindRequest(23, "carrierOne", "pw123456"));
-            assertRokBindResp(readPdu(third), 23);
+            for (int attempt = 0; ; attempt++) {
+                Socket probe = connectLegacyClient(forwardPort);
+                clients.add(probe);
+                writePdu(probe, bindRequest(23, "carrierOne", "pw123456"));
+                try {
+                    assertRokBindResp(readPdu(probe), 23);
+                    break;
+                } catch (IOException | AssertionError e) {
+                    if (attempt == 50) {
+                        throw e; // ~5s of 100ms-paced retries and the bind was never served
+                    }
+                    Thread.sleep(100);
+                }
+            }
         }
     }
 
