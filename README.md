@@ -1,5 +1,7 @@
 # smpp-companions
 
+[![ci](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/ci.yml) [![kannel-image](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/kannel-image.yml/badge.svg?branch=main)](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/kannel-image.yml) [![owasp](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/owasp.yml/badge.svg?branch=main)](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/owasp.yml)
+
 An open-source **SMPP 3.4 security-transit proxy**. It sits between your SMS clients (ESMEs)
 and the SMSC, so every bind and message crosses one controlled, observable point instead of
 reaching the SMSC directly. Built on Netty and Spring Boot 4 (JDK 25): headless,

@@ -1,5 +1,7 @@
 # smpp-companions
 
+[![ci](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/ci.yml) [![kannel-image](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/kannel-image.yml/badge.svg?branch=main)](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/kannel-image.yml) [![owasp](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/owasp.yml/badge.svg?branch=main)](https://github.com/ildarsharafutdinov/smpp-companions/actions/workflows/owasp.yml)
+
 > Русский перевод [README.md](README.md); при расхождении истина в оригинале.
 
 **Security-transit-прокси протокола SMPP 3.4** с открытым кодом. Он встаёт между вашими
