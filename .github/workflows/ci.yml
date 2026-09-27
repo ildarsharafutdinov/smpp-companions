@@ -96,3 +96,25 @@ jobs:
       - name: Push latest (git-tag builds)
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: docker push "$IMAGE:latest"
+
+      # Post-mortem (added 2026-09-27 after the first live run failed both Keycloak fixtures):
+      # Gradle's console tree truncates the exception MESSAGE — the "last status / last error"
+      # tail that names a discovery-timeout cause exists only in the XML test report, and the
+      # runner is ephemeral. `if: failure()` still runs after any earlier step failed, so a red
+      # suite (or login/push) self-diagnoses: dump every failing suite's XML, then whatever
+      # container state outlived ryuk (usually nothing — best-effort by design).
+      - name: Dump test-failure details
+        if: failure()
+        run: |
+          find proxy/build/test-results/test -name 'TEST-*.xml' \
+            | while read -r f; do
+                grep -q '<failure\|<error' "$f" || continue
+                echo "===== $f ====="
+                cat "$f"
+              done
+          echo '===== docker ps -a ====='
+          docker ps -a --format '{{.ID}}  {{.Image}}  {{.Status}}  {{.Ports}}  {{.Names}}' || true
+          for c in $(docker ps -aq --filter ancestor=quay.io/keycloak/keycloak:26.7.0) || true; do
+            echo "===== docker logs --tail 300 $c ====="
+            docker logs --tail 300 "$c" || true
+          done

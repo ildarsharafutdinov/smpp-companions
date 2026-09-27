@@ -84,6 +84,8 @@ context:
 
 ## Implementation Notes
 
+- **2026-09-27 — first live `ci` run (owner push, untagged main):** `:proxy:test` red — 445/447 green, both AD-12 Keycloak live suites (`RopcBindCredentialVerifierLiveTest`, `RopcSliceLiveTest`) timed out their 4-minute discovery windows back-to-back on the runner. Not reproducible locally (both suites green the same day, ~48 s incl. boots); `proxy/` byte-untouched, and the runner's Docker+Testcontainers machinery demonstrably worked (the distroless `DockerRig` suites were in the green 445). Fail-closed held as designed: the build died at the test gate, publish steps never reached. The naming evidence (the `last status / last error` tail) lives only in the ephemeral runner's XML report — ci.yml now carries an `if: failure()` post-mortem step dumping failing-suite XML + surviving container state; the next red run self-diagnoses. If the cause is Keycloak-boot-slowness on cold runners, the fix (longer fixture startup timeout) is in frozen test code — owner renegotiation required, not a silent edit.
+
 ## Spec Change Log
 
 - **2026-09-27 — owner renegotiation, tag semantics (Q2/Q4):** proxy `latest` moves only on `vX.Y.Z` git-tag pushes — untagged main pushes and dispatches publish `sha-<short>` alone. Kannel publishes now carry `1.5.0` + `sha-<short>` + `latest` (was: `1.5.0` alone, mutated in place); compose keeps the exact-version pin. I/O matrix rows split, kannel/ci workflow tasks, an AC, and the design note updated to match.
