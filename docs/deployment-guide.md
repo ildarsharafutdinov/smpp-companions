@@ -1,7 +1,9 @@
 # Deployment Guide — per-cell walkthroughs in both packaged shapes
 
 > **Status:** authored with Story 6.1 T2 (2026-09-13); the machine-proven matrix trued and the
-> conformance-run section added by Story 6.2 T4 (2026-09-16) — this page is documentation only,
+> conformance-run section added by Story 6.2 T4 (2026-09-16); the publish-path section added and
+> the image references moved to the published Docker Hub image by Story 8.3 T7 (2026-09-29).
+> This page is documentation only,
 > nothing in the repository parses it (owner rule 2026-09-10: no Java test's oracle is a markdown
 > page), so page↔reality coherence is a review-time duty: a change to any launch fact goes
 > through a story that touches the deploy code AND this page · **Audience:** operators taking
@@ -13,9 +15,10 @@
 > code wins and this page is buggy.
 
 There is exactly one deploy artifact and two packaged shapes for it. The JAR
-(`proxy/build/libs/proxy.jar`) and the Docker image (distroless, tag `smpp-proxy:local`) package
-the SAME jar bytes over the same jlink runtime, carry the SAME JVM flag set in their launch
-definitions, and expose the SAME configuration channel — Spring run args. Neither shape authors
+(`proxy/build/libs/proxy.jar`) and the Docker image (distroless, published to Docker Hub as
+`ildarshara/smpp-companions-proxy` and run at `latest`) package the SAME jar bytes over the
+same jlink runtime, carry the SAME JVM flag set in their launch definitions, and expose the SAME
+configuration channel — Spring run args. Neither shape authors
 its own flags; both launch definitions are pinned by the
 [flag contract](operator-jvm-flag-contract.md), which this page cross-links and never duplicates.
 
@@ -57,9 +60,14 @@ directory; use absolute paths if you launch from elsewhere.
 ### Shape 2 — the distroless Docker image
 
 ```console
-$ ./gradlew :proxy:dockerImage        # builds and tags smpp-proxy:local
-$ docker run -d --name smpp-proxy -p 2775:2775 <mounts…> smpp-proxy:local <cell args…>
+$ docker run -d --name smpp-proxy -p 2775:2775 <mounts…> ildarshara/smpp-companions-proxy:latest <cell args…>
 ```
+
+There is no build step in the operator path: the image is the published one, and `docker run`
+pulls it from Docker Hub if the host does not have it (the publish lane behind it is the next
+section). The local rebuild stays one line, for when you change the image itself:
+`./gradlew :proxy:dockerImage`, then `docker tag` the local tag it produces to
+`ildarshara/smpp-companions-proxy:latest` — pulls resume once you remove the local tag.
 
 Facts an operator needs about the image (source: `proxy/src/docker/Dockerfile`):
 
@@ -88,6 +96,36 @@ Two run-level rules for every `docker run` of this image, both pinned by Docker-
    137) instead of the bounded posture the budget exists to provide. Leave the cap off, or size
    it above the derived budget — and if you retune `companion.memory.*`, retune the flag to
    match ([configuration.md](configuration.md)).
+
+## The publish path — where the image comes from
+
+Shape 2's image is a published artifact, not something an operator builds. GitHub Actions
+(`.github/workflows/ci.yml`, Story 8.3) builds it and pushes it to Docker Hub as
+**`ildarshara/smpp-companions-proxy`**, and every Docker reference on this page and in the
+runbooks names it at `latest` — `docker run` pulls it if the host does not have it. The local
+`./gradlew :proxy:dockerImage` build remains only the dev loop for changing the image itself
+(one line, Shape 2 above).
+
+The lane is fail-closed by construction: the publish steps sit AFTER `./gradlew clean build` in
+the SAME CI job, so a red suite makes them unreachable — nothing is published unless the full
+suite passed in that runner, and a bad login or push fails red with nothing half-published. It
+runs on pushes to `main`, on `vX.Y.Z` git-tag pushes, and on manual dispatch; pull requests run
+the same build and tests but push NOTHING. The image the lane pushes is built by the same Gradle
+task as the local one — `:proxy:dockerImage`, invoked by name because it is deliberately
+unwired from `build`/`check` — then `docker tag`ged from the local tag that task produces.
+
+The tags on Docker Hub (owner decisions 2026-09-22, amended 2026-09-27):
+
+- **`latest`** — the release channel: it moves ONLY on a `vX.Y.Z` git-tag push; an untagged
+  main push or a dispatch never touches it. This is the tag the documentation references —
+  always the last release, stable for readers.
+- **`vX.Y.Z`** — the release itself; a git-tag push publishes it together with `latest`.
+- **`sha-<short>`** — the immutable record of every published build, and the only tag an
+  untagged main push or dispatch creates. Run one exact build by pinning it:
+  `ildarshara/smpp-companions-proxy:sha-1a2b3c4`.
+
+The push credentials live only in GitHub Actions secrets (`DOCKERHUB_USERNAME` /
+`DOCKERHUB_TOKEN`), never in the repository (AD-18 spirit).
 
 ## Preparation common to every cell (AD-18: secrets are file paths)
 
@@ -201,7 +239,7 @@ $ docker run -d --name smpp-proxy \
       -p 2775:2775 \
       -v "$(pwd)/secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro" \
       -v "$(pwd)/secrets/idp-truststore.p12:/run/secrets/idp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.reverse.mode-b.smsc.host=smsc.carrier.example \
       --companion.reverse.mode-b.smsc.port=2775 \
@@ -259,7 +297,8 @@ companion.reverse.mode-b.oidc.client-secret-path=/run/secrets/oidc-client-secret
   typo'd `-v` source — Docker silently creating a DIRECTORY at a nonexistent source path, which
   the proxy answers with `is a directory, not a file (OIDC client secret) — refusing to start
   (SEC-060/AD-18)` instead of a mount error.
-- **No args at all is a refusal, by design.** A bare `docker run --rm smpp-proxy:local` boots the
+- **No args at all is a refusal, by design.** A bare
+  `docker run --rm ildarshara/smpp-companions-proxy:latest` boots the
   yml defaults — which configure no cell — and exits 1 with the AD-17 zero-branch refusal:
 
 ```text
@@ -433,11 +472,18 @@ The Docker base image is pinned by the MUTABLE tag `gcr.io/distroless/base-debia
 document the posture.** The tradeoff: CVE-freshness — distroless base updates flow into every
 rebuild automatically — against rebuild reproducibility — a rebuild after an upstream push can
 change glibc and the base environment silently, while everything else in the deploy shape is
-pinned (JDK by asdf, flags by the contract page, the runtime module set by jdeps). The future
-home of any digest pin is the release/publish tooling, which deliberately does not exist yet
-(owner stance 2026-09-11: release/publish untouched). Until such tooling lands, an operator who
-needs reproducible bases pins the digest in their own deployment pipeline, knowingly giving up
-the freshness half.
+pinned (JDK by asdf, flags by the contract page, the runtime module set by jdeps).
+
+**The parked half closed with publishing (Story 8.3, owner decision Q5 2026-09-22): keep the
+mutable tag there too.** This page had named the release/publish tooling as the future home of
+any digest pin, back when it deliberately did not exist (owner stance 2026-09-11); that tooling
+now exists — the CI publish lane above — and the question closed as **keep the mutable tag**:
+the publish lane builds from the same mutable-tag Dockerfile, so base CVE-freshness keeps
+flowing into every published build with nothing to re-pin. Reproducibility short of a base
+digest now has a publish-level answer: every publish's `sha-<short>` tag is an immutable record
+of a complete image — pull the sha tag of the build you validated instead of rebuilding. An
+operator who needs a reproducible BASE still pins the digest in their own deployment pipeline,
+knowingly giving up the freshness half.
 
 ## What is machine-proven about these shapes (honest evidence)
 

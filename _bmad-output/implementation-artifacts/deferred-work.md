@@ -818,6 +818,15 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   2026-09-11: untouched) as the future home of any digest pin — with the interim operator
   remediation (pin the digest in your own pipeline, knowingly giving up the freshness half).
   No digest was pinned; the Dockerfile is unchanged.
+  **✅ CLOSED 2026-09-29 (Story 8.3 T7 — the publish-tooling half): resolved-keep-tag.** The
+  release/publish tooling this entry parked the decision for now exists — Story 8.3's CI publish
+  lane (`.github/workflows/ci.yml`, T3, landed 2026-09-27) — and the question closed as **keep
+  the mutable base tag** (owner decision Q5, story planning 2026-09-22): the lane builds from
+  the same mutable-tag Dockerfile (`proxy/src/docker/Dockerfile:18` unchanged), so base
+  CVE-freshness keeps flowing into every publish. `docs/deployment-guide.md` § "Base-image
+  policy — mutable tag, documented (BH6)" records the close, adding the publish-era
+  reproducibility note (every publish's `sha-<short>` tag is an immutable record of a complete
+  image — pull it instead of rebuilding for an exact repeat). No digest pinned anywhere.
 - source_spec: `5-2-distroless-docker.md`
   summary: The `DockerRig` inner class (~200 lines: close/connectLegacy/cellArgs/launchReverseBCell/assertContextAssembled/awaitStartupSummary/stdout/stderr/execProbe/assertRokBindResp) is duplicated wholesale between `DockerImageBootSmokeTest` and `DockerSecretsE2eTest` and has already drifted (T4 grew a live-inspect `isRunning`/`exitCode` pair; T3 still calls `container.isRunning()`).
   evidence: 5.2 review round 1 (BH7, 2026-09-12). The repo's own precedent (the 4.2 fixture triplication, resolved 2026-09-05) consolidates into `testsupport/` before the NEXT consumer — Epic 6's conformance run on the packaged shapes would be the third; fold it there.

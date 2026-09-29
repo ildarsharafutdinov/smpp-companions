@@ -72,7 +72,7 @@ context:
 - [x] `.github/workflows/owasp.yml` -- scheduled + dispatch lane running `:proxy:dependencyCheckAnalyze --no-parallel` behind `NVD_API_KEY`. -- Completes 1.1's two-lane CVE design (SEC-091 was always meant to be a CI lane).
 - [x] `sandbox/README.md` + `README.ru.md` -- pull-only bring-up (§4), §3 port rows, §5.5/§5.6 published-image runs at `ildarshara/smpp-companions-proxy:latest`, the one-line dev rebuild; RU mirror + glossary sweep. -- The rig doc must match the rig.
 - [x] `sandbox/runbooks/*.md` + `.ru.md` (3 pairs) -- drop the gradlew prerequisites; docker shapes reference the published image at `latest`; the jar bind-mount marked optional. -- The owner's acceptance bar is runbook-level.
-- [ ] `docs/deployment-guide.md` -- publish-path section; Shape 2 refs at `latest`; the :429-441 digest-pin home records the resolved keep-mutable-tag decision (the parked 5.2 question closes). -- The publish is an operator surface, not just CI.
+- [x] `docs/deployment-guide.md` -- publish-path section; Shape 2 refs at `latest`; the :429-441 digest-pin home records the resolved keep-mutable-tag decision (the parked 5.2 question closes). -- The publish is an operator surface, not just CI.
 - [ ] Live round -- owner provisions the two Docker Hub repos under `ildarshara`, the `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` + `NVD_API_KEY` secrets, triggers the first publish (untagged main push -- proves the `sha-<short>`-only path, `latest` untouched), then pushes the first git tag `v0.1.0` (creating `vX.Y.Z` + `latest` -- the docs channel, owner decision 2026-09-27); then pull-only rig bring-up + a §5.6 runbook journey at `latest`; evidence in Implementation Notes. -- The bar is live, not config-derived.
 
 **Acceptance Criteria:**
