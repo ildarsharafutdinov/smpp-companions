@@ -131,7 +131,7 @@ development_status:
   # Story keys appended here as story files are created, per the project note above.
   # Reopened 2026-09-22: the 8.1/8.2 close had left the goal's CI/Docker Hub third unsliced —
   # Story 8.3 now carries it.)
-  epic-8: in-progress
+  epic-8: done
   8-1-observability-audit-and-gap-close: done
   8-2-sandbox-prometheus: done
   8-3-github-ci-and-docker-hub-publish: done
