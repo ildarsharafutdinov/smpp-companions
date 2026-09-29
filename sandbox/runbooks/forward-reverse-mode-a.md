@@ -3,7 +3,9 @@
 > One of the three docker runbooks, one per use case (role + mode) — siblings: [the lone reverse, Mode B](reverse-mode-b.md) ·
 > [forward+reverse, Mode C](forward-reverse-mode-c.md). For the host-run `java -jar` recipe (the debugger
 > posture) see the [sandbox README](../README.md) §5. Every expected observation below was executed live on
-> the rig, 2026-09-18. Documentation only — nothing parses this page.
+> the rig, 2026-09-18 — against the then-locally-built image; since Story 8.3 the launch pulls the
+> published `ildarshara/smpp-companions-proxy:latest` (README §5.6). Documentation only — nothing
+> parses this page.
 > Русский перевод: [`forward-reverse-mode-a.ru.md`](forward-reverse-mode-a.ru.md).
 
 ## What it's for
@@ -50,9 +52,10 @@ flowchart TD
 
 ## Quick start
 
-Preconditions: the rig healthy, the OIDC client secret bootstrapped, the image and jar built —
-steps 1–2 of the [Mode B runbook](reverse-mode-b.md)'s Quick start cover all of it (including
-the `chmod 0444` on the secret).
+Preconditions: the rig healthy and the OIDC client secret bootstrapped — steps 1–2 of the
+[Mode B runbook](reverse-mode-b.md)'s Quick start cover both (including the `chmod 0444` on the
+secret). Both containers pull the published `ildarshara/smpp-companions-proxy:latest` at
+launch; nothing builds locally.
 
 From the **repository root**, launch the reverse first — its listener must exist before the
 forward's first connection (the front's retry makes the order forgiving, but keep it).
@@ -68,12 +71,11 @@ forward's first connection (the front's retry makes the order forgiving, but kee
 
 ```bash
 docker run -d --name sandbox-reverse-a --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro" \
       -v "$(pwd)/sandbox/keycloak/certs/truststore.p12:/run/secrets/idp-truststore.p12:ro" \
       -v "$(pwd)/sandbox/certs/smpp-reverse-server.pem:/run/secrets/smpp-reverse-server.pem:ro" \
       -v "$(pwd)/sandbox/certs/smpp-reverse-server-key.pem:/run/secrets/smpp-reverse-server-key.pem:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=127.0.0.1 \
       --companion.bind.port=2776 \
       --companion.metrics.port=9091 \
@@ -90,9 +92,8 @@ docker run -d --name sandbox-reverse-a --network host \
       --companion.reverse.mode-a.oidc.max-in-flight=64
 
 docker run -d --name sandbox-forward-a --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/certs/smpp-truststore.p12:/run/secrets/smpp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.bind.port=2775 \
       --companion.forward.mode-a.trust-store.path=/run/secrets/smpp-truststore.p12 \
@@ -101,6 +102,10 @@ docker run -d --name sandbox-forward-a --network host \
       '--companion.forward.mode-a.routing[0].host=localhost' \
       '--companion.forward.mode-a.routing[0].port=2776'
 ```
+
+Optional dev loop: to run **host builds** instead of the published jars, add
+`-v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro"` to each container's launch
+("Swapping the jar" below).
 
 Note what the cells structurally refuse (useful if you hand-edit the args): the forward carries
 no `oidc` and no `smsc` node — its routing entry *is* the connect target; the reverse carries no
@@ -174,10 +179,11 @@ behind them is `CN=smpp-test-ca`, store password `smpp-test`.
 
 Keep the files world-readable (`0644`) — the image's UID 65532 reads the mounts.
 
-### Swapping the jar
+### Swapping the jar (the optional dev loop)
 
-Same story as the [Mode B runbook](reverse-mode-b.md) ("Swapping the jar"), twice: rebuild
-`./gradlew :proxy:bootJar`, then `docker restart` each container.
+Same story as the [Mode B runbook](reverse-mode-b.md) ("Swapping the jar"), twice over: add the
+jar bind-mount line to each container's `docker run`, rebuild `./gradlew :proxy:bootJar`, then
+`docker restart` each container.
 
 ### References
 

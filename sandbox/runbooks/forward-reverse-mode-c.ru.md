@@ -8,7 +8,9 @@
 > (роль + режим): [mode B](reverse-mode-b.ru.md) · [mode A](forward-reverse-mode-a.ru.md).
 > Рецепт запуска прокси на хосте (`java -jar`, поза отладки) — [README
 > песочницы](../README.ru.md) §5. Каждое ожидаемое наблюдение этой страницы исполнено вживую
-> на стенде 2026-09-18. Страница — только документация, ничего в репозитории её не разбирает.
+> на стенде 2026-09-18 — на тогда локально собранном образе; с Story 8.3 запуск делает pull
+> опубликованного `ildarshara/smpp-companions-proxy:latest` (README §5.6). Страница — только
+> документация, ничего в репозитории её не разбирает.
 
 ## Назначение
 
@@ -52,9 +54,10 @@ flowchart TD
 
 ## Быстрый старт
 
-Предусловия: стенд healthy, OIDC-секрет клиента забутстраплен, образ и jar собраны — шаги 1–2
-«Быстрого старта» [руководства mode B](reverse-mode-b.ru.md) покрывают всё (включая
-`chmod 0444` на секрете).
+Предусловия: стенд healthy и OIDC-секрет клиента забутстраплен — шаги 1–2 «Быстрого старта»
+[руководства mode B](reverse-mode-b.ru.md) покрывают оба (включая `chmod 0444` на секрете).
+Оба контейнера делают pull опубликованного `ildarshara/smpp-companions-proxy:latest` при
+запуске; локально ничего не собирается.
 
 Из **корня репозитория** запускайте reverse первым. План портов — как у Mode A, с одним
 намеренным отличием:
@@ -68,13 +71,12 @@ flowchart TD
 
 ```bash
 docker run -d --name sandbox-reverse-c --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro" \
       -v "$(pwd)/sandbox/keycloak/certs/truststore.p12:/run/secrets/idp-truststore.p12:ro" \
       -v "$(pwd)/sandbox/certs/smpp-reverse-server.pem:/run/secrets/smpp-reverse-server.pem:ro" \
       -v "$(pwd)/sandbox/certs/smpp-reverse-server-key.pem:/run/secrets/smpp-reverse-server-key.pem:ro" \
       -v "$(pwd)/sandbox/certs/smpp-truststore.p12:/run/secrets/smpp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.bind.port=2776 \
       --companion.metrics.port=9091 \
@@ -93,11 +95,10 @@ docker run -d --name sandbox-reverse-c --network host \
       --companion.reverse.mode-c.oidc.max-in-flight=64
 
 docker run -d --name sandbox-forward-c --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/certs/smpp-forward-client.pem:/run/secrets/smpp-forward-client.pem:ro" \
       -v "$(pwd)/sandbox/certs/smpp-forward-client-key.pem:/run/secrets/smpp-forward-client-key.pem:ro" \
       -v "$(pwd)/sandbox/certs/smpp-truststore.p12:/run/secrets/smpp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.bind.port=2775 \
       --companion.forward.mode-c.client-cert.cert-path=/run/secrets/smpp-forward-client.pem \
@@ -108,6 +109,10 @@ docker run -d --name sandbox-forward-c --network host \
       '--companion.forward.mode-c.routing[0].host=localhost' \
       '--companion.forward.mode-c.routing[0].port=2776'
 ```
+
+Опциональный цикл разработки: чтобы исполнить **хостовые сборки** вместо опубликованных jar,
+добавьте `-v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro"` в запуск каждого
+контейнера («Подмена jar» [руководства mode B](reverse-mode-b.ru.md), дважды).
 
 Заметьте, что варианты structurally отвергают (полезно, если правите аргументы вручную):
 forward не содержит ни `oidc`, ни `smsc`; у reverse нет `routing` и собственных клиентских
@@ -175,9 +180,10 @@ docker rm sandbox-forward-c sandbox-reverse-c
 
 Покажет ли reverse собственный WARN дрейна, зависит от того, как распространилось разрушение
 forward (наблюдали оба исхода: пустой реестр → чистый 143 без WARN; пара в дрейне → WARN и
-затем 143) — оба прохода корректны. Подмена jar — «Подмена jar» [руководства
-mode B](reverse-mode-b.ru.md), дважды: `./gradlew :proxy:bootJar` + `docker restart` каждого
-контейнера. Стенд останавливается по [README §9](../README.ru.md).
+затем 143) — оба прохода корректны. Подмена jar (опциональный цикл разработки) — «Подмена jar»
+[руководства mode B](reverse-mode-b.ru.md), дважды: строка bind-mount jar'а в `docker run`
+каждого контейнера + `./gradlew :proxy:bootJar` + `docker restart` каждого. Стенд
+останавливается по [README §9](../README.ru.md).
 
 ## Подробности и ссылки
 

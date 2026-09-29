@@ -8,7 +8,9 @@
 > (роль + режим): [mode B](reverse-mode-b.ru.md) · [mode C](forward-reverse-mode-c.ru.md).
 > Рецепт запуска прокси на хосте (`java -jar`, поза отладки) — [README
 > песочницы](../README.ru.md) §5. Каждое ожидаемое наблюдение этой страницы исполнено вживую
-> на стенде 2026-09-18. Страница — только документация, ничего в репозитории её не разбирает.
+> на стенде 2026-09-18 — на тогда локально собранном образе; с Story 8.3 запуск делает pull
+> опубликованного `ildarshara/smpp-companions-proxy:latest` (README §5.6). Страница — только
+> документация, ничего в репозитории её не разбирает.
 
 ## Назначение
 
@@ -55,9 +57,10 @@ flowchart TD
 
 ## Быстрый старт
 
-Предусловия: стенд healthy, OIDC-секрет клиента забутстраплен, образ и jar собраны — шаги 1–2
-«Быстрого старта» [руководства mode B](reverse-mode-b.ru.md) покрывают всё (включая
-`chmod 0444` на секрете).
+Предусловия: стенд healthy и OIDC-секрет клиента забутстраплен — шаги 1–2 «Быстрого старта»
+[руководства mode B](reverse-mode-b.ru.md) покрывают оба (включая `chmod 0444` на секрете).
+Оба контейнера делают pull опубликованного `ildarshara/smpp-companions-proxy:latest` при
+запуске; локально ничего не собирается.
 
 Из **корня репозитория** запускайте reverse первым — его слушатель должен существовать до
 первого соединения forward (retry фронта прощает порядок, но держите его).
@@ -73,12 +76,11 @@ flowchart TD
 
 ```bash
 docker run -d --name sandbox-reverse-a --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro" \
       -v "$(pwd)/sandbox/keycloak/certs/truststore.p12:/run/secrets/idp-truststore.p12:ro" \
       -v "$(pwd)/sandbox/certs/smpp-reverse-server.pem:/run/secrets/smpp-reverse-server.pem:ro" \
       -v "$(pwd)/sandbox/certs/smpp-reverse-server-key.pem:/run/secrets/smpp-reverse-server-key.pem:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=127.0.0.1 \
       --companion.bind.port=2776 \
       --companion.metrics.port=9091 \
@@ -95,9 +97,8 @@ docker run -d --name sandbox-reverse-a --network host \
       --companion.reverse.mode-a.oidc.max-in-flight=64
 
 docker run -d --name sandbox-forward-a --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/certs/smpp-truststore.p12:/run/secrets/smpp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.bind.port=2775 \
       --companion.forward.mode-a.trust-store.path=/run/secrets/smpp-truststore.p12 \
@@ -106,6 +107,10 @@ docker run -d --name sandbox-forward-a --network host \
       '--companion.forward.mode-a.routing[0].host=localhost' \
       '--companion.forward.mode-a.routing[0].port=2776'
 ```
+
+Опциональный цикл разработки: чтобы исполнить **хостовые сборки** вместо опубликованных jar,
+добавьте `-v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro"` в запуск каждого
+контейнера («Подмена jar» ниже).
 
 Заметьте, что варианты structurally отвергают (полезно, если правите аргументы вручную):
 forward не содержит ни узла `oidc`, ни узла `smsc` — его запись маршрутизации и есть цель
@@ -179,10 +184,11 @@ reverse свой WARN, зависит от того, как распростра
 
 Держите файлы читаемыми всеми (`0644`) — их читает UID 65532 образа.
 
-### Подмена jar
+### Подмена jar (опциональный цикл разработки)
 
 Та же история, что в [руководстве mode B](reverse-mode-b.ru.md) («Подмена jar»), дважды:
-пересобрать `./gradlew :proxy:bootJar`, затем `docker restart` каждого контейнера.
+добавить строку bind-mount jar'а в `docker run` каждого контейнера, пересобрать
+`./gradlew :proxy:bootJar`, затем `docker restart` каждого.
 
 ### Ссылки
 

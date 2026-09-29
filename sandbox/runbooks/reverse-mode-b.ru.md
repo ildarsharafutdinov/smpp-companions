@@ -7,8 +7,10 @@
 > ревью. Это одно из трёх docker-руководств, по одному на вариант использования (роль + режим):
 > [mode A](forward-reverse-mode-a.ru.md) · [mode C](forward-reverse-mode-c.ru.md). Рецепт
 > запуска прокси на хосте (`java -jar`, поза отладки) — [README песочницы](../README.ru.md) §5.
-> Каждое ожидаемое наблюдение этой страницы исполнено вживую на стенде 2026-09-18. Страница —
-> только документация, ничего в репозитории её не разбирает.
+> Каждое ожидаемое наблюдение этой страницы исполнено вживую на стенде 2026-09-18 — на тогда
+> локально собранном образе; с Story 8.3 запуск делает pull опубликованного
+> `ildarshara/smpp-companions-proxy:latest` (README §5.6). Страница — только документация,
+> ничего в репозитории её не разбирает.
 
 ## Назначение
 
@@ -47,16 +49,14 @@ flowchart TD
 ## Быстрый старт
 
 Все команды — из **корня репозитория** (источники `-v` относительны корня). Docker должен быть
-поднят. Один раз на машину соберите образ и jar:
-
-```bash
-./gradlew :proxy:bootJar :proxy:dockerImage   # -> proxy/build/libs/proxy.jar + smpp-proxy:local
-```
+поднят. Прокси работает на опубликованном образе — **`ildarshara/smpp-companions-proxy:latest`**,
+его делает pull нижеследующий `docker run` (образ собирает и публикует CI; `latest` двигается
+только при push git-тегов `vX.Y.Z`). Дословное прохождение руководства ничего не собирает.
 
 **1 — Поднимите стенд** (полное руководство: [README §4](../README.ru.md)):
 
 ```bash
-cd sandbox && docker compose up -d --build && cd ..
+cd sandbox && docker compose up -d && cd ..
 # дождаться pg + обоих bearerboxes + keycloak healthy: docker compose ps
 ```
 
@@ -85,10 +85,9 @@ chmod 0444 sandbox/secrets/oidc-client-secret   # 0444, а не 0600 из §5.1:
 
 ```bash
 docker run -d --name sandbox-proxy-b --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro" \
       -v "$(pwd)/sandbox/keycloak/certs/truststore.p12:/run/secrets/idp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.bind.port=2775 \
       --companion.reverse.mode-b.smsc.host=127.0.0.1 \
@@ -102,6 +101,10 @@ docker run -d --name sandbox-proxy-b --network host \
       --companion.reverse.mode-b.oidc.timeout=4s \
       --companion.reverse.mode-b.oidc.max-in-flight=64
 ```
+
+Опциональный цикл разработки: чтобы исполнять **хостовую сборку** вместо опубликованного jar,
+добавьте к запуску ещё одну строку монтирования —
+`-v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro"` («Подмена jar» ниже).
 
 ✅ **Всё поднято, когда** `docker logs sandbox-proxy-b` покажет `"event":"bind_accept"`,
 `"system_id":"usr1"`, `"outcome":"coupled"` — в пределах ~10 с.
@@ -161,10 +164,15 @@ docker rm sandbox-proxy-b
   не нужно.
 - Его `/metrics` на loopback читается прямо из вашей оболочки.
 
-### Подмена jar
+### Подмена jar (опциональный цикл разработки)
 
-`/opt/proxy.jar` образа перекрыт bind-mount'ом, поэтому контейнер исполняет ваш **хостовой
-артефакт сборки** — сам образ может устареть, и стенд этого не заметит:
+Запуск выше исполняет собственный `/opt/proxy.jar` образа — опубликованную сборку, ничего
+локального в цикле. Чтобы итерироваться по **хостовой сборке**, перекройте его bind-mount'ом —
+добавьте эту строку в `docker run`:
+
+```bash
+      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
+```
 
 ```bash
 ./gradlew :proxy:bootJar          # пересборка после любой правки кода (входы отслеживаются — устаревшего jar не будет)

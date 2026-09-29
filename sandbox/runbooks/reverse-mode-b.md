@@ -3,7 +3,9 @@
 > One of the three docker runbooks, one per use case (role + mode) — siblings: [forward+reverse, Mode A](forward-reverse-mode-a.md) ·
 > [forward+reverse, Mode C](forward-reverse-mode-c.md). For the host-run `java -jar` recipe (the debugger
 > posture) see the [sandbox README](../README.md) §5. Every expected observation below was executed live on
-> the rig, 2026-09-18. Documentation only — nothing parses this page.
+> the rig, 2026-09-18 — against the then-locally-built image; since Story 8.3 the launch pulls the
+> published `ildarshara/smpp-companions-proxy:latest` (README §5.6). Documentation only — nothing
+> parses this page.
 > Русский перевод: [`reverse-mode-b.ru.md`](reverse-mode-b.ru.md).
 
 ## What it's for
@@ -42,16 +44,14 @@ flowchart TD
 ## Quick start
 
 Run everything from the **repository root** (the `-v` mounts are root-relative). Docker must be
-up. Once per machine, build the image and jar:
-
-```bash
-./gradlew :proxy:bootJar :proxy:dockerImage   # -> proxy/build/libs/proxy.jar + smpp-proxy:local
-```
+up. The proxy runs the published image — **`ildarshara/smpp-companions-proxy:latest`**, pulled
+from Docker Hub by the `docker run` below (CI builds and publishes it; `latest` moves only on
+`vX.Y.Z` git-tag pushes). Run verbatim, this runbook builds nothing.
 
 **1 — Start the rig** (full bring-up guide: [sandbox README §4](../README.md)):
 
 ```bash
-cd sandbox && docker compose up -d --build && cd ..
+cd sandbox && docker compose up -d && cd ..
 # wait for pg + both bearerboxes + keycloak healthy: docker compose ps
 ```
 
@@ -80,10 +80,9 @@ their runbooks.
 
 ```bash
 docker run -d --name sandbox-proxy-b --network host \
-      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
       -v "$(pwd)/sandbox/secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro" \
       -v "$(pwd)/sandbox/keycloak/certs/truststore.p12:/run/secrets/idp-truststore.p12:ro" \
-      smpp-proxy:local \
+      ildarshara/smpp-companions-proxy:latest \
       --companion.bind.host=0.0.0.0 \
       --companion.bind.port=2775 \
       --companion.reverse.mode-b.smsc.host=127.0.0.1 \
@@ -97,6 +96,10 @@ docker run -d --name sandbox-proxy-b --network host \
       --companion.reverse.mode-b.oidc.timeout=4s \
       --companion.reverse.mode-b.oidc.max-in-flight=64
 ```
+
+Optional dev loop: to run a **host build** instead of the published jar, add one more mount line
+to the launch — `-v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro"` ("Swapping the jar"
+below).
 
 ✅ **You're up when** `docker logs sandbox-proxy-b` shows `"event":"bind_accept"`,
 `"system_id":"usr1"`, `"outcome":"coupled"` — within ~10 s.
@@ -155,10 +158,15 @@ retry loop and re-couples on the next launch. The rig itself tears down per
   `host.docker.internal` (which hairpins into it). No `-p` publish exists or is needed.
 - Its loopback `/metrics` is scrapeable straight from your shell.
 
-### Swapping the jar
+### Swapping the jar (the optional dev loop)
 
-The image's `/opt/proxy.jar` is bind-mounted over, so the container runs your **host build** —
-the image itself can go stale without the rig noticing:
+The launch above runs the image's own `/opt/proxy.jar` — the published build, nothing local in
+the loop. To iterate on a **host build** instead, bind-mount it over the image's copy — add this
+line to the `docker run`:
+
+```bash
+      -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
+```
 
 ```bash
 ./gradlew :proxy:bootJar          # rebuild after any source edit (inputs tracked — no stale jar)
