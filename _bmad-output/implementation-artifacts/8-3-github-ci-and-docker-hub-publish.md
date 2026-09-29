@@ -2,7 +2,7 @@
 title: 'Story 8.3 — GitHub CI and Docker Hub publish'
 type: 'feature'
 created: '2026-09-22'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 baseline_commit: '7c932aee485cd3927fb39a74ffaf78c42936bf70'
 review_loop_iteration: 0
