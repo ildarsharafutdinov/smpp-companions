@@ -68,9 +68,11 @@ jobs:
 
       # Post-mortem (the 2026-09-27 ci.yml lesson — the runner is ephemeral, so evidence that
       # lives only there is evidence lost): a red sweep names the finding only inside the report
-      # files, so print the CVE rows from the JSON report, best-effort.
+      # files, so print the CVE rows from the JSON report, best-effort. `|| cancelled()` added
+      # 2026-09-29 (review): a hung NVD conversation times out into a cancelled run and must
+      # still leave its evidence.
       - name: Dump the findings summary
-        if: failure()
+        if: failure() || cancelled()
         run: |
           report=proxy/build/reports/dependency-check-report.json
           if [[ -f "$report" ]]; then
@@ -86,8 +88,10 @@ jobs:
 
       # Keep the full report set (HTML/JSON/SARIF/JUNIT land in proxy/build/reports/) as a run
       # artifact: warn, not fail, when nothing was produced (the sweep may have died pre-report).
+      # Still failure-path only, but (2026-09-29 review) `|| cancelled()` too — the timed-out
+      # hung-NVD run is precisely the report you will want; a green sweep stays upload-free.
       - name: Keep the report artifact
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: dependency-check-report

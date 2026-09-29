@@ -8,6 +8,8 @@
 # a dispatch pushes sha-<short> alone — Docker Hub's latest stays untouched; a vX.Y.Z git-tag
 # PUSH (a release act) additionally pushes vX.Y.Z + latest, latest moving last, only after both
 # other tags are up. Dispatching on a tag ref still counts as a dispatch — sha only.
+# 2026-09-29 (review): vX.Y.Z above means STRICT vX.Y.Z (digits only) — the gate is a regex in
+# the tagging step, because GitHub's tag filters are globs and cannot express digits-only.
 name: ci
 
 on:
@@ -73,38 +75,50 @@ jobs:
 
       # Tag from smpp-proxy:local rather than parameterizing imageTag — the story stays out of
       # the build files entirely (design note). sha-<short> always; vX.Y.Z + latest additionally
-      # on a git-tag push.
+      # on a STRICT vX.Y.Z git-tag push (2026-09-29 review): the regex gate lives here, in-step,
+      # because glob tag filters cannot express digits-only — any other v-prefixed tag (v-test,
+      # v0.1.0-rc1) gets the loud notice below and moves nothing but the sha tag.
       - name: Tag the image
         if: github.event_name != 'pull_request'
         run: |
           docker tag smpp-proxy:local "$IMAGE:$short_sha"
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+          # strict_tag hands the two release-channel push steps below their gate.
+          strict_tag=0
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            strict_tag=1
             docker tag smpp-proxy:local "$IMAGE:${GITHUB_REF_NAME}"
             docker tag smpp-proxy:local "$IMAGE:latest"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "NOTICE: git tag ${GITHUB_REF_NAME} is not a strict vX.Y.Z (digits only) — the release channel (vX.Y.Z + latest) was NOT moved; the sha tag still publishes."
           fi
+          echo "strict_tag=$strict_tag" >> "$GITHUB_ENV"
 
+      # strict_tag comes from the tagging step: '1' only on a STRICT vX.Y.Z git-tag push.
       - name: Push vX.Y.Z (git-tag builds)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && env.strict_tag == '1'
         run: docker push "$IMAGE:${GITHUB_REF_NAME}"
 
       - name: Push the immutable sha tag
         if: github.event_name != 'pull_request'
         run: docker push "$IMAGE:$short_sha"
 
-      # latest moves ONLY on a vX.Y.Z git-tag push (owner amendment 2026-09-27) — and last, only
-      # after both other tags are up. Untagged main pushes and dispatches leave it untouched.
+      # latest moves ONLY on a STRICT vX.Y.Z git-tag push (owner amendment 2026-09-27; strictness
+      # enforced via strict_tag, 2026-09-29 review) — and last, only after both other tags are up.
+      # Untagged main pushes, non-strict v-tags and dispatches leave it untouched.
       - name: Push latest (git-tag builds)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && env.strict_tag == '1'
         run: docker push "$IMAGE:latest"
 
       # Post-mortem (added 2026-09-27 after the first live run failed both Keycloak fixtures):
       # Gradle's console tree truncates the exception MESSAGE — the "last status / last error"
       # tail that names a discovery-timeout cause exists only in the XML test report, and the
-      # runner is ephemeral. `if: failure()` still runs after any earlier step failed, so a red
-      # suite (or login/push) self-diagnoses: dump every failing suite's XML, then whatever
-      # container state outlived ryuk (usually nothing — best-effort by design).
+      # runner is ephemeral. `if: failure() || cancelled()` still runs after any earlier step
+      # failed — and (2026-09-29 review) on a timeout/cancelled run too, which is exactly the
+      # wedged-runner case the ceiling exists for — so a red suite (or login/push) self-diagnoses:
+      # dump every failing suite's XML, then whatever container state outlived ryuk (usually
+      # nothing — best-effort by design).
       - name: Dump test-failure details
-        if: failure()
+        if: failure() || cancelled()
         run: |
           find proxy/build/test-results/test -name 'TEST-*.xml' \
             | while read -r f; do
@@ -114,7 +128,10 @@ jobs:
               done
           echo '===== docker ps -a ====='
           docker ps -a --format '{{.ID}}  {{.Image}}  {{.Status}}  {{.Ports}}  {{.Names}}' || true
-          for c in $(docker ps -aq --filter ancestor=quay.io/keycloak/keycloak:26.7.0); do
+          # 2026-09-29 (review): derive the Keycloak ancestor from sandbox/compose.yml — a
+          # fixture bump must not silently blank this dump leg.
+          kc_ancestor=$(grep -m1 -o 'quay.io/keycloak/keycloak:[0-9][0-9.]*' sandbox/compose.yml)
+          for c in $(docker ps -aq --filter "ancestor=$kc_ancestor"); do
             echo "===== docker logs --tail 300 $c ====="
             docker logs --tail 300 "$c" || true
           done
