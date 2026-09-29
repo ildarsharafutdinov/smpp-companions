@@ -811,10 +811,11 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   unchanged.** The release/publish tooling this entry parked on (owner stance 2026-09-11:
   untouched) now exists — the CI publish lane (`.github/workflows/ci.yml`, commit `738015b`,
   2026-09-27) — and it answered the when-does-the-image-build question exactly as this entry
-  demanded: the lane invokes `:proxy:dockerImage` BY NAME (ci.yml:55, after the
-  `./gradlew clean build` gate at :49), and the task stays unwired from `build`/`check`
+  demanded: the lane invokes `:proxy:dockerImage` BY NAME (the workflow's "Build the proxy
+  image (docker-build proof)" step, after the "Build and test" gate that runs
+  `./gradlew clean build`), and the task stays unwired from `build`/`check`
   (`DockerImageTask.kt` untouched — not cacheable, no task wiring; the workflow's own comment
-  cites this 5.2 stance at ci.yml:51). No story "fixed" the wiring; the E2E suites keep building
+  in that step's preamble cites this 5.2 stance). No story "fixed" the wiring; the E2E suites keep building
   via `assembleDockerContext` as before.
 - source_spec: `5-2-distroless-docker.md`
   summary: The distroless base image is pinned only by the mutable tag `gcr.io/distroless/base-debian12:nonroot` — no digest pin and no dated owner policy on base-image drift; everything else in the deploy shape is deliberately pinned (JDK via asdf/toolchain, flags via the contract page, module set via jdeps), but a rebuild after an upstream push can change glibc, the base env, and the recorded size/cold-start actuals silently.
@@ -828,7 +829,7 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   remediation (pin the digest in your own pipeline, knowingly giving up the freshness half).
   No digest was pinned; the Dockerfile is unchanged.
   **✅ CLOSED 2026-09-29 (Story 8.3 T7 — the publish-tooling half): resolved-keep-tag.** The
-  release/publish tooling this entry parked the decision for now exists — Story 8.3's CI publish
+  release/publish tooling this entry parked the decision on now exists — Story 8.3's CI publish
   lane (`.github/workflows/ci.yml`, T3, landed 2026-09-27) — and the question closed as **keep
   the mutable base tag** (owner decision Q5, story planning 2026-09-22): the lane builds from
   the same mutable-tag Dockerfile (`proxy/src/docker/Dockerfile:18` unchanged), so base
@@ -931,7 +932,8 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
   evidence: Verification-gap layer (pre-verified as filed): searches over `buildSrc/src`, `proxy/src`, `codec/src`, all `*.gradle*`, and `.github` find zero references outside sandbox docs and `_bmad-output`; the story's own verification (compose config parse + the `909[01]` grep + `clean build`) is one-time manual commands recorded in Implementation Notes, and `clean build` never reads sandbox files. The story's Never clause assigns CI/`.github` work to Story 8.3 — wire `docker compose config` (+ config sanity) into that story's automation.
   **✅ CLOSED 2026-09-29 (Story 8.3 T3): the recurring check exists — `ci.yml`'s sanity step.**
   `cd sandbox && docker compose config` runs as a named step in the CI lane
-  (`.github/workflows/ci.yml:61`, commit `738015b`, 2026-09-27) — on every push to `main`,
+  (the workflow's "Compose config sanity" step, `.github/workflows/ci.yml`,
+  commit `738015b`, 2026-09-27) — on every push to `main`,
   every publish run, and every dispatch — so a `sandbox/compose.yml` edit that stops resolving
   fails the lane red instead of hiding until an operator's §4 curl. Scope note, kept honest:
   the step is config-parse only (the entry's own ask); the daemon-side silent classes (a bind
@@ -950,3 +952,12 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `_bmad-output/implementation-artifacts/8-2-sandbox-prometheus.md`
   summary: A8's forward-cell / N-id scrape formula (39+N observer meters, 122+N scrape rows forward under the `_max`-corrected arithmetic) has never been checked live — the 2026-09-20 first live check ran the lone-reverse posture (empty routing table), and the A8 dated bullet records the forward arm as unexercised, "deferred to whenever a forward rig runs".
   evidence: Blind-hunter layer (story-close round): the pend lived only as the A8 bullet's closing "Unexercised arm" sentence. Settle by running the §5.6 composed-runbook forward shape with a non-empty routing table (N ids), reconciling the scrape rows against 122+N (plus the 5 Prometheus-side scrape-health series), and appending the dated confirmation bullet to A8.
+
+## Deferred from: code review of 8-3-github-ci-and-docker-hub-publish (2026-09-29)
+
+- source_spec: `_bmad-output/implementation-artifacts/8-3-github-ci-and-docker-hub-publish.md`
+  summary: The published release channel ships above-gate CVEs with no operator-surface disclosure — `v0.1.0`/`latest` (the tag every doc references) is built from netty 4.2.16.Final carrying CVE-2026-75595 (9.1 CRITICAL, mTLS/SNI auth bypass in `netty-handler` — the product's core path; fixed upstream 4.2.17/4.2.18) plus ~25 more NVD findings above the CVSS-5 gate, yet the deployment guide's publish-path section and the runbooks present `latest` as the stable release channel with no security note, and the root README's owasp badge reads red indefinitely with nothing on the page explaining it.
+  evidence: Story 8.3 review, adversarial lens finding 4 (2026-09-29; owner triage: defer). The story's OWASP disposition (Implementation Notes, 2026-09-27) already parks every remediation path outside the story (`*.gradle.kts` frozen — the netty/Spring bumps + justified suppressions are separate story work); this entry carries the disclosure half the review surfaced: name the red owasp lane as the security tracker on the operator surfaces (a short security note in the deployment guide's publish path and/or a README badge caption), so the channel's known-CVE state is visible to operators. Settling evidence: the dependency-bump story and the disclosure note landing together.
+- source_spec: `_bmad-output/implementation-artifacts/8-3-github-ci-and-docker-hub-publish.md`
+  summary: Nothing automated observes the Kannel published-image contract — `kannel-image.yml` has no `pull_request` trigger (PRs editing `sandbox/kannel/**` merge with zero build validation; ci's PR lane parses compose.yml only), the version literal `1.5.0` lives in three files on three trigger paths (`sandbox/compose.yml`'s six `image:` pins, `kannel-image.yml`'s build/push tags, `sandbox/kannel/Dockerfile`'s source URL) with no tag-sync check, and no lane verifies the pinned tag exists on Docker Hub (`docker manifest inspect` appears nowhere in the repo).
+  evidence: Story 8.3 review, 2026-09-29 — adversarial finding 6 + edge-case finding 7 + the verification-gap finding, one cluster (owner triage: defer). Two drift arms, both invisible to CI today: silent (Dockerfile bumped to a 1.5.1 source while the workflow still pushes `1.5.0` — the mutable tag quietly carries new binaries while README §4 claims the exact-version-pin idiom) and loud-but-green (compose pins a tag no lane ever pushed — every lane green, failure surfaces only at an operator's `docker compose up -d`). The cold-pull AC is held by exactly one live event (the 2026-09-29 round). Guards when picked up: a PR lane building the kannel image without login/push; deriving the pushed tag from the Dockerfile (single source of truth); an anonymous `docker manifest inspect` existence line in ci (works on PRs).
