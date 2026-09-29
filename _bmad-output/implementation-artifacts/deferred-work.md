@@ -807,6 +807,15 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `5-2-distroless-docker.md`
   summary: `:proxy:dockerImage` is deliberately OUTSIDE the `build`/`check` graph — the image lives in the Docker daemon, invisible to Gradle, so a tracked output would UP-TO-DATE-skip after a `docker rmi`/daemon restart and silently skip rebuilds; docker's own layer cache is the incrementality. The E2E suites build the image themselves via Testcontainers `ImageFromDockerfile` from the same assembled context (`:proxy:assembleDockerContext`, cacheable, daemon-free — that one IS wired into `test`).
   evidence: 5.2 T2/T3 spec Implementation Notes; `buildSrc/src/main/kotlin/smpp/deploy/DockerImageTask.kt` (not cacheable, no task wiring) vs `AssembleDockerContextTask.kt`. Recorded so a future story does not "fix" this into `check` (a daemon-less CI would break) — if release/publish tooling ever lands (explicitly untouched, owner 2026-09-11), it owns the decision of when the image builds.
+  **✅ CLOSED 2026-09-29 (Story 8.3 T3 — the publish lane owns the "when"): stance upheld, wiring
+  unchanged.** The release/publish tooling this entry parked on (owner stance 2026-09-11:
+  untouched) now exists — the CI publish lane (`.github/workflows/ci.yml`, commit `738015b`,
+  2026-09-27) — and it answered the when-does-the-image-build question exactly as this entry
+  demanded: the lane invokes `:proxy:dockerImage` BY NAME (ci.yml:55, after the
+  `./gradlew clean build` gate at :49), and the task stays unwired from `build`/`check`
+  (`DockerImageTask.kt` untouched — not cacheable, no task wiring; the workflow's own comment
+  cites this 5.2 stance at ci.yml:51). No story "fixed" the wiring; the E2E suites keep building
+  via `assembleDockerContext` as before.
 - source_spec: `5-2-distroless-docker.md`
   summary: The distroless base image is pinned only by the mutable tag `gcr.io/distroless/base-debian12:nonroot` — no digest pin and no dated owner policy on base-image drift; everything else in the deploy shape is deliberately pinned (JDK via asdf/toolchain, flags via the contract page, module set via jdeps), but a rebuild after an upstream push can change glibc, the base env, and the recorded size/cold-start actuals silently.
   evidence: 5.2 review round 1 (BH6, 2026-09-12): `proxy/src/docker/Dockerfile:18`. Digest pinning trades CVE-freshness (distroless base updates) for reproducibility — an owner decision that belongs with the release/publish-tooling stance (explicitly out of scope, owner 2026-09-11), not a direct correction of a demonstrated defect.
@@ -920,6 +929,15 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `_bmad-output/implementation-artifacts/8-2-sandbox-prometheus.md`
   summary: No repeatable check that the sandbox `prometheus` fixture still resolves — nothing recurring reads `sandbox/compose.yml` or `sandbox/prometheus/prometheus.yml`, so the service's designed-silent failure modes (a mount-path typo makes the daemon create a directory at the bind source — the documented §8 class that bit the T1 proof itself; no healthcheck/`depends_on` by design) leave a dead metrics consumer invisible to every automated gate until an operator happens to run the §4 `/-/ready` curl.
   evidence: Verification-gap layer (pre-verified as filed): searches over `buildSrc/src`, `proxy/src`, `codec/src`, all `*.gradle*`, and `.github` find zero references outside sandbox docs and `_bmad-output`; the story's own verification (compose config parse + the `909[01]` grep + `clean build`) is one-time manual commands recorded in Implementation Notes, and `clean build` never reads sandbox files. The story's Never clause assigns CI/`.github` work to Story 8.3 — wire `docker compose config` (+ config sanity) into that story's automation.
+  **✅ CLOSED 2026-09-29 (Story 8.3 T3): the recurring check exists — `ci.yml`'s sanity step.**
+  `cd sandbox && docker compose config` runs as a named step in the CI lane
+  (`.github/workflows/ci.yml:61`, commit `738015b`, 2026-09-27) — on every push to `main`,
+  every publish run, and every dispatch — so a `sandbox/compose.yml` edit that stops resolving
+  fails the lane red instead of hiding until an operator's §4 curl. Scope note, kept honest:
+  the step is config-parse only (the entry's own ask); the daemon-side silent classes (a bind
+  source the daemon materializes as a directory, the no-healthcheck-by-design posture) stay
+  runtime behavior, documented for operators as the README §8 class — the automation was never
+  going to catch those, and does not claim to.
 - source_spec: `_bmad-output/implementation-artifacts/8-2-sandbox-prometheus.md`
   summary: Possibly carried-over evidence value — the adjudication `_sum` 0.183 s appears identically in the T1 proof run and the T2 landed-service run (story Implementation Notes + the A8 bullet); two independent boots each measuring their single adjudication at the same millisecond value is improbable, so the T2 figure may be a copy-paste from T1 rather than an observation.
   evidence: Maybe-false (would be MEDIUM if carried over — evidence-record integrity in the story's own notes and in the PRD addendum's dated bullet). Settling evidence: a fresh §6.1 journey's `relay_binds_adjudication_seconds_sum` (compare against 0.183; a materially different value on the same rig suggests the T2 figure was carried), or the T2 session's raw scrape output if retained. If carried over, correct the T2 note and the A8 bullet; if genuine, add the "same value again" remark the note style calls for.
