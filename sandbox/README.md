@@ -27,7 +27,7 @@
 > Story 8.3 (2026-09-27): the rig's images moved to Docker Hub — bring-up is pull-only (§4 pulls
 > `ildarshara/kannel:1.5.0`), the docker surfaces run the published proxy image
 > `ildarshara/smpp-companions-proxy:latest` (§5.5/§5.6), and CI builds and publishes both images
-> (§10, delta 9).
+> (§10, delta 8).
 > Русский перевод: [`README.ru.md`](README.ru.md).
 
 ## Start here — which page do I need?
@@ -125,7 +125,7 @@ networking (`network_mode: host` semantics differ on Docker Desktop-class runtim
 | File | What it is |
 |------|------------|
 | `compose.yml` | The 9-service chain: the ported 7 — `pg`, front side (`front-bearer-box`, `front-sql-box`, `front-sms-box`), SMSC side (`smsc-bearer-box`, `smsc-opensmpp-box`, `smsc-fake-smsc`), every Kannel box on the pulled `ildarshara/kannel:1.5.0` (8.3 — one pull for six boxes) — plus `keycloak` (T2) and `prometheus` (8.2: always-on, `network_mode: host`, web UI loopback-only on `127.0.0.1:9095`, TSDB on the named `prometheus-tsdb` volume); healthchecks on `pg` + both bearerboxes + `keycloak`'s TCP probe (prometheus carries none — fixture, §4), `smsc-fake-smsc` tty-attached for `deliver_sm` injection. |
-| `kannel/Dockerfile` | The Kannel 1.5.0 pinned-source build, ported byte-for-byte from the playground (gateway-1.5.0.tar.gz, `--with-pgsql`, `test/fakesmsc`, addons opensmppbox + sqlbox; UBI10 builder / UBI10-minimal runtime, including the automake-1.11 symlink bootstrap quirk). No version drift, no distro swap. Since Story 8.3 this context is what CI's `kannel-image` workflow builds and publishes as `ildarshara/kannel:1.5.0` — hosts pull that image; the source stays for provenance and the §4 one-line rebuild. |
+| `kannel/Dockerfile` | The published `ildarshara/kannel:1.5.0` is built from this context (§4). |
 | `conf/front-kannel.conf` | Front bearerbox + smsbox: the SMPP-**transceiver** `group = smsc` (`usr1`/`pwd1`, `interface-version = 34`) that connects to the proxy at `host.docker.internal:2775`, and the `sendsms` HTTP user (`user`/`password`). |
 | `conf/front-sqlbox.conf` | Front sqlbox (smsbox → sqlbox → bearerbox routing leg). |
 | `conf/smsc-kannel.conf` | SMSC-side bearerbox: admin 14000, fake SMSC `FAKE1` on 10004, pgsql DLR (`smsc_bearer_dlr`), and the `smsbox-route` group (T3's MO-routing delta, §10 — routes FAKE1's MOs to the opensmppbox connection so §6.2's injection journey works). |
@@ -198,7 +198,7 @@ timeout, then fails its row — loud, not silent).
 From `sandbox/`:
 
 ```bash
-docker compose up -d           # every service pulls a ready-made image — nothing compiles
+docker compose up -d           # pulls a ready-made image if the host does not have it — nothing compiles
 docker compose ps              # wait for pg, front-bearer-box, smsc-bearer-box to show (healthy)
 ```
 
@@ -207,8 +207,9 @@ The six Kannel boxes run the published `ildarshara/kannel:1.5.0` — CI builds i
 pushes it to Docker Hub; the rig pins the exact version tag, the same idiom as the pinned
 `keycloak:26.7.0` and `prometheus:v3.14.0`. There is no build fallback — a pull failure is a loud
 compose error naming the image. The one local-rebuild line, for when you change the Kannel source
-itself: `docker build -t ildarshara/kannel:1.5.0 sandbox/kannel` (the local tag then shadows the
-published one on this host).
+itself: `docker build -t ildarshara/kannel:1.5.0 kannel` (the local tag then shadows the
+published one on this host). To refresh the rig's images — a re-published tag does not reach a
+host that already has it — run `docker compose pull` from `sandbox/` before `up -d`.
 
 Readiness per service:
 
@@ -480,9 +481,10 @@ docker run -d --name smpp-proxy \
 
 The image is the published one — `ildarshara/smpp-companions-proxy:latest`, built and pushed by
 CI; `docker run` pulls it if the host does not have it (`latest` moves only on `vX.Y.Z` git-tag
-pushes; every build also publishes an immutable `sha-<short>` tag). The rare local-image rebuild is
-one line: `./gradlew :proxy:dockerImage`, then `docker tag` the local tag it produces to
-`ildarshara/smpp-companions-proxy:latest` — pulls resume once you remove the local tag.
+pushes; every build also publishes an immutable `sha-<short>` tag). The rare local rebuild is one
+command — `./gradlew :proxy:dockerImage` — plus the retag that makes it shadow the published
+one: `docker tag smpp-proxy:local ildarshara/smpp-companions-proxy:latest` (pulls resume once
+you remove the local tag).
 
 The deltas from the host recipe, each load-bearing: the container joins the sandbox's compose
 network (explicit project name → `smpp-bmad-sandbox_default`) so it resolves `keycloak` and
@@ -518,7 +520,8 @@ as the OPTIONAL dev loop: **bind-mount the host-built jar over the image's `/opt
 each runbook marks that arm optional; with it, rebuild `./gradlew :proxy:bootJar` +
 `docker restart` swaps the jar in (a RUNNING container keeps the old inode; the restart
 re-resolves the path — mechanics verified live, 2026-09-18), no image rebuild in the loop. Run
-verbatim, a runbook builds nothing: it pulls the published image and runs it.
+verbatim, a runbook builds nothing: it runs the published image, which `docker run` pulls only
+if the host does not have it.
 
 | Runbook | The use case | The couple observable |
 |---------|-----------|----------------------|
@@ -530,14 +533,13 @@ The shared port plan across the three (each runbook carries its own table): the 
 `reverse` and the composed FORWARD both hold **2775** — so the front conf
 (`host.docker.internal:2775`) never changes between use cases — the two-instance use cases'
 **reverse moves to 2776**, and the second proxy process's `/metrics` moves to **9091** (two
-host-network processes cannot share the 9090 loopback
-bind). While a two-instance runbook pair runs, the rig Prometheus's always-configured 9091 target
-is UP and both instances' metrics land in the TSDB (§5.3's item 7; config semantics, first live
-confirmation pending). All three runbooks were followed verbatim to `bind_accept coupled` on the
-live rig (2026-09-18, against the then-locally-built image; Story 8.3 moves them to the published
-`latest`), sends included; their failure tables carry the live-observed arms
-(reverse-down in
-the composed chain; the UID-65532 mount refusals; the metrics-port collision). What held live on
+host-network processes cannot share the 9090 loopback bind). While a two-instance runbook pair
+runs, the rig Prometheus's always-configured 9091 target is UP and both instances' metrics land
+in the TSDB (§5.3's item 7; config semantics, first live confirmation pending). All three
+runbooks were followed verbatim to `bind_accept coupled` on the live rig (2026-09-18, against
+the then-locally-built image; Story 8.3 moves them to the published `latest`), sends included;
+their failure tables carry the live-observed arms (reverse-down in the composed chain; the
+UID-65532 mount refusals; the metrics-port collision). What held live on
 the composed use cases is the §6.1 send journey (byte-intact at fakesmsc through both hops) and
 §6.3's keepalives — the sends above were run through each. The §6.4 **D1** deny journey does NOT
 cross a composed use case unchanged: `usr2` is off the forward's routing table (`usr1` is its one
@@ -799,7 +801,7 @@ drifts silently:
    would otherwise be the checkout directory name — and would collide with the playground's own
    compose project on this machine). As originally landed, every Kannel stanza carried its own
    `build:` block over the ported Dockerfile; Story 8.3 (2026-09-27) replaced all six with the
-   pulled `ildarshara/kannel:1.5.0` (delta 9).
+   pulled `ildarshara/kannel:1.5.0` (delta 8).
 3. **The Keycloak service + the proxy launch recipe (T2, as landed):** the `keycloak` compose
    service mirroring the test-tier `KeycloakFixture` launch/realm (with the two posture deltas
    commented in `compose.yml`), the committed `keycloak/` material (realm export + fixture-tier
@@ -835,16 +837,16 @@ drifts silently:
    under `proxy/` changed — and the scrape pattern assumes a Linux host (§1). Fixture scope per
    addendum A7 — the product's "no metrics dashboard / telemetry backend" non-goal stands; the
    access pattern was proven live before the service landed (the story's Implementation Notes).
-9. **The published images (Story 8.3, as landed 2026-09-27):** the six Kannel stanzas pull
+8. **The published images (Story 8.3, as landed 2026-09-27):** the six Kannel stanzas pull
    `ildarshara/kannel:1.5.0` from Docker Hub — the per-host compile is retired. GitHub Actions
    (`.github/workflows/` — new in this story) builds and publishes both images: the rig image on
    dispatch or `sandbox/kannel/**` changes (`1.5.0` + `sha-<short>` + `latest`), the proxy image
    `ildarshara/smpp-companions-proxy` on the code cadence behind the green full suite (`latest`
    only on `vX.Y.Z` git-tag pushes, `sha-<short>` otherwise; the same lane runs
-   `docker compose config` as the rig sanity step), plus a scheduled `owasp` dependency sweep.
-   The docker surfaces (§5.5/§5.6, the runbooks) reference the proxy image at `latest`. No
-   `pull_policy` fallback and no fallback build — the local rebuilds are exactly the documented
-   one-liners (§4 for Kannel, §5.5 for the proxy image).
+   `docker compose config` as the rig sanity step). The docker surfaces (§5.5/§5.6, the
+   runbooks) reference the proxy image at `latest`. No `pull_policy` fallback and no fallback
+   build — the local rebuilds are exactly the documented ones (§4 for Kannel, §5.5 for the
+   proxy image).
 
 ## 11. Findings discipline
 

@@ -38,7 +38,9 @@ The artifacts, one per shape:
 - **JAR:** `proxy/build/libs/proxy.jar`, built by `./gradlew :proxy:bootJar` (the version-free name
   is pinned; the version travels inside the manifest).
 - **Docker image:** built by `./gradlew :proxy:dockerImage` (tag `smpp-proxy:local`) from
-  `proxy/src/docker/Dockerfile` — distroless `base-debian12:nonroot`, packaging that SAME jar
+  `proxy/src/docker/Dockerfile`, and published to Docker Hub as
+  `ildarshara/smpp-companions-proxy`, run at `latest` — the local build is the dev loop. Either
+  way the image is the same: distroless `base-debian12:nonroot`, packaging that SAME jar
   byte-for-byte (never rebuilt) over the jlink runtime `:proxy:jlinkRuntimeImage` derives from it
   (jdeps module set + the crypto floor). The exec-form ENTRYPOINT is
   `["/opt/jre/bin/java", <the four flags above>, "-jar", "/opt/proxy.jar"]` with an empty `CMD`:

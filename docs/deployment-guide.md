@@ -65,9 +65,9 @@ $ docker run -d --name smpp-proxy -p 2775:2775 <mounts…> ildarshara/smpp-compa
 
 There is no build step in the operator path: the image is the published one, and `docker run`
 pulls it from Docker Hub if the host does not have it (the publish lane behind it is the next
-section). The local rebuild stays one line, for when you change the image itself:
-`./gradlew :proxy:dockerImage`, then `docker tag` the local tag it produces to
-`ildarshara/smpp-companions-proxy:latest` — pulls resume once you remove the local tag.
+section). The rare local rebuild is one command — `./gradlew :proxy:dockerImage` — plus the
+retag that makes it shadow the published one: `docker tag smpp-proxy:local
+ildarshara/smpp-companions-proxy:latest` (pulls resume once you remove the local tag).
 
 Facts an operator needs about the image (source: `proxy/src/docker/Dockerfile`):
 
@@ -99,12 +99,9 @@ Two run-level rules for every `docker run` of this image, both pinned by Docker-
 
 ## The publish path — where the image comes from
 
-Shape 2's image is a published artifact, not something an operator builds. GitHub Actions
-(`.github/workflows/ci.yml`, Story 8.3) builds it and pushes it to Docker Hub as
-**`ildarshara/smpp-companions-proxy`**, and every Docker reference on this page and in the
-runbooks names it at `latest` — `docker run` pulls it if the host does not have it. The local
-`./gradlew :proxy:dockerImage` build remains only the dev loop for changing the image itself
-(one line, Shape 2 above).
+GitHub Actions (`.github/workflows/ci.yml`, Story 8.3) builds the Shape 2 image and pushes it
+to Docker Hub as **`ildarshara/smpp-companions-proxy`**; every Docker reference on this page and
+in the runbooks names it at `latest` — the tags and their rules are the list below.
 
 The lane is fail-closed by construction: the publish steps sit AFTER `./gradlew clean build` in
 the SAME CI job, so a red suite makes them unreachable — nothing is published unless the full
@@ -123,6 +120,13 @@ The tags on Docker Hub (owner decisions 2026-09-22, amended 2026-09-27):
 - **`sha-<short>`** — the immutable record of every published build, and the only tag an
   untagged main push or dispatch creates. Run one exact build by pinning it:
   `ildarshara/smpp-companions-proxy:sha-1a2b3c4`.
+
+To refresh a host that already has an older `latest` (the mutable tag moves on `vX.Y.Z`):
+`docker pull ildarshara/smpp-companions-proxy:latest`.
+
+A half-failed `vX.Y.Z`/`latest` release is completed only by "Re-run jobs" on the ORIGINAL
+tag-push run ("Re-run failed jobs" is enough); a manual dispatch cannot complete it — a dispatch
+publishes `sha-<short>` only, by design.
 
 The push credentials live only in GitHub Actions secrets (`DOCKERHUB_USERNAME` /
 `DOCKERHUB_TOKEN`), never in the repository (AD-18 spirit).
@@ -474,12 +478,10 @@ rebuild automatically — against rebuild reproducibility — a rebuild after an
 change glibc and the base environment silently, while everything else in the deploy shape is
 pinned (JDK by asdf, flags by the contract page, the runtime module set by jdeps).
 
-**The parked half closed with publishing (Story 8.3, owner decision Q5 2026-09-22): keep the
-mutable tag there too.** This page had named the release/publish tooling as the future home of
-any digest pin, back when it deliberately did not exist (owner stance 2026-09-11); that tooling
-now exists — the CI publish lane above — and the question closed as **keep the mutable tag**:
-the publish lane builds from the same mutable-tag Dockerfile, so base CVE-freshness keeps
-flowing into every published build with nothing to re-pin. Reproducibility short of a base
+**The parked half closed with publishing (Story 8.3, owner decision Q5 2026-09-22).** With the
+CI publish lane now existing, the question closed as **keep the mutable tag**: the publish lane
+builds from the same mutable-tag Dockerfile, so base CVE-freshness keeps flowing into every
+published build with nothing to re-pin. Reproducibility short of a base
 digest now has a publish-level answer: every publish's `sha-<short>` tag is an immutable record
 of a complete image — pull the sha tag of the build you validated instead of rebuilding. An
 operator who needs a reproducible BASE still pins the digest in their own deployment pipeline,

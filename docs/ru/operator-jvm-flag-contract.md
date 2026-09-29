@@ -42,9 +42,12 @@ java --enable-preview -XX:+UseZGC -XX:MaxDirectMemorySize=6442450944 -Djava.net.
 - **JAR:** `proxy/build/libs/proxy.jar`, собирается `./gradlew :proxy:bootJar` (безверсионное имя
   пиннировано; версия содержится в манифесте).
 - **Docker-образ:** собирается `./gradlew :proxy:dockerImage` (тег `smpp-proxy:local`) из
-  `proxy/src/docker/Dockerfile` — distroless `base-debian12:nonroot`, упаковывающий ТОТ ЖЕ jar
-  байт-в-байт (никогда не пересобираемый) поверх jlink-рантайма, который выводит из него
-  `:proxy:jlinkRuntimeImage` (набор модулей jdeps + крипто-пол). Exec-form ENTRYPOINT:
+  `proxy/src/docker/Dockerfile`, а публикуется на Docker Hub как
+  `ildarshara/smpp-companions-proxy` и запускается на `latest`; локальная сборка — цикл
+  разработки. В обоих случаях образ один и тот же: distroless `base-debian12:nonroot`,
+  упаковывающий ТОТ ЖЕ jar байт-в-байт (никогда не пересобираемый) поверх jlink-рантайма,
+  который выводит из него `:proxy:jlinkRuntimeImage` (набор модулей jdeps + крипто-пол).
+  Exec-form ENTRYPOINT:
   `["/opt/jre/bin/java", <четыре флага выше>, "-jar", "/opt/proxy.jar"]` с пустым `CMD`:
   аргументы после имени образа добавляются как обычные Spring run-args — ровно как аргументы
   после пути к jar в JAR-форме.

@@ -3,7 +3,7 @@
 > One of the three docker runbooks, one per use case (role + mode) — siblings: [forward+reverse, Mode A](forward-reverse-mode-a.md) ·
 > [forward+reverse, Mode C](forward-reverse-mode-c.md). For the host-run `java -jar` recipe (the debugger
 > posture) see the [sandbox README](../README.md) §5. Every expected observation below was executed live on
-> the rig, 2026-09-18 — against the then-locally-built image; since Story 8.3 the launch pulls the
+> the rig, 2026-09-18 — against the then-locally-built image; since Story 8.3 the launch runs the
 > published `ildarshara/smpp-companions-proxy:latest` (README §5.6). Documentation only — nothing
 > parses this page.
 > Русский перевод: [`reverse-mode-b.ru.md`](reverse-mode-b.ru.md).
@@ -44,9 +44,11 @@ flowchart TD
 ## Quick start
 
 Run everything from the **repository root** (the `-v` mounts are root-relative). Docker must be
-up. The proxy runs the published image — **`ildarshara/smpp-companions-proxy:latest`**, pulled
-from Docker Hub by the `docker run` below (CI builds and publishes it; `latest` moves only on
-`vX.Y.Z` git-tag pushes). Run verbatim, this runbook builds nothing.
+up. The proxy runs the published image — **`ildarshara/smpp-companions-proxy:latest`**; the
+`docker run` below pulls it from Docker Hub if the host does not have it (CI builds and
+publishes it; `latest` moves only on `vX.Y.Z` git-tag pushes). To refresh a host that already
+has it: `docker pull ildarshara/smpp-companions-proxy:latest`. Run verbatim, this runbook
+builds nothing.
 
 **1 — Start the rig** (full bring-up guide: [sandbox README §4](../README.md)):
 
@@ -167,6 +169,8 @@ line to the `docker run`:
 ```bash
       -v "$(pwd)/proxy/build/libs/proxy.jar:/opt/proxy.jar:ro" \
 ```
+
+With the mount in place, the loop:
 
 ```bash
 ./gradlew :proxy:bootJar          # rebuild after any source edit (inputs tracked — no stale jar)

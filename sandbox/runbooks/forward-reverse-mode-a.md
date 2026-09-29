@@ -3,7 +3,7 @@
 > One of the three docker runbooks, one per use case (role + mode) — siblings: [the lone reverse, Mode B](reverse-mode-b.md) ·
 > [forward+reverse, Mode C](forward-reverse-mode-c.md). For the host-run `java -jar` recipe (the debugger
 > posture) see the [sandbox README](../README.md) §5. Every expected observation below was executed live on
-> the rig, 2026-09-18 — against the then-locally-built image; since Story 8.3 the launch pulls the
+> the rig, 2026-09-18 — against the then-locally-built image; since Story 8.3 the launch runs the
 > published `ildarshara/smpp-companions-proxy:latest` (README §5.6). Documentation only — nothing
 > parses this page.
 > Русский перевод: [`forward-reverse-mode-a.ru.md`](forward-reverse-mode-a.ru.md).
@@ -54,8 +54,9 @@ flowchart TD
 
 Preconditions: the rig healthy and the OIDC client secret bootstrapped — steps 1–2 of the
 [Mode B runbook](reverse-mode-b.md)'s Quick start cover both (including the `chmod 0444` on the
-secret). Both containers pull the published `ildarshara/smpp-companions-proxy:latest` at
-launch; nothing builds locally.
+secret). Both containers run the published `ildarshara/smpp-companions-proxy:latest` — Docker
+pulls it if the host does not have it; nothing builds locally. To refresh a host that already
+has it (the mutable tag moves on `vX.Y.Z`): `docker pull ildarshara/smpp-companions-proxy:latest`.
 
 From the **repository root**, launch the reverse first — its listener must exist before the
 forward's first connection (the front's retry makes the order forgiving, but keep it).
