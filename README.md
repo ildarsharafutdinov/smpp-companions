@@ -7,6 +7,8 @@ and the SMSC, so every bind and message crosses one controlled, observable point
 reaching the SMSC directly. Built on Netty and Spring Boot 4 (JDK 25): headless,
 operator-configured, fail-closed — bad configuration refuses at boot, not in production.
 
+**Status:** meaty review
+
 ## What is it for?
 
 - **Central credential adjudication** — every SMPP bind's password is verified at your IdP
@@ -21,9 +23,9 @@ operator-configured, fail-closed — bad configuration refuses at boot, not in p
 | Module | What it is | Status |
 |--------|------------|--------|
 | [`codec/`](codec/) | The SMPP 3.4 protocol library — a pure, Netty-based encoder/decoder | in development — ships inside the proxy, not yet a standalone release |
-| [`proxy/`](proxy/) | The proxy itself — runnable JAR + distroless Docker image | **WIP** |
+| [`proxy/`](proxy/) | The proxy itself — runnable JAR + distroless Docker image | meaty review |
 | jmeter plugin *(planned)* | A JMeter load-testing plugin for SMPP | planned — not started |
-| [`sandbox/`](sandbox/) | The dockerized Kannel + Keycloak test rig — a real third-party SMPP stack wrapped around the proxy | **WIP** |
+| [`sandbox/`](sandbox/) | The dockerized Kannel + Keycloak test rig — a real third-party SMPP stack wrapped around the proxy | meaty review |
 | [`docs/`](docs/) | Operator documentation — configuration reference, deployment guide, runbooks | maintained |
 
 ## Try it

@@ -1,5 +1,5 @@
 # generated: 2026-07-24
-# last_updated: 2026-09-29
+# last_updated: 2026-09-30
 # project: smpp-companions
 # project_key: NOKEY
 # tracking_system: file-system
@@ -64,7 +64,7 @@
 #       MUST land before any other Epic 3 story and feeds Epic 2's opener its fallback decision.
 
 generated: 2026-07-24
-last_updated: 2026-09-29
+last_updated: 2026-09-30
 project: smpp-companions
 project_key: NOKEY
 tracking_system: file-system
@@ -141,7 +141,8 @@ development_status:
   # (Added 2026-09-19, owner direction — the review sliced into its own distinct epic;
   # depends on Epic 8; review-prep package → owner's human read → findings triage,
   # fixes bounce to owning areas per the honest-exception pattern.)
-  epic-9: backlog
+  epic-9: in-progress
+  9-1-runbook-human-walkthrough: in-progress
   epic-9-retrospective: optional
 
 action_items:

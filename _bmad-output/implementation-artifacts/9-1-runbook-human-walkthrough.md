@@ -2,9 +2,10 @@
 title: 'Story 9.1 — Runbook human walkthrough (Epic 9 opener)'
 type: 'chore'
 created: '2026-09-30'
-status: 'ready-for-dev' # draft | ready-for-dev | in-progress | in-review | done
+status: 'in-progress' # draft | ready-for-dev | in-progress | in-review | done
 route: 'dispatch'
 review_loop_iteration: 0
+baseline_commit: '0a9b064e53eeabb1abaf5922de9ee70347896328'
 context: ['{project-root}/_bmad-output/implementation-artifacts/epic-9-context.md']
 ---
 
@@ -65,7 +66,7 @@ context: ['{project-root}/_bmad-output/implementation-artifacts/epic-9-context.m
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `README.md` + `_bmad-output/implementation-artifacts/sprint-status.yaml` + new `_bmad-output/implementation-artifacts/meaty-review-findings.md` — set README status `meaty review` (intro line + proxy/sandbox Modules-table cells); append the 9-1 story key and flip epic-9 to in-progress; create the Epic 9 findings/triage ledger (per-finding: surface, observation, verdict, evidence) — story start markers.
+- [x] `README.md` + `_bmad-output/implementation-artifacts/sprint-status.yaml` + new `_bmad-output/implementation-artifacts/meaty-review-findings.md` — set README status `meaty review` (intro line + proxy/sandbox Modules-table cells); append the 9-1 story key and flip epic-9 to in-progress; create the Epic 9 findings/triage ledger (per-finding: surface, observation, verdict, evidence) — story start markers.
 - [ ] Host-run walkthrough (§5) — rig §4, secret §5.1, bootJar + `java -jar` §5.2, §5.3 observations, §6.1–6.4 journeys, metrics 9090 + Prometheus 9095, log reading vs `docs/runbooks.md`, IDE breakpoint confirmation, SIGTERM exit — findings ledgered with verdicts.
 - [ ] `sandbox/runbooks/reverse-mode-b.md` walkthrough — packaged shape, single instance, §6 journeys per the runbook — findings ledgered.
 - [ ] `sandbox/runbooks/forward-reverse-mode-a.md` walkthrough — two instances, 9091 arm; capture the two pending 8.2 observations if reached — findings ledgered.
