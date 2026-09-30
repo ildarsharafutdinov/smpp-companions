@@ -961,3 +961,21 @@ Tracks real-but-deferred items surfaced during review. Not blocking; revisit at 
 - source_spec: `_bmad-output/implementation-artifacts/8-3-github-ci-and-docker-hub-publish.md`
   summary: Nothing automated observes the Kannel published-image contract — `kannel-image.yml` has no `pull_request` trigger (PRs editing `sandbox/kannel/**` merge with zero build validation; ci's PR lane parses compose.yml only), the version literal `1.5.0` lives in three files on three trigger paths (`sandbox/compose.yml`'s six `image:` pins, `kannel-image.yml`'s build/push tags, `sandbox/kannel/Dockerfile`'s source URL) with no tag-sync check, and no lane verifies the pinned tag exists on Docker Hub (`docker manifest inspect` appears nowhere in the repo).
   evidence: Story 8.3 review, 2026-09-29 — adversarial finding 6 + edge-case finding 7 + the verification-gap finding, one cluster (owner triage: defer). Two drift arms, both invisible to CI today: silent (Dockerfile bumped to a 1.5.1 source while the workflow still pushes `1.5.0` — the mutable tag quietly carries new binaries while README §4 claims the exact-version-pin idiom) and loud-but-green (compose pins a tag no lane ever pushed — every lane green, failure surfaces only at an operator's `docker compose up -d`). The cold-pull AC is held by exactly one live event (the 2026-09-29 round). Guards when picked up: a PR lane building the kannel image without login/push; deriving the pushed tag from the Dockerfile (single source of truth); an anonymous `docker manifest inspect` existence line in ci (works on PRs).
+
+## Deferred from: Epic 9 multi-goal split at bmad-build step-01 (2026-09-30)
+
+- source_spec: none
+  summary: Epic 9 `code` pass — slice the whole app into parts and review every part's code only (deliberately no test review at this stage); every line understood, simplified where possible, custom implementations replaced by available libraries, low-value/high-complexity code dropped.
+  evidence: Owner choice ("Split") at the 2026-09-30 bmad-build multi-goal checkpoint — the Epic 9 invocation named several independently shippable goals in an explicit "firstly/then" order; the runbook walkthrough (Story 9.1) goes first, this pass follows. Per-point improve/defer/research decisions rest with the reviewer inside each review story.
+- source_spec: none
+  summary: Epic 9 `code+tests` pass — determine the minimal set of tests, then review each sliced part of code together with its tests (second pass over the same slices, after the code pass).
+  evidence: Owner choice ("Split") at the 2026-09-30 bmad-build multi-goal checkpoint; the owner explicitly separated the two passes ("B. should contain `code` and `code+tests` passes") — code-only first, then code+tests once the minimal test set is determined. Consumes the slicing produced by the `code` pass.
+- source_spec: none
+  summary: Epic 9 remaining-test group review — the tests outside the minimal set are split into two groups, simple and complex, and each group is reviewed.
+  evidence: Owner choice ("Split") at the 2026-09-30 bmad-build multi-goal checkpoint; sequenced after the `code+tests` pass, which defines what "other tests" means. Same standing target: understand every line, simplify, prefer libraries, drop low-value/high-complexity tests.
+- source_spec: none
+  summary: Epic 9 English docs review — the EN docs (docs/ + README, English version only) are read through, understood, simplified, and made human-friendly. The Russian copy is NOT touched meanwhile.
+  evidence: Owner choice ("Split") at the 2026-09-30 bmad-build multi-goal checkpoint; owner directive "work with english only" while the review runs. Aligns with the 2026-09-13 distant-future readability-pass ledger entry above — this story is where that pass is now scheduled to happen.
+- source_spec: none
+  summary: Epic 9 Russian docs sync — re-sync the docs/ru/ copy with the reworked English originals once the EN review completes.
+  evidence: Owner directive 2026-09-30: "russian docs sync is deferred to the very end" of Epic 9 — deferred by the owner's own sequencing, not by this checkpoint; recorded so it cannot be lost when the EN docs story lands.
